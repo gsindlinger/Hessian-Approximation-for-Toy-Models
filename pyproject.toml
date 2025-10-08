@@ -1,0 +1,14 @@
+[project]
+name = "hessian-approximation"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.6",
+    "scikit-learn>=1.7.2",
+    "simple-parsing>=0.1.7",
+    "torch>=2.8.0",
+    "tqdm>=4.67.1",
+    "ucimlrepo>=0.0.7",
+]
