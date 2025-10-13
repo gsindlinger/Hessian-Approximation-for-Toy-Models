@@ -1,13 +1,14 @@
 from __future__ import annotations
+from typing import Any, Callable
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax import flatten_util
 from typing_extensions import override
-from torch.nn import MSELoss, CrossEntropyLoss
-from torch.distributions import Categorical
-
-import torch
+from functools import partial
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.models import ApproximationModel
-from torch.nn.utils import parameters_to_vector
+from models.models import ApproximationModel, get_loss_name
 
 
 class FisherInformation(HessianApproximation):
@@ -16,13 +17,14 @@ class FisherInformation(HessianApproximation):
         self.samples_per_input = samples_per_input
 
     @override
-    def compute(
+    def compute_hessian(
         self,
         model: ApproximationModel,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-    ):
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+    ) -> jnp.ndarray:
         """
         Compute exact Fisher Information Matrix (FIM).
         FIM = E[∇log p(y|x,θ) ∇log p(y|x,θ)^T]
@@ -30,124 +32,264 @@ class FisherInformation(HessianApproximation):
         Importantly, for each input x, we need to sample y ~ p(y|x,θ).
         Therefore we apply a repeated sampling strategy.
         """
-        model.eval()
-        params = [p for p in model.parameters() if p.requires_grad]
+        training_data = jnp.asarray(training_data)
+        training_targets = jnp.asarray(training_targets)
 
-        if isinstance(loss, CrossEntropyLoss):
-            return self._compute_classification_fim(model, training_data, params)
-        elif isinstance(loss, MSELoss):
-            return self._compute_regression_fim(model, training_data, params)
+        if get_loss_name(loss_fn) == "cross_entropy":
+            return self._compute_classification_fim(model, params, training_data)
         else:
-            raise ValueError(f"Unsupported loss type for FIM: {type(loss)}")
+            return self._compute_regression_fim(model, params, training_data)
 
     def _compute_classification_fim(
         self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        params: list[torch.nn.Parameter],
-    ) -> torch.Tensor:
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+    ) -> jnp.ndarray:
         """
         Compute Fisher Information Matrix based on pseudo-gradients for classification.
         For generating pseudo-gradients, we sample y ~ p(y|x,θ) from the model's predicted distribution.
         """
-        model.eval()
-        device = next(model.parameters()).device
-        num_params = sum(p.numel() for p in params)
-        fim = torch.zeros(num_params, num_params, device=device)
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
 
-        for x in training_data:
-            x = x.unsqueeze(0).to(device)
+        # Create all random keys upfront
+        rng = jax.random.PRNGKey(0)
+        n_samples = training_data.shape[0]
+        rngs = jax.random.split(rng, n_samples * self.samples_per_input)
+        rngs = rngs.reshape(n_samples, self.samples_per_input, -1)
 
-            # Forward pass
-            logits = model(x)
-            probs = torch.softmax(logits, dim=-1)
-            dist = Categorical(probs=probs)
+        # JIT compile the per-sample-per-mc-sample computation
+        @jax.jit
+        def compute_single_gradient(p_flat, x_sample, rng_key):
+            def logits_fn(p):
+                params_unflat = unravel_fn(p)
+                logits = model.apply(params_unflat, jnp.expand_dims(x_sample, axis=0))
+                if not isinstance(logits, jnp.ndarray):
+                    raise ValueError("Model output is not a JAX array.")
+                return logits[0]
 
-            sample_fim = torch.zeros(num_params, num_params, device=device)
+            logits = logits_fn(p_flat)
+            sampled_y = jax.random.categorical(rng_key, logits)
 
-            # Monte Carlo sampling for repeated sampling of y ~ p(y|x,θ)
-            for _ in range(self.samples_per_input):
-                sampled_y = dist.sample()
-                log_prob = dist.log_prob(sampled_y)
+            def log_prob_fn(p):
+                logits_inner = logits_fn(p)
+                log_probs = jax.nn.log_softmax(logits_inner, axis=-1)
+                return log_probs[sampled_y]
 
-                # Need create_graph=False but must enable gradients
-                grads = torch.autograd.grad(
-                    outputs=log_prob,
-                    inputs=params,
-                    retain_graph=True,
-                    create_graph=False,
-                    allow_unused=True,
-                )
+            grad_vec = jax.grad(log_prob_fn)(p_flat)
+            return jnp.outer(grad_vec, grad_vec)
 
-                grad_vec = parameters_to_vector(
-                    [
-                        g if g is not None else torch.zeros_like(p)
-                        for g, p in zip(grads, params)
-                    ]
-                )
-                sample_fim += torch.outer(grad_vec, grad_vec)
+        def compute_sample_fim(x_sample, sample_rngs):
+            # Create a closure that captures x_sample
+            compute_with_x = lambda rng_key: compute_single_gradient(
+                params_flat, x_sample, rng_key
+            )
+            mc_fims = jax.vmap(compute_with_x)(sample_rngs)
+            return mc_fims.mean(axis=0)
 
-            fim += sample_fim / self.samples_per_input
+        # Vectorize over all training samples
+        fim = jax.vmap(compute_sample_fim)(training_data, rngs).sum(axis=0)
 
-        fim /= len(training_data)
-        return fim.to(dtype=torch.float64)
+        fim /= n_samples
+        return fim
 
     def _compute_regression_fim(
         self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        params: list[torch.nn.Parameter],
-    ) -> torch.Tensor:
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+    ) -> jnp.ndarray:
         """
         Compute Fisher Information Matrix for regression.
         Assumes Gaussian likelihood: y ~ N(f(x;θ), σ^2)
 
         For generating pseudo-gradients, we sample y ~ p(y|x,θ) from the model's predicted distribution.
         """
-        model.eval()
-        device = next(model.parameters()).device
-        num_params = sum(p.numel() for p in params)
-        fim = torch.zeros(num_params, num_params, device=device)
-
-        # Assume fixed noise variance
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
         sigma2 = 1.0
 
-        for x in training_data:
-            x = x.unsqueeze(0).to(device)
-            mu = model(x).squeeze(
-                0
-            )  # Trained prediction which serves as the mean for sampling
+        # Create all random keys upfront
+        rng = jax.random.PRNGKey(0)
+        n_samples = training_data.shape[0]
+        rngs = jax.random.split(rng, n_samples * self.samples_per_input)
+        rngs = rngs.reshape(n_samples, self.samples_per_input, -1)
 
-            sample_fim = torch.zeros(num_params, num_params, device=device)
+        # JIT compile the per-sample-per-mc-sample computation
+        @jax.jit
+        def compute_single_gradient(p_flat, x_sample, rng_key):
+            def model_fn(p):
+                params_unflat = unravel_fn(p)
+                output = model.apply(params_unflat, jnp.expand_dims(x_sample, axis=0))
+                if not isinstance(output, jnp.ndarray):
+                    raise ValueError("Model output is not a JAX array.")
+                return output.squeeze(0)
 
-            for _ in range(self.samples_per_input):
-                # Sample y ~ N(mu, sigma^2)
-                sampled_y = (mu + torch.randn_like(mu) * sigma2**0.5).detach()
+            mu = model_fn(p_flat)
+            sampled_y = mu + jax.random.normal(rng_key, mu.shape) * jnp.sqrt(sigma2)
 
-                # log p(y|x,θ) for Gaussian: -0.5 * log(2πσ^2) - 0.5 * (y - mu)^2 / σ^2
+            def log_prob_fn(p):
+                mu_inner = model_fn(p)
                 log_prob = (
-                    -0.5 * torch.log(torch.tensor(2 * torch.pi * sigma2, device=device))
-                    - 0.5 * ((sampled_y - mu) ** 2) / sigma2
+                    -0.5 * jnp.log(2 * jnp.pi * sigma2)
+                    - 0.5 * ((sampled_y - mu_inner) ** 2) / sigma2
                 )
-                log_prob = log_prob.sum()  # In case of multi-dimensional output
+                return jnp.sum(log_prob)
 
-                grads = torch.autograd.grad(
-                    outputs=log_prob,
-                    inputs=params,
-                    retain_graph=True,
-                    create_graph=False,
-                    allow_unused=True,
+            grad_vec = jax.grad(log_prob_fn)(p_flat)
+            return jnp.outer(grad_vec, grad_vec)
+
+        def compute_sample_fim(x_sample, sample_rngs):
+            compute_with_x = lambda rng_key: compute_single_gradient(
+                params_flat, x_sample, rng_key
+            )
+            mc_fims = jax.vmap(compute_with_x)(sample_rngs)
+            return mc_fims.mean(axis=0)
+
+        # Vectorize over all training samples
+        fim = jax.vmap(compute_sample_fim)(training_data, rngs).sum(axis=0)
+
+        fim /= n_samples
+        return fim
+
+    def compute_hvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute the Fisher-vector product (FVP) using the Fisher Information Matrix.
+        This is analogous to Hessian-vector product but uses the Fisher Information.
+
+        Args:
+            model: The Flax model.
+            params: Model parameters (PyTree structure).
+            training_data: Input data.
+            training_targets: Target values (not used for Fisher, kept for interface compatibility).
+            loss_fn: Loss function to determine task type.
+            vector: Vector to multiply with the Fisher Information Matrix.
+
+        Returns:
+            FVP result as a 1D array.
+        """
+        training_data = jnp.asarray(training_data)
+
+        if get_loss_name(loss_fn) == "cross_entropy":
+            return self._compute_classification_fvp(
+                model, params, training_data, vector
+            )
+        else:
+            return self._compute_regression_fvp(model, params, training_data, vector)
+
+    def _compute_classification_fvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute Fisher-vector product for classification using efficient JVP.
+        """
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+
+        # Create all random keys upfront
+        rng = jax.random.PRNGKey(0)
+        n_samples = training_data.shape[0]
+        rngs = jax.random.split(rng, n_samples * self.samples_per_input)
+        rngs = rngs.reshape(n_samples, self.samples_per_input, -1)
+
+        # JIT compile the per-sample-per-mc-sample computation
+        @jax.jit
+        def compute_single_fvp(p_flat, x_sample, rng_key, v):
+            def logits_fn(p):
+                params_unflat = unravel_fn(p)
+                logits = model.apply(params_unflat, jnp.expand_dims(x_sample, axis=0))
+                if not isinstance(logits, jnp.ndarray):
+                    raise ValueError("Model output is not a JAX array.")
+                return logits[0]
+
+            logits = logits_fn(p_flat)
+            sampled_y = jax.random.categorical(rng_key, logits)
+
+            def log_prob_fn(p):
+                logits_inner = logits_fn(p)
+                log_probs = jax.nn.log_softmax(logits_inner, axis=-1)
+                return log_probs[sampled_y]
+
+            grad_vec = jax.grad(log_prob_fn)(p_flat)
+            dot_product = jnp.dot(grad_vec, v)
+            return grad_vec * dot_product
+
+        def compute_sample_fvp(x_sample, sample_rngs):
+            compute_with_x = lambda rng_key: compute_single_fvp(
+                params_flat, x_sample, rng_key, vector
+            )
+            mc_fvps = jax.vmap(compute_with_x)(sample_rngs)
+            return mc_fvps.mean(axis=0)
+
+        # Vectorize over all training samples
+        fvp = jax.vmap(compute_sample_fvp)(training_data, rngs).sum(axis=0)
+
+        fvp /= n_samples
+        return fvp
+
+    def _compute_regression_fvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute Fisher-vector product for regression using efficient JVP.
+        """
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+        sigma2 = 1.0
+
+        # Create all random keys upfront
+        rng = jax.random.PRNGKey(0)
+        n_samples = training_data.shape[0]
+        rngs = jax.random.split(rng, n_samples * self.samples_per_input)
+        rngs = rngs.reshape(n_samples, self.samples_per_input, -1)
+
+        # JIT compile the per-sample-per-mc-sample computation
+        @jax.jit
+        def compute_single_fvp(p_flat, x_sample, rng_key, v):
+            def model_fn(p):
+                params_unflat = unravel_fn(p)
+                output = model.apply(params_unflat, jnp.expand_dims(x_sample, axis=0))
+                if not isinstance(output, jnp.ndarray):
+                    raise ValueError("Model output is not a JAX array.")
+                return output.squeeze(0)
+
+            mu = model_fn(p_flat)
+            sampled_y = mu + jax.random.normal(rng_key, mu.shape) * jnp.sqrt(sigma2)
+
+            def log_prob_fn(p):
+                mu_inner = model_fn(p)
+                log_prob = (
+                    -0.5 * jnp.log(2 * jnp.pi * sigma2)
+                    - 0.5 * ((sampled_y - mu_inner) ** 2) / sigma2
                 )
+                return jnp.sum(log_prob)
 
-                grad_vec = parameters_to_vector(
-                    [
-                        g if g is not None else torch.zeros_like(p)
-                        for g, p in zip(grads, params)
-                    ]
-                )
-                sample_fim += torch.outer(grad_vec, grad_vec)
+            grad_vec = jax.grad(log_prob_fn)(p_flat)
+            dot_product = jnp.dot(grad_vec, v)
+            return grad_vec * dot_product
 
-            fim += sample_fim / self.samples_per_input
+        def compute_sample_fvp(x_sample, sample_rngs):
+            compute_with_x = lambda rng_key: compute_single_fvp(
+                params_flat, x_sample, rng_key, vector
+            )
+            mc_fvps = jax.vmap(compute_with_x)(sample_rngs)
+            return mc_fvps.mean(axis=0)
 
-        fim /= len(training_data)
-        return fim.to(dtype=torch.float64)
+        # Vectorize over all training samples
+        fvp = jax.vmap(compute_sample_fvp)(training_data, rngs).sum(axis=0)
+
+        fvp /= n_samples
+        return fvp

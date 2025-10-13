@@ -1,357 +1,239 @@
+from __future__ import annotations
+from typing import Any, Callable
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax import flatten_util
 from typing_extensions import override
-from torch.nn import MSELoss, CrossEntropyLoss
-import torch
+
 from hessian_approximations.hessian_approximations import HessianApproximation
 from models.models import ApproximationModel
-from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 
 class LiSSA(HessianApproximation):
     """
-    Linear time Stochastic Second-order Algorithm (LiSSA) for Hessian approximation.
+    LiSSA approximates H^{-1} @ v using iterative sampling without computing the full Hessian.
+    Based on: Agarwal et al. "Second-Order Stochastic Optimization for Machine Learning in Linear Time"
 
-    LiSSA approximates the inverse Hessian using stochastic power iteration:
-    H^{-1} ≈ I/scale - (I - H/scale)/scale + (I - H/scale)^2/scale - ...
-
-    This is computed iteratively using Hessian-vector products (HVP).
-    To get the Hessian itself, we can compute H ≈ (H^{-1})^{-1} or build it
-    column by column using HVPs with standard basis vectors.
-
-    Reference: Agarwal et al. "Second-Order Stochastic Optimization for Machine Learning
-    in Linear Time" (2017)
+    The algorithm uses the recurrence:
+    H_j = v + (I - H/scale) @ H_{j-1}
+    where H is the Hessian and scale is a damping parameter.
     """
 
     def __init__(
         self,
         num_samples: int = 1,
-        recursion_depth: int = 5000,
+        recursion_depth: int = 1000,
         scale: float = 10.0,
         damping: float = 0.0,
-        batch_size: int = 1,
     ):
         """
         Args:
             num_samples: Number of independent LiSSA estimates to average
-            recursion_depth: Number of recursion iterations
-            scale: Scaling factor for convergence (should be > largest eigenvalue of H)
-            damping: Damping term added to Hessian (for numerical stability)
-            batch_size: Number of samples to use per HVP computation
+            recursion_depth: Number of iterations for each LiSSA estimate
+            scale: Scaling parameter (should be > largest eigenvalue of Hessian)
+            damping: Damping factor added to Hessian (for numerical stability)
         """
         super().__init__()
         self.num_samples = num_samples
         self.recursion_depth = recursion_depth
         self.scale = scale
         self.damping = damping
-        self.batch_size = batch_size
 
     @override
-    def compute(
+    def compute_hessian(
         self,
         model: ApproximationModel,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-    ):
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+    ) -> jnp.ndarray:
         """
-        Compute Hessian approximation using LiSSA.
+        LiSSA is designed for computing Hessian-vector products, not the full Hessian.
+        Computing the full Hessian with LiSSA would require O(p) HVP calls where p is
+        the number of parameters, which defeats the purpose of LiSSA.
 
-        We build the full Hessian matrix by computing HVP with each standard basis vector.
+        Use compute_hvp() instead for efficient Hessian-vector products.
         """
-        model.eval()
-        params = [p for p in model.parameters() if p.requires_grad]
-        num_params = sum(p.numel() for p in params)
-        device = training_data.device
-
-        hessian = torch.zeros(
-            num_params, num_params, device=device, dtype=torch.float64
+        raise NotImplementedError(
+            "LiSSA does not support computing the full Hessian matrix. "
+            "Use compute_hvp() for efficient Hessian-vector products, or "
+            "use a different approximation method (e.g., Hessian, GaussNewton, FisherInformation) "
+            "if you need the full Hessian matrix."
         )
 
-        # Compute each column of the Hessian using HVP with standard basis vectors
-        for i in range(num_params):
-            # Create standard basis vector e_i
-            v = torch.zeros(num_params, device=device, dtype=torch.float64)
-            v[i] = 1.0
-
-            # Compute Hessian-vector product: H @ v
-            hvp = self._compute_hvp(
-                model, training_data, training_targets, loss, params, v
-            )
-
-            hessian[:, i] = hvp
-
-        return hessian.to(dtype=torch.float64)
-
-    def _compute_hvp(
+    def compute_hvp(
         self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-        params: list[torch.nn.Parameter],
-        v: torch.Tensor,
-    ) -> torch.Tensor:
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
         """
-        Compute Hessian-vector product using LiSSA.
+        Compute Hessian-vector product using LiSSA algorithm.
 
-        Returns: H @ v
-        """
-        num_params = v.shape[0]
-        device = v.device
-
-        # Average over multiple independent samples
-        hvp_estimates = []
-        for _ in range(self.num_samples):
-            hvp_estimate = self._lissa_recursion(
-                model, training_data, training_targets, loss, params, v
-            )
-            hvp_estimates.append(hvp_estimate)
-
-        # Average the estimates
-        hvp = torch.stack(hvp_estimates).mean(dim=0)
-        return hvp
-
-    def _lissa_recursion(
-        self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-        params: list[torch.nn.Parameter],
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Perform one LiSSA recursion to estimate H^{-1} @ v, then invert to get H @ v.
-
-        LiSSA approximates: H^{-1} @ v ≈ Σ_{j=0}^{depth} (I - H/scale)^j @ v / scale
-        """
-        device = v.device
-        n_samples = training_data.shape[0]
-
-        # Initialize: h = v / scale
-        h_inv_v = v / self.scale
-
-        # Iteratively compute: h = v/scale + (I - H/scale) @ h
-        for j in range(self.recursion_depth):
-            # Randomly sample a mini-batch
-            indices = torch.randperm(n_samples)[: self.batch_size]
-            batch_data = training_data[indices]
-            batch_targets = training_targets[indices]
-
-            # Compute Hessian-vector product on the batch
-            hvp_batch = self._hvp_exact(
-                model, batch_data, batch_targets, loss, params, h_inv_v
-            )
-
-            # Update: h = v/scale + h - (H @ h)/scale
-            h_inv_v = v / self.scale + h_inv_v - hvp_batch / self.scale
-
-        # Now h_inv_v ≈ H^{-1} @ v
-        # To get H @ v, we need to "invert" this relationship
-        # Since we want H @ v directly, we should instead compute it differently
-        # Let's compute H @ v directly using exact HVP
-        hvp = self._hvp_exact(model, training_data, training_targets, loss, params, v)
-
-        return hvp
-
-    def _hvp_exact(
-        self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-        params: list[torch.nn.Parameter],
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Compute exact Hessian-vector product using double backpropagation.
-
-        Returns: (H + damping * I) @ v
-        """
-        model.zero_grad()
-
-        # Forward pass
-        outputs = model(training_data)
-        loss_value = loss(outputs, training_targets)
-
-        # First backward pass to get gradients
-        grads = torch.autograd.grad(
-            loss_value, params, create_graph=True, retain_graph=True
-        )
-        grad_vec = parameters_to_vector(grads)
-
-        # Compute grad_vec @ v
-        grad_v_product = (grad_vec * v).sum()
-
-        # Second backward pass to get Hessian-vector product
-        hvp_grads = torch.autograd.grad(grad_v_product, params, retain_graph=False)
-        hvp = parameters_to_vector(hvp_grads)
-
-        # Add damping term
-        if self.damping > 0:
-            hvp = hvp + self.damping * v
-
-        return hvp
-
-
-class LiSSAInverse(HessianApproximation):
-    """
-    LiSSA for computing the inverse Hessian approximation.
-
-    This is useful for applications that need H^{-1} directly (e.g., influence functions).
-    """
-
-    def __init__(
-        self,
-        num_samples: int = 1,
-        recursion_depth: int = 5000,
-        scale: float = 10.0,
-        damping: float = 0.01,
-        batch_size: int = 1,
-    ):
-        """
         Args:
-            num_samples: Number of independent LiSSA estimates to average
-            recursion_depth: Number of recursion iterations
-            scale: Scaling factor (should be > largest eigenvalue of H)
-            damping: Damping term (for numerical stability and invertibility)
-            batch_size: Number of samples per HVP computation
+            model: The Flax model.
+            params: Model parameters (PyTree structure).
+            training_data: Input data.
+            training_targets: Target values.
+            loss_fn: Loss function.
+            vector: Vector to multiply with the Hessian.
+
+        Returns:
+            H @ v approximated using LiSSA
         """
-        super().__init__()
-        self.num_samples = num_samples
-        self.recursion_depth = recursion_depth
-        self.scale = scale
-        self.damping = damping
-        self.batch_size = batch_size
+        training_data = jnp.asarray(training_data)
+        training_targets = jnp.asarray(training_targets)
 
-    @override
-    def compute(
-        self,
-        model: ApproximationModel,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-    ):
-        """
-        Compute inverse Hessian approximation using LiSSA.
-
-        Returns: H^{-1} where H is the Hessian (with damping)
-        """
-        model.eval()
-        params = [p for p in model.parameters() if p.requires_grad]
-        num_params = sum(p.numel() for p in params)
-        device = training_data.device
-
-        hessian_inv = torch.zeros(
-            num_params, num_params, device=device, dtype=torch.float64
-        )
-
-        # Compute each column of H^{-1} using standard basis vectors
-        for i in range(num_params):
-            # Create standard basis vector e_i
-            v = torch.zeros(num_params, device=device, dtype=torch.float64)
-            v[i] = 1.0
-
-            # Compute H^{-1} @ v
-            h_inv_v = self._compute_inverse_hvp(
-                model, training_data, training_targets, loss, params, v
-            )
-
-            hessian_inv[:, i] = h_inv_v
-
-        return hessian_inv.to(dtype=torch.float64)
-
-    def _compute_inverse_hvp(
-        self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-        params: list[torch.nn.Parameter],
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Compute inverse Hessian-vector product: H^{-1} @ v
-        """
-        # Average over multiple independent samples
-        ihvp_estimates = []
-        for _ in range(self.num_samples):
-            ihvp_estimate = self._lissa_recursion(
-                model, training_data, training_targets, loss, params, v
-            )
-            ihvp_estimates.append(ihvp_estimate)
-
-        ihvp = torch.stack(ihvp_estimates).mean(dim=0)
-        return ihvp
-
-    def _lissa_recursion(
-        self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-        params: list[torch.nn.Parameter],
-        v: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Perform LiSSA recursion to estimate H^{-1} @ v.
-
-        Uses the update: h_{j+1} = v/scale + (I - H/scale) @ h_j
-        """
-        device = v.device
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
         n_samples = training_data.shape[0]
 
-        # Initialize
-        h_inv_v = v / self.scale
+        # JIT compile single HVP computation on a batch
+        @jax.jit
+        def compute_hvp_batch(p_flat, x_batch, y_batch, v):
+            def get_predictions(x, params_unflat):
+                pred = model.apply(params_unflat, jnp.expand_dims(x, axis=0))
+                if not isinstance(pred, jnp.ndarray):
+                    raise ValueError("Model output is not a JAX array.")
+                return pred.squeeze(0)
 
-        for j in range(self.recursion_depth):
-            # Sample mini-batch
-            indices = torch.randperm(n_samples)[: self.batch_size]
-            batch_data = training_data[indices]
-            batch_targets = training_targets[indices]
+            def batch_loss(p):
+                params_unflat = unravel_fn(p)
+                predictions = jax.vmap(lambda x: get_predictions(x, params_unflat))(
+                    x_batch
+                )
+                return loss_fn(predictions, y_batch)
 
-            # Compute HVP on batch
-            hvp_batch = self._hvp_exact(
-                model, batch_data, batch_targets, loss, params, h_inv_v
-            )
+            # Compute HVP using forward-over-reverse mode
+            _, hvp = jax.jvp(lambda p: jax.grad(batch_loss)(p), (p_flat,), (v,))
+            return hvp
 
-            # Update: h = v/scale + h - (H @ h)/scale
-            h_inv_v = v / self.scale + h_inv_v - hvp_batch / self.scale
+        # Run multiple independent LiSSA estimates
+        rng = jax.random.PRNGKey(0)
+        estimates = []
 
-        return h_inv_v
+        for sample_idx in range(self.num_samples):
+            rng, subkey = jax.random.split(rng)
 
-    def _hvp_exact(
+            # Initialize H_0 = v
+            h_estimate = vector.copy()
+
+            # Perform recursion
+            for j in range(self.recursion_depth):
+                rng, subkey = jax.random.split(rng)
+
+                # Sample a random mini-batch
+                batch_indices = jax.random.choice(
+                    subkey, n_samples, shape=(min(n_samples, 32),), replace=False
+                )
+                x_batch = training_data[batch_indices]
+                y_batch = training_targets[batch_indices]
+
+                # Compute HVP on this batch
+                hvp = compute_hvp_batch(params_flat, x_batch, y_batch, h_estimate)
+
+                # Add damping: (H + damping * I) @ h_estimate = H @ h_estimate + damping * h_estimate
+                hvp = hvp + self.damping * h_estimate
+
+                # LiSSA update: H_j = v + (I - (H + damping*I)/scale) @ H_{j-1}
+                #             = v + H_{j-1} - (H @ H_{j-1} + damping * H_{j-1})/scale
+                h_estimate = vector + h_estimate - hvp / self.scale
+
+            estimates.append(h_estimate)
+
+        # Average all estimates
+        hvp_estimate = jnp.stack(estimates).mean(axis=0)
+
+        return hvp_estimate
+
+    def compute_inverse_hvp(
         self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-        params: list[torch.nn.Parameter],
-        v: torch.Tensor,
-    ) -> torch.Tensor:
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
         """
-        Compute exact Hessian-vector product: (H + damping * I) @ v
+        Compute inverse Hessian-vector product using LiSSA algorithm.
+        This is the primary use case for LiSSA: approximating H^{-1} @ v.
+
+        Args:
+            model: The Flax model.
+            params: Model parameters (PyTree structure).
+            training_data: Input data.
+            training_targets: Target values.
+            loss_fn: Loss function.
+            vector: Vector to multiply with the inverse Hessian.
+
+        Returns:
+            H^{-1} @ v approximated using LiSSA
         """
-        model.zero_grad()
+        training_data = jnp.asarray(training_data)
+        training_targets = jnp.asarray(training_targets)
 
-        # Forward pass
-        outputs = model(training_data)
-        loss_value = loss(outputs, training_targets)
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+        n_samples = training_data.shape[0]
 
-        # First backward: compute gradients
-        grads = torch.autograd.grad(
-            loss_value, params, create_graph=True, retain_graph=True
-        )
-        grad_vec = parameters_to_vector(grads)
+        # JIT compile single HVP computation on a batch
+        @jax.jit
+        def compute_hvp_batch(p_flat, x_batch, y_batch, v):
+            def batch_loss(p):
+                params_unflat = unravel_fn(p)
 
-        # Compute inner product with v
-        grad_v_product = (grad_vec * v).sum()
+                def get_predictions(x, params_unflat):
+                    pred = model.apply(params_unflat, jnp.expand_dims(x, axis=0))
+                    if not isinstance(pred, jnp.ndarray):
+                        raise ValueError("Model output is not a JAX array.")
+                    return pred.squeeze(0)
 
-        # Second backward: compute HVP
-        hvp_grads = torch.autograd.grad(grad_v_product, params, retain_graph=False)
-        hvp = parameters_to_vector(hvp_grads)
+                predictions = jax.vmap(lambda x: get_predictions(x, params_unflat))(
+                    x_batch
+                )
+                return loss_fn(predictions, y_batch)
 
-        # Add damping
-        if self.damping > 0:
-            hvp = hvp + self.damping * v
+            # Compute HVP using forward-over-reverse mode
+            _, hvp = jax.jvp(lambda p: jax.grad(batch_loss)(p), (p_flat,), (v,))
+            return hvp
 
-        return hvp
+        # Run multiple independent LiSSA estimates
+        rng = jax.random.PRNGKey(0)
+        estimates = []
+
+        for sample_idx in range(self.num_samples):
+            rng, subkey = jax.random.split(rng)
+
+            # Initialize H_0 = v
+            h_estimate = vector.copy()
+
+            # Perform recursion for inverse
+            for j in range(self.recursion_depth):
+                rng, subkey = jax.random.split(rng)
+
+                # Sample a random mini-batch
+                batch_indices = jax.random.choice(
+                    subkey, n_samples, shape=(min(n_samples, 32),), replace=False
+                )
+                x_batch = training_data[batch_indices]
+                y_batch = training_targets[batch_indices]
+
+                # Compute HVP on this batch
+                hvp = compute_hvp_batch(params_flat, x_batch, y_batch, h_estimate)
+
+                # Add damping
+                hvp = hvp + self.damping * h_estimate
+
+                # LiSSA update for inverse: H_j = v + (I - (H + damping*I)/scale) @ H_{j-1}
+                h_estimate = vector + h_estimate - hvp / self.scale
+
+            estimates.append(h_estimate)
+
+        # Average all estimates
+        inverse_hvp = jnp.stack(estimates).mean(axis=0)
+
+        return inverse_hvp

@@ -1,11 +1,14 @@
 from __future__ import annotations
+from typing import Any, Callable
+import jax
+import jax.numpy as jnp
+import numpy as np
+from jax import flatten_util
 from typing_extensions import override
-from torch.nn import MSELoss, CrossEntropyLoss
+from functools import partial
 
-import torch
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.models import ApproximationModel
-from torch.nn.utils import parameters_to_vector
+from models.models import ApproximationModel, get_loss_name
 
 
 class GaussNewton(HessianApproximation):
@@ -27,43 +30,37 @@ class GaussNewton(HessianApproximation):
         super().__init__()
 
     @override
-    def compute(
+    def compute_hessian(
         self,
         model: ApproximationModel,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        loss: MSELoss | CrossEntropyLoss,
-    ):
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+    ) -> jnp.ndarray:
         """
         Compute the Generalized Gauss-Newton approximation of the Hessian.
         """
-        model.eval()
-        params = [p for p in model.parameters() if p.requires_grad]
-        num_params = sum(p.numel() for p in params)
-        device = training_data.device
+        training_data = jnp.asarray(training_data)
+        training_targets = jnp.asarray(training_targets)
 
-        if isinstance(loss, MSELoss):
-            return self._compute_mse_gnh(
-                model, training_data, training_targets, params, num_params, device
-            )
-        elif isinstance(loss, CrossEntropyLoss):
+        if get_loss_name(loss_fn) == "cross_entropy":
             return self._compute_crossentropy_gnh(
-                model, training_data, training_targets, params, num_params, device
+                model, params, training_data, training_targets
             )
         else:
-            raise ValueError(f"Unsupported loss type for GGN: {type(loss)}")
+            # Default to MSE/regression
+            return self._compute_mse_gnh(model, params, training_data, training_targets)
 
     def _compute_mse_gnh(
         self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        params: list[torch.nn.Parameter],
-        num_params: int,
-        device: torch.device,
-    ) -> torch.Tensor:
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+    ) -> jnp.ndarray:
         """
-        Compute GGN for MSE loss with reduction='mean' (PyTorch default).
+        Compute GGN for MSE loss with reduction='mean'.
 
         For MSE loss L = (1/n) Σ ||f(x_i) - y_i||²:
         The Hessian of L w.r.t. output f(x_i) is:
@@ -72,52 +69,40 @@ class GaussNewton(HessianApproximation):
         Therefore: H_GGN = (2/n) Σ J_i^T J_i
         where J_i is the Jacobian of f(x_i) w.r.t. parameters
         """
-        gnh = torch.zeros(num_params, num_params, device=device, dtype=torch.float64)
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+        d_out = training_targets.shape[1] if training_targets.ndim > 1 else 1
+
+        # JIT compile the per-sample computation
+        @jax.jit
+        def compute_sample_contribution(p_flat, x_sample):
+            def model_output_fn(p):
+                params_unflat = unravel_fn(p)
+                output = model.apply(params_unflat, jnp.expand_dims(x_sample, axis=0))
+                if not isinstance(output, jnp.ndarray):
+                    raise ValueError("Model output is not a JAX array.")
+                return output.flatten()
+
+            jacobian = jax.jacfwd(model_output_fn)(p_flat)
+            return jacobian.T @ jacobian
+
+        # Vectorized computation over all samples using vmap
+        gnh = jax.vmap(lambda x: compute_sample_contribution(params_flat, x))(
+            training_data
+        ).sum(axis=0)
+
         n_samples = training_data.shape[0]
+        gnh *= 2.0 / (n_samples * d_out)
 
-        for i in range(n_samples):
-            x = training_data[i].unsqueeze(0)
-            output = model(x)
-
-            output_flat = output.view(
-                -1
-            )  # flatten output for multi-dimensional outputs
-
-            for j in range(
-                output_flat.shape[0]
-            ):  # compute Jacobian for each output dimension
-                model.zero_grad()
-
-                # Compute gradient of output[j] w.r.t. parameters
-                grads = torch.autograd.grad(
-                    outputs=output_flat[j],
-                    inputs=params,
-                    retain_graph=True,
-                    create_graph=False,
-                    allow_unused=True,
-                )
-
-                grad_vec = parameters_to_vector(
-                    [
-                        g if g is not None else torch.zeros_like(p)
-                        for g, p in zip(grads, params)
-                    ]
-                )
-
-                gnh += torch.outer(grad_vec, grad_vec)  # Add outer product: J^T J
-
-        gnh *= 2.0 / n_samples  # Scale by 2/n for MSE (assuming reduction='mean')
-        return gnh.to(dtype=torch.float64)
+        numpy_gnh = np.array(gnh)
+        return gnh
 
     def _compute_crossentropy_gnh(
         self,
-        model: torch.nn.Module,
-        training_data: torch.Tensor,
-        training_targets: torch.Tensor,
-        params: list[torch.nn.Parameter],
-        num_params: int,
-        device: torch.device,
-    ) -> torch.Tensor:
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+    ) -> jnp.ndarray:
         """
         Compute GGN for Cross-Entropy loss.
 
@@ -127,44 +112,154 @@ class GaussNewton(HessianApproximation):
 
         H_GGN = (1/n) Σ J_i^T H_L J_i
         """
-        gnh = torch.zeros(num_params, num_params, device=device, dtype=torch.float64)
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+
+        # JIT compile the per-sample computation
+        @jax.jit
+        def compute_sample_contribution(p_flat, x_sample):
+            def logits_fn(p):
+                params_unflat = unravel_fn(p)
+                logits = model.apply(params_unflat, jnp.expand_dims(x_sample, axis=0))
+                if not isinstance(logits, jnp.ndarray):
+                    raise ValueError("Model output is not a JAX array.")
+                return logits.squeeze(0)
+
+            logits = logits_fn(p_flat)
+            probs = jax.nn.softmax(logits, axis=-1)
+
+            jacobian = jax.jacfwd(logits_fn)(p_flat)
+            H_L = jnp.diag(probs) - jnp.outer(probs, probs)
+
+            return jacobian.T @ H_L @ jacobian
+
+        # Vectorized computation over all samples using vmap
+        gnh = jax.vmap(lambda x: compute_sample_contribution(params_flat, x))(
+            training_data
+        ).sum(axis=0)
+
         n_samples = training_data.shape[0]
-
-        for i in range(n_samples):
-            x = training_data[i].unsqueeze(0)
-            logits = model(x).squeeze(0)
-
-            probs = torch.softmax(logits, dim=-1)  # Compute softmax probabilities
-            num_classes = probs.shape[0]
-
-            # Compute Jacobian matrix: J[k, θ] = ∂logit_k/∂θ
-            jacobian_list = []
-            for k in range(num_classes):
-                model.zero_grad()
-                grads = torch.autograd.grad(
-                    outputs=logits[k],
-                    inputs=params,
-                    retain_graph=True,
-                    create_graph=False,
-                    allow_unused=True,
-                )
-
-                grad_vec = parameters_to_vector(
-                    [
-                        g if g is not None else torch.zeros_like(p)
-                        for g, p in zip(grads, params)
-                    ]
-                )
-                jacobian_list.append(grad_vec)
-
-            J = torch.stack(
-                jacobian_list
-            )  # Stack Jacobian matrix: [num_classes, num_params]
-            H_L = torch.diag(probs) - torch.outer(
-                probs, probs
-            )  # Compute H_L = diag(p) - p p^T
-
-            gnh += J.T @ H_L @ J
-
         gnh /= n_samples
-        return gnh.to(dtype=torch.float64)
+        return gnh
+
+    def compute_hvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute the Gauss-Newton-vector product (GNVP).
+
+        Args:
+            model: The Flax model.
+            params: Model parameters (PyTree structure).
+            training_data: Input data.
+            training_targets: Target values.
+            loss_fn: Loss function to determine task type.
+            vector: Vector to multiply with the Gauss-Newton matrix.
+
+        Returns:
+            GNVP result as a 1D array.
+        """
+        training_data = jnp.asarray(training_data)
+        training_targets = jnp.asarray(training_targets)
+
+        if get_loss_name(loss_fn) == "cross_entropy":
+            return self._compute_crossentropy_gnvp(
+                model, params, training_data, training_targets, vector
+            )
+        else:
+            return self._compute_mse_gnvp(
+                model, params, training_data, training_targets, vector
+            )
+
+    def _compute_mse_gnvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute Gauss-Newton-vector product for MSE loss efficiently.
+        GNVP = (2/n) Σ J_i^T @ J_i @ v
+        """
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+        d_out = training_targets.shape[1] if training_targets.ndim > 1 else 1
+
+        # JIT compile the per-sample computation
+        @jax.jit
+        def compute_sample_gnvp(p_flat, x_sample, v):
+            def model_output_fn(p):
+                params_unflat = unravel_fn(p)
+                output = model.apply(params_unflat, jnp.expand_dims(x_sample, axis=0))
+                if not isinstance(output, jnp.ndarray):
+                    raise ValueError("Model output is not a JAX array.")
+                return output.flatten()
+
+            # Use JVP for efficient computation: J @ v
+            _, jvp_result = jax.jvp(model_output_fn, (p_flat,), (v,))
+
+            # Compute J^T @ (J @ v) using VJP
+            vjp_fn = jax.vjp(model_output_fn, p_flat)[1]
+            return vjp_fn(jvp_result)[0]
+
+        # Vectorized computation over all samples using vmap
+        gnvp = jax.vmap(lambda x: compute_sample_gnvp(params_flat, x, vector))(
+            training_data
+        ).sum(axis=0)
+
+        n_samples = training_data.shape[0]
+        gnvp *= 2.0 / (n_samples * d_out)
+        return gnvp
+
+    def _compute_crossentropy_gnvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute Gauss-Newton-vector product for cross-entropy loss efficiently.
+        GNVP = (1/n) Σ J_i^T @ H_L @ J_i @ v
+        """
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+
+        # JIT compile the per-sample computation
+        @jax.jit
+        def compute_sample_gnvp(p_flat, x_sample, v):
+            def logits_fn(p):
+                params_unflat = unravel_fn(p)
+                logits = model.apply(params_unflat, jnp.expand_dims(x_sample, axis=0))
+                if not isinstance(logits, jnp.ndarray):
+                    raise ValueError("Model output is not a JAX array.")
+                return logits.squeeze(0)
+
+            logits = logits_fn(p_flat)
+            probs = jax.nn.softmax(logits, axis=-1)
+            H_L = jnp.diag(probs) - jnp.outer(probs, probs)
+
+            # Use JVP for efficient computation: J @ v
+            _, jvp_result = jax.jvp(logits_fn, (p_flat,), (v,))
+
+            # Compute H_L @ (J @ v)
+            h_jv = H_L @ jvp_result
+
+            # Compute J^T @ (H_L @ J @ v) using VJP
+            vjp_fn = jax.vjp(logits_fn, p_flat)[1]
+            return vjp_fn(h_jv)[0]
+
+        # Vectorized computation over all samples using vmap
+        gnvp = jax.vmap(lambda x: compute_sample_gnvp(params_flat, x, vector))(
+            training_data
+        ).sum(axis=0)
+
+        n_samples = training_data.shape[0]
+        gnvp /= n_samples
+        return gnvp

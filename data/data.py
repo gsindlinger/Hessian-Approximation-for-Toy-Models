@@ -1,46 +1,84 @@
 from abc import ABC, abstractmethod
-from os import name
-from sklearn.discriminant_analysis import StandardScaler
-from sklearn.discriminant_analysis import StandardScaler
 from typing_extensions import override
+from sklearn.preprocessing import StandardScaler
 from sklearn.datasets import make_regression, make_classification
-import torch
-from torch.utils.data import Dataset
+import jax.numpy as jnp
+import numpy as np
 from config.config import (
     DatasetConfig,
     RandomClassificationConfig,
     RandomRegressionConfig,
     UCIDatasetConfig,
 )
+from data.jax_dataloader import JAXDataLoader
 
 
-class AbstractDataset(Dataset, ABC):
+class AbstractDataset(ABC):
+    """Abstract base class for datasets in JAX."""
+
+    data: np.ndarray
+    targets: np.ndarray
+    train_data: np.ndarray | None = None
+    train_targets: np.ndarray | None = None
+    test_data: np.ndarray | None = None
+    test_targets: np.ndarray | None = None
+
     def __init__(self, train_test_split=0.8, transform=None):
         super().__init__()
-        self.train_test_split = train_test_split  # Default split, can be overridden
-        self.transform = transform  # Placeholder for any transformations
+        self.train_test_split = train_test_split
+        self.transform = transform
+
+    def get_train_data(self):
+        if self.train_data is None or self.train_targets is None:
+            raise ValueError("Train data not set. Please call split_dataset() first.")
+        return self.train_data, self.train_targets
+
+    def get_test_data(self):
+        if self.test_data is None or self.test_targets is None:
+            raise ValueError("Test data not set. Please call split_dataset() first.")
+        return self.test_data, self.test_targets
 
     def split_dataset(self):
         """Split dataset into train and test sets. Assumes data to be normalized."""
         split_idx = int(len(self) * self.train_test_split)
-        self.train_dataset = torch.utils.data.Subset(self, range(0, split_idx))
-        self.test_dataset = torch.utils.data.Subset(self, range(split_idx, len(self)))
-        return self.train_dataset, self.test_dataset
 
-    def test_train_to_dataloader(self, batch_size=32, shuffle=True):
-        """Split dataset into train and test sets and return dataloaders. Assumes data to be normalized."""
-        if not hasattr(self, "train_dataset") or not hasattr(self, "test_dataset"):
+        self.train_data = self.data[:split_idx]
+        self.train_targets = self.targets[:split_idx]
+
+        if self.train_test_split < 1.0:
+            self.test_data = self.data[split_idx:]
+            self.test_targets = self.targets[split_idx:]
+        else:
+            self.test_data = None
+            self.test_targets = None
+
+        return (self.train_data, self.train_targets), (
+            self.test_data,
+            self.test_targets,
+        )
+
+    def get_dataloaders(self, batch_size=32, shuffle=True):
+        """
+        Split dataset into train and test sets and return data iterators.
+        Returns tuple of (train_loader, test_loader).
+        """
+        if self.train_data is None or self.train_targets is None:
             self.split_dataset()
 
-        train_loader = torch.utils.data.DataLoader(
-            self.train_dataset, batch_size=batch_size, shuffle=shuffle
+        train_loader = JAXDataLoader(
+            self.train_data, self.train_targets, batch_size=batch_size, shuffle=shuffle
         )
-        if self.train_test_split < 1.0:
-            test_loader = torch.utils.data.DataLoader(
-                self.test_dataset, batch_size=batch_size, shuffle=shuffle
+
+        if self.train_test_split < 1.0 and self.test_data is not None:
+            test_loader = JAXDataLoader(
+                self.test_data,
+                self.test_targets,
+                batch_size=batch_size,
+                shuffle=shuffle,
             )
         else:
             test_loader = None
+
         return train_loader, test_loader
 
     @abstractmethod
@@ -51,13 +89,8 @@ class AbstractDataset(Dataset, ABC):
     def output_dim(self) -> int:
         pass
 
-    @abstractmethod
     def __len__(self) -> int:
-        pass
-
-    @abstractmethod
-    def __getitem__(self, idx) -> tuple[torch.Tensor, torch.Tensor]:
-        pass
+        return len(self.data)
 
 
 def create_dataset(config: DatasetConfig) -> AbstractDataset:
@@ -81,23 +114,17 @@ class RandomRegressionDataset(AbstractDataset):
         self, n_samples, n_features, n_targets, noise, random_state, train_test_split
     ):
         super().__init__(train_test_split=train_test_split)
-        self.data, self.targets = make_regression(
+        data, targets = make_regression(
             n_samples=n_samples,
             n_features=n_features,
             n_targets=n_targets,
             noise=noise,
             random_state=random_state,
         )[:2]
-        self.data = torch.tensor(self.data, dtype=torch.float32)
-        self.targets = torch.tensor(self.targets, dtype=torch.float32).view(-1, 1)
 
-    @override
-    def __len__(self):
-        return len(self.data)
-
-    @override
-    def __getitem__(self, idx):
-        return self.data[idx], self.targets[idx]
+        # Store as numpy arrays first
+        self.data = data.astype(np.float32)
+        self.targets = targets.reshape(-1, 1).astype(np.float32)
 
     @override
     def input_dim(self):
@@ -119,23 +146,17 @@ class RandomClassificationDataset(AbstractDataset):
         train_test_split,
     ):
         super().__init__(train_test_split=train_test_split)
-        self.data, self.targets = make_classification(
+        data, targets = make_classification(
             n_samples=n_samples,
             n_features=n_features,
             n_informative=n_informative,
             n_classes=n_classes,
             random_state=random_state,
         )[:2]
-        self.data = torch.tensor(self.data, dtype=torch.float32)
-        self.targets = torch.tensor(self.targets, dtype=torch.long)
 
-    @override
-    def __len__(self):
-        return len(self.data)
-
-    @override
-    def __getitem__(self, idx):
-        return self.data[idx], self.targets[idx]
+        # Store as numpy arrays
+        self.data = data.astype(np.float32)
+        self.targets = targets.astype(np.int32)
 
     @override
     def input_dim(self):
@@ -143,12 +164,13 @@ class RandomClassificationDataset(AbstractDataset):
 
     @override
     def output_dim(self) -> int:
-        return int(self.targets.max().item() + 1)
+        return int(self.targets.max() + 1)
 
 
 class UCIDataset(AbstractDataset):
     def __init__(self, name: str, train_test_split: float = 0.8):
         super().__init__(train_test_split=train_test_split)
+
         match name:
             case "energy":
                 id = 242
@@ -158,29 +180,18 @@ class UCIDataset(AbstractDataset):
         from ucimlrepo import fetch_ucirepo
 
         dataset = fetch_ucirepo(id=id)
-        X = dataset.data.features  # type: ignore  8 features, i.e. shape of X is pandas.DataFrame (768,8)
-        Y = dataset.data.targets  # type: ignore  2 targets, i.e. shape of Y is pandas.DataFrame (768,2)
+        X = dataset.data.features  # type: ignore
+        Y = dataset.data.targets  # type: ignore
 
+        # Normalize
         scaler_X = StandardScaler()
         X = scaler_X.fit_transform(X)
         scaler_Y = StandardScaler()
         Y = scaler_Y.fit_transform(Y)
 
-        self.data = X
-        self.targets = Y
-
-        self.train_test_split = train_test_split
-
-        self.data = torch.tensor(self.data, dtype=torch.float32)
-        self.targets = torch.tensor(self.targets, dtype=torch.float32)
-
-    @override
-    def __len__(self):
-        return len(self.data)
-
-    @override
-    def __getitem__(self, idx):
-        return self.data[idx], self.targets[idx]
+        # Store as numpy arrays
+        self.data = X.astype(np.float32)
+        self.targets = Y.astype(np.float32)
 
     @override
     def input_dim(self):
