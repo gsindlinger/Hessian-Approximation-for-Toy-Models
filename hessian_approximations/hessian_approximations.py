@@ -31,6 +31,26 @@ def create_hessian(config: Config) -> HessianApproximation:
     return hessian_cls()
 
 
+def create_hessian_by_name(name: str) -> HessianApproximation:
+    from hessian_approximations.exact_hessian_regression import HessianExactRegression
+    from hessian_approximations.fisher_information import FisherInformation
+    from hessian_approximations.gauss_newton import GaussNewton
+    from hessian_approximations.hessian import Hessian
+
+    hessian_map = {
+        "hessian": Hessian,
+        "exact-hessian-regression": HessianExactRegression,
+        "fim": FisherInformation,
+        "gauss-newton": GaussNewton,
+    }
+
+    hessian_cls = hessian_map.get(name)
+    if hessian_cls is None:
+        raise ValueError(f"Unknown Hessian approximation method: {name}")
+
+    return hessian_cls()
+
+
 def hessian_approximation(
     method: HessianApproximation,
     model: ApproximationModel,
