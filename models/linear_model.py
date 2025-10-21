@@ -26,3 +26,25 @@ class LinearModel(ApproximationModel):
         for name, dim, use_bias in config:
             x = nn.Dense(dim, use_bias=use_bias, name=name)(x)
         return x
+
+    @nn.compact
+    def kfac_apply(self, x, collector):
+        from hessian_approximations.kfac.activation_gradient_collector import (
+            layer_wrapper_vjp,
+        )
+
+        """A special apply method for K-FAC that wraps layers by custom VJP."""
+        activations = x
+        config = self._get_layer_config()
+
+        for name, dim, use_bias in config:
+            layer_module = nn.Dense(features=dim, use_bias=use_bias, name=name)
+            layer_params = self.variables["params"][name]
+
+            def pure_apply_fn(p, a, mod=layer_module):
+                return mod.apply({"params": p}, a)
+
+            activations = layer_wrapper_vjp(
+                pure_apply_fn, layer_params, activations, name, collector
+            )
+        return activations
