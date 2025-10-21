@@ -6,7 +6,7 @@ from typing import Any
 import jax.numpy as jnp
 from pyparsing import Callable
 
-from config.config import HessianApproximationConfig
+from config.config import HessianApproximationConfig, HessianName
 from models.base import ApproximationModel
 
 
@@ -17,13 +17,14 @@ def create_hessian(config: HessianApproximationConfig) -> HessianApproximation:
         HessianExactRegression,
     )
     from hessian_approximations.hessian.hessian import Hessian
+    from hessian_approximations.kfac.kfac import KFAC
 
-    """Create Hessian approximation from config."""
     hessian_map = {
-        "hessian": Hessian,
-        "exact-hessian-regression": HessianExactRegression,
-        "fim": FisherInformation,
-        "gauss-newton": GaussNewton,
+        HessianName.HESSIAN: Hessian,
+        HessianName.EXACT_HESSIAN_REGRESSION: HessianExactRegression,
+        HessianName.FIM: FisherInformation,
+        HessianName.GAUSS_NEWTON: GaussNewton,
+        HessianName.KFAC: KFAC,
     }
 
     hessian_cls = hessian_map.get(config.name)
@@ -35,26 +36,16 @@ def create_hessian(config: HessianApproximationConfig) -> HessianApproximation:
     return hessian_cls(**model_kwargs)
 
 
-def create_hessian_by_name(name: str) -> HessianApproximation:
-    from hessian_approximations.fim.fisher_information import FisherInformation
-    from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-    from hessian_approximations.hessian.exact_hessian_regression import (
-        HessianExactRegression,
-    )
-    from hessian_approximations.hessian.hessian import Hessian
-
-    hessian_map = {
-        "hessian": Hessian,
-        "exact-hessian-regression": HessianExactRegression,
-        "fim": FisherInformation,
-        "gauss-newton": GaussNewton,
-    }
-
-    hessian_cls = hessian_map.get(name)
-    if hessian_cls is None:
-        raise ValueError(f"Unknown Hessian approximation method: {name}")
-
-    return hessian_cls()
+def create_hessian_by_name(name: str | HessianName) -> HessianApproximation:
+    if isinstance(name, str):
+        try:
+            name = HessianName(name)
+        except ValueError:
+            raise ValueError(
+                f"Invalid Hessian name: {name}. Must be one of {[n.value for n in HessianName]}"
+            )
+    config = HessianApproximationConfig(name=name)
+    return create_hessian(config)
 
 
 def hessian_approximation(

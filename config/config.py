@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Dict, List, Literal
 
 from simple_parsing import ArgumentParser
@@ -74,13 +75,19 @@ class TrainingConfig:
     loss: Literal["mse", "cross_entropy"] = "mse"  # Loss function
 
 
+class HessianName(str, Enum):
+    EXACT_HESSIAN_REGRESSION = "exact-hessian-regression"
+    HESSIAN = "hessian"
+    FIM = "fim"
+    GAUSS_NEWTON = "gauss-newton"
+    KFAC = "kfac"
+
+
 @dataclass
 class HessianApproximationConfig(ABC):
     """Configuration for Hessian approximation."""
 
-    name: Literal[
-        "exact-hessian-regression", "hessian", "fim", "gauss-newton", "ekfac"
-    ] = "hessian"
+    name: HessianName = HessianName.HESSIAN
 
 
 @dataclass
