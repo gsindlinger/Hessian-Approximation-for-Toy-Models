@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 from abc import ABC
 from dataclasses import dataclass, field
-from typing import Literal, List, Dict
+from typing import Dict, List, Literal
+
 from simple_parsing import ArgumentParser
 
 
@@ -53,6 +55,14 @@ class LinearModelConfig(ModelConfig):
 
 
 @dataclass
+class MLPModelConfig(ModelConfig):
+    name: Literal["mlp"] = "mlp"
+    loss: Literal["mse", "cross_entropy"] = "mse"
+    hidden_dim: List[int] = field(default_factory=list)
+    use_bias: bool = False
+
+
+@dataclass
 class TrainingConfig:
     """Configuration for training."""
 
@@ -68,9 +78,18 @@ class TrainingConfig:
 class HessianApproximationConfig(ABC):
     """Configuration for Hessian approximation."""
 
-    name: Literal["exact-hessian-regression", "hessian", "fim", "gauss-newton"] = (
-        "hessian"
-    )
+    name: Literal[
+        "exact-hessian-regression", "hessian", "fim", "gauss-newton", "ekfac"
+    ] = "hessian"
+
+
+@dataclass
+class KFACConfig(HessianApproximationConfig):
+    name: Literal["kfac"] = "kfac"
+    reload_data: bool = True
+    damping_lambda: float = 0.0
+    use_eigenvalue_correction: bool = True
+    pseudo_target_noise_std: float = 0.1
 
 
 @dataclass
@@ -131,16 +150,17 @@ CONFIGS: Dict[str, Config] = {
     "random_regression": Config(
         dataset=RandomRegressionConfig(
             n_samples=1000,
-            n_features=50,
+            n_features=20,
             n_targets=1,
             noise=20,
             random_state=42,
         ),
-        model=ModelConfig(name="linear", loss="mse"),
+        model=LinearModelConfig(name="linear", loss="mse", hidden_dim=[]),
         training=TrainingConfig(
             epochs=200,
-            lr=0.001,
+            lr=0.01,
             optimizer="sgd",
+            batch_size=100,
             loss="mse",
         ),
         hessian_approximation=HessianApproximationConfig(name="fim"),
@@ -166,19 +186,20 @@ CONFIGS: Dict[str, Config] = {
     "random_classification": Config(
         dataset=RandomClassificationConfig(
             n_samples=1000,
-            n_features=20,
-            n_informative=10,
-            n_classes=3,
+            n_features=10,
+            n_informative=5,
+            n_classes=2,
             random_state=42,
+            train_test_split=1,
         ),
-        model=LinearModelConfig(name="linear", loss="cross_entropy", hidden_dim=[]),
+        model=LinearModelConfig(loss="cross_entropy", hidden_dim=[]),
         training=TrainingConfig(
             epochs=100,
+            batch_size=100,
             lr=0.001,
             optimizer="sgd",
             loss="cross_entropy",
         ),
-        hessian_approximation=HessianApproximationConfig(name="hessian"),
     ),
     "energy": Config(
         dataset=UCIDatasetConfig(
@@ -193,7 +214,6 @@ CONFIGS: Dict[str, Config] = {
             optimizer="sgd",
             loss="mse",
         ),
-        hessian_approximation=HessianApproximationConfig(name="gauss-newton"),
     ),
 }
 

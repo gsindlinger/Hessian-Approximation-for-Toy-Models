@@ -1,16 +1,13 @@
-import jax
-import torch
+import jax.numpy as jnp
+
 from config.config import Config
 from data.data import create_dataset
 from hessian_approximations.hessian_approximations import (
-    create_hessian,
+    create_hessian_by_name,
     hessian_approximation,
-    hessian_vector_product,
 )
-from models.models import create_model, get_loss_fn, mse_loss, train_model
-from utils.utils import PlotUtils
-import jax.numpy as jnp
-from jax import flatten_util
+from models.loss import get_loss_fn
+from models.train import create_model, train_model
 
 
 def create_dataset_and_model(config: Config):
@@ -29,40 +26,24 @@ def train_and_evaluate(config: Config):
 
 
 def main():
-    torch.manual_seed(0)
-
     config = Config.parse_args()
     model, dataset, params = train_and_evaluate(config)
 
-    hessian_method = create_hessian(config)
     train_data, train_targets = dataset.get_train_data()
 
-    # Example of computing full Hessian
-    hessian = hessian_approximation(
-        hessian_method,
-        model,
-        params,
-        jnp.asarray(train_data),
-        jnp.asarray(train_targets),
-        loss=get_loss_fn(config.model.loss),
+    hessian_method = create_hessian_by_name("hessian")
+    loss_fn = get_loss_fn(config.model.loss)
+
+    hessian_matrix = hessian_approximation(
+        method=hessian_method,
+        model=model,
+        parameters=params,
+        test_data=jnp.asarray(train_data),
+        test_targets=jnp.asarray(train_targets),
+        loss=loss_fn,
     )
 
-    # Example of computing Hessian-vector product
-    params_flat, unravel_fn = flatten_util.ravel_pytree(params)
-    hessian_vp = hessian_vector_product(
-        hessian_method,
-        model,
-        params,
-        jnp.asarray(train_data),
-        jnp.asarray(train_targets),
-        loss=get_loss_fn(config.model.loss),
-        vector=jnp.ones_like(params_flat),
-    )
-
-    # convert ndarray to format which is visualizable by data wrangler
-    print(hessian)
-
-    print("Making predictions on the test set...")
+    print("Hessian matrix shape:", hessian_matrix.shape)
 
 
 if __name__ == "__main__":

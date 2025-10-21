@@ -9,6 +9,7 @@ dependencies = [
     "jax>=0.7.2",
     "matplotlib>=3.10.6",
     "optax>=0.2.6",
+    "pytest>=8.4.2",
     "scikit-learn>=1.7.2",
     "simple-parsing>=0.1.7",
     "torch>=2.8.0",

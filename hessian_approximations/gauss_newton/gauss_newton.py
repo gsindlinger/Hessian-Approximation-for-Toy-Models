@@ -1,14 +1,16 @@
 from __future__ import annotations
+
 from typing import Any, Callable
+
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import flatten_util
 from typing_extensions import override
-from functools import partial
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.models import ApproximationModel, get_loss_name
+from models.loss import get_loss_name
+from models.train import ApproximationModel
 
 
 class GaussNewton(HessianApproximation):
@@ -51,6 +53,76 @@ class GaussNewton(HessianApproximation):
         else:
             # Default to MSE/regression
             return self._compute_mse_gnh(model, params, training_data, training_targets)
+
+    @override
+    def compute_hvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute the Gauss-Newton-vector product (GNVP).
+
+        Args:
+            model: The Flax model.
+            params: Model parameters (PyTree structure).
+            training_data: Input data.
+            training_targets: Target values.
+            loss_fn: Loss function to determine task type.
+            vector: Vector to multiply with the Gauss-Newton matrix.
+
+        Returns:
+            GNVP result as a 1D array.
+        """
+        training_data = jnp.asarray(training_data)
+        training_targets = jnp.asarray(training_targets)
+
+        if get_loss_name(loss_fn) == "cross_entropy":
+            return self._compute_crossentropy_gnvp(
+                model, params, training_data, training_targets, vector
+            )
+        else:
+            return self._compute_mse_gnvp(
+                model, params, training_data, training_targets, vector
+            )
+
+    @override
+    def compute_ihvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute the inverse Gauss-Newton-vector product (GNVP).
+
+        Note: This is a placeholder implementation. In practice, computing the
+        inverse GNVP may require iterative methods or approximations.
+
+        Args:
+            model: The Flax model.
+            params: Model parameters (PyTree structure).
+            training_data: Input data.
+            training_targets: Target values.
+            loss_fn: Loss function to determine task type.
+            vector: Vector to multiply with the inverse Gauss-Newton matrix.
+
+        Returns:
+            Inverse GNVP result as a 1D array.
+        """
+        training_data = jnp.asarray(training_data)
+        training_targets = jnp.asarray(training_targets)
+
+        raise NotImplementedError(
+            "Inverse Gauss-Newton-vector product not implemented."
+        )
 
     def _compute_mse_gnh(
         self,
@@ -140,41 +212,6 @@ class GaussNewton(HessianApproximation):
         n_samples = training_data.shape[0]
         gnh /= n_samples
         return gnh
-
-    def compute_hvp(
-        self,
-        model: ApproximationModel,
-        params: Any,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
-        vector: jnp.ndarray,
-    ) -> jnp.ndarray:
-        """
-        Compute the Gauss-Newton-vector product (GNVP).
-
-        Args:
-            model: The Flax model.
-            params: Model parameters (PyTree structure).
-            training_data: Input data.
-            training_targets: Target values.
-            loss_fn: Loss function to determine task type.
-            vector: Vector to multiply with the Gauss-Newton matrix.
-
-        Returns:
-            GNVP result as a 1D array.
-        """
-        training_data = jnp.asarray(training_data)
-        training_targets = jnp.asarray(training_targets)
-
-        if get_loss_name(loss_fn) == "cross_entropy":
-            return self._compute_crossentropy_gnvp(
-                model, params, training_data, training_targets, vector
-            )
-        else:
-            return self._compute_mse_gnvp(
-                model, params, training_data, training_targets, vector
-            )
 
     def _compute_mse_gnvp(
         self,

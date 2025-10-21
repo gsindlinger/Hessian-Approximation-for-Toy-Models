@@ -1,13 +1,14 @@
 from __future__ import annotations
+
 from typing import Any, Callable
+
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import flatten_util
 from typing_extensions import override
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.models import ApproximationModel
+from models.train import ApproximationModel
 
 
 class LiSSA(HessianApproximation):
@@ -63,6 +64,7 @@ class LiSSA(HessianApproximation):
             "if you need the full Hessian matrix."
         )
 
+    @override
     def compute_hvp(
         self,
         model: ApproximationModel,
@@ -150,7 +152,8 @@ class LiSSA(HessianApproximation):
 
         return hvp_estimate
 
-    def compute_inverse_hvp(
+    @override
+    def compute_ihvp(
         self,
         model: ApproximationModel,
         params: Any,

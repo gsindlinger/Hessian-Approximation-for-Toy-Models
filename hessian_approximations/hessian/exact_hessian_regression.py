@@ -1,15 +1,12 @@
 from __future__ import annotations
-from typing import Any, Callable
-from jax.numpy import ndarray
-import numpy as np
-from typing_extensions import override
-from torch.nn import MSELoss, CrossEntropyLoss
 
-import torch
+from typing import Any, Callable
+
 import jax.numpy as jnp
-from jax import flatten_util
+from typing_extensions import override
+
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.models import ApproximationModel
+from models.train import ApproximationModel
 
 
 class HessianExactRegression(HessianApproximation):
@@ -42,45 +39,49 @@ class HessianExactRegression(HessianApproximation):
 
         n_samples, n_features = training_data.shape
         d_out = training_targets.shape[1]
-        ones = jnp.ones((n_samples, 1))
-        X_augmented = jnp.concatenate([ones, training_data], axis=1)
+
+        if model.use_bias:
+            ones = jnp.ones((n_samples, 1))
+            X_augmented = jnp.concatenate([ones, training_data], axis=1)
+            block_size = n_features + 1
+        else:
+            X_augmented = training_data
+            block_size = n_features
 
         # Compute Hessian base block for one output dimension by 2/n * X^T X
         H_block = (2.0 / (n_samples * d_out)) * (X_augmented.T @ X_augmented)
 
-        # Create block-diagonal Hessian with blocks in [w, b] order per output
-        blocks = [H_block for _ in range(training_targets.shape[1])]
-
-        # Create block diagonal matrix
-        block_size = n_features + 1
+        # Create block-diagonal Hessian
         total_size = d_out * block_size
         H_blocked = jnp.zeros((total_size, total_size))
 
-        for i, block in enumerate(blocks):
+        for i in range(d_out):
             start_idx = i * block_size
             end_idx = start_idx + block_size
-            H_blocked = H_blocked.at[start_idx:end_idx, start_idx:end_idx].set(block)
+            H_blocked = H_blocked.at[start_idx:end_idx, start_idx:end_idx].set(H_block)
 
-        # Create permutation to convert from blocked to interleaved ordering to be able to compare to JAX flattening
-        # Blocked: [b_0, w_0_0, w_1_0, ..., b_1, w_0_1, w_1_1, ...]
+        # Create permutation to convert from blocked to interleaved ordering
+        # Blocked: [b_0, w_0_0, w_1_0, ..., b_1, w_0_1, w_1_1, ...] (if use_bias)
+        #       or [w_0_0, w_1_0, ..., w_0_1, w_1_1, ...] (if not use_bias)
         # Interleaved: [b_0, b_1, ..., w_0_0, w_0_1, ..., w_1_0, w_1_1, ...]
+        #           or [w_0_0, w_0_1, ..., w_1_0, w_1_1, ...]
         perm_indices = []
 
-        # First, add all bias indices (first element of each block)
-        for out_dim in range(d_out):
-            perm_indices.append(out_dim * block_size)
+        if model.use_bias:
+            # First, add all bias indices (first element of each block)
+            for out_dim in range(d_out):
+                perm_indices.append(out_dim * block_size)
 
         # Then, add all weight indices for each feature
         for feat_idx in range(n_features):
             for out_dim in range(d_out):
-                perm_indices.append(out_dim * block_size + 1 + feat_idx)
+                offset = 1 if model.use_bias else 0
+                perm_indices.append(out_dim * block_size + offset + feat_idx)
 
         perm_indices = jnp.array(perm_indices)
 
         # Permute rows and columns
         H_interleaved = H_blocked[perm_indices, :][:, perm_indices]
-
-        hessian_numpy = np.asarray(H_interleaved)
 
         return H_interleaved
 
@@ -99,3 +100,19 @@ class HessianExactRegression(HessianApproximation):
         )
         hvp = hessian @ vector
         return hvp
+
+    @override
+    def compute_ihvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        hessian = self.compute_hessian(
+            model, params, training_data, training_targets, loss_fn
+        )
+        ihvp = jnp.linalg.solve(hessian, vector)
+        return ihvp

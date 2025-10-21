@@ -1,23 +1,26 @@
 from __future__ import annotations
-from abc import ABC, abstractmethod
-from dataclasses import field
-import os
-from typing import Callable, Literal, Tuple, Any
-from typing_extensions import override
+
+from functools import partial
+from typing import Any, Callable, Literal, Tuple
+
 import jax
 import jax.numpy as jnp
-from flax import linen as nn
-from flax.training import train_state
 import optax
+from flax.training import train_state
 from tqdm import tqdm
+
 from config.config import Config, TrainingConfig
-from functools import partial
+from models.base import ApproximationModel
+from models.linear_model import LinearModel
+from models.loss import get_loss_fn
+from models.mlp import MLPModel
 
 
 def create_model(config: Config, input_dim: int, output_dim: int) -> ApproximationModel:
     """Create model from config."""
     model_map = {
         "linear": LinearModel,
+        "mlp": MLPModel,
         # Add more models here as you implement them
     }
 
@@ -30,44 +33,11 @@ def create_model(config: Config, input_dim: int, output_dim: int) -> Approximati
     model_kwargs.pop("loss", None)
     model_kwargs.update({"input_dim": input_dim, "output_dim": output_dim})
 
-    assert issubclass(
-        model_cls, ApproximationModel
-    ), "Model must inherit from ApproximationModel"
+    assert issubclass(model_cls, ApproximationModel), (
+        "Model must inherit from ApproximationModel"
+    )
 
     return model_cls(**model_kwargs)
-
-
-@jax.jit
-def mse_loss(pred, target):
-    """MSE loss (JIT compiled)."""
-    return jnp.mean((pred - target) ** 2)
-
-
-@jax.jit
-def cross_entropy_loss(pred, target):
-    """Cross entropy loss (JIT compiled)."""
-    return optax.softmax_cross_entropy_with_integer_labels(pred, target).mean()
-
-
-def get_loss_fn(loss_str: Literal["mse", "cross_entropy"] = "mse") -> Callable:
-    """Return loss function."""
-    match loss_str:
-        case "mse":
-            return mse_loss
-        case "cross_entropy":
-            return cross_entropy_loss
-        case _:
-            raise ValueError(f"Unknown loss function: {loss_str}")
-
-
-def get_loss_name(loss_fn: Callable) -> str:
-    """Return loss function name."""
-    if loss_fn == mse_loss:
-        return "mse"
-    elif loss_fn == cross_entropy_loss:
-        return "cross_entropy"
-    else:
-        return "unknown"
 
 
 def loss_wrapper_flattened(
@@ -175,7 +145,6 @@ def train_model(
             batch_targets = jnp.array(batch_targets)
 
             state, loss_value = train_step(state, batch_data, batch_targets, loss_fn)
-
             running_loss += float(loss_value) * batch_data.shape[0]
             total_samples += batch_data.shape[0]
 
@@ -184,63 +153,14 @@ def train_model(
         if val_loader is not None:
             if (epoch + 1) % 10 == 0 or epoch == 0:
                 val_loss = validate_model(state, val_loader, loss_fn)
-                tqdm.write(f"Epoch {epoch+1} Train Loss: {epoch_loss:.4f}")
-                tqdm.write(f"Epoch {epoch+1} Validation Loss: {val_loss:.4f}")
+                tqdm.write(f"Epoch {epoch + 1} Train Loss: {epoch_loss:.4f}")
+                tqdm.write(f"Epoch {epoch + 1} Validation Loss: {val_loss:.4f}")
 
     # Save checkpoint of the model
     if training_config.save_checkpoint:
-        save_model(model, state.params)
+        model.save_model(state.params)
 
     return model, state.params
-
-
-def save_model(model: ApproximationModel, params: Any):
-    """Save model parameters using orbax for better compatibility."""
-    try:
-        from flax import serialization
-        import pickle
-
-        model_name = model.__class__.__name__
-        os.makedirs("data/checkpoints", exist_ok=True)
-
-        # Use Flax serialization for better handling of PyTrees
-        bytes_output = serialization.to_bytes(params)
-        with open(f"data/checkpoints/{model_name}.msgpack", "wb") as f:
-            f.write(bytes_output)
-    except ImportError:
-        # Fallback to pickle if serialization not available
-        import pickle
-
-        model_name = model.__class__.__name__
-        os.makedirs("data/checkpoints", exist_ok=True)
-        with open(f"data/checkpoints/{model_name}.pkl", "wb") as f:
-            pickle.dump(params, f)
-
-
-def load_model(model: ApproximationModel):
-    """Load model parameters."""
-    model_name = model.__class__.__name__
-
-    # Try msgpack first (Flax serialization)
-    checkpoint_path = f"data/checkpoints/{model_name}.msgpack"
-    if os.path.exists(checkpoint_path):
-        from flax import serialization
-
-        with open(checkpoint_path, "rb") as f:
-            bytes_input = f.read()
-        params = serialization.from_bytes(None, bytes_input)
-        return params
-
-    # Fallback to pickle
-    checkpoint_path = f"data/checkpoints/{model_name}.pkl"
-    if os.path.exists(checkpoint_path):
-        import pickle
-
-        with open(checkpoint_path, "rb") as f:
-            params = pickle.load(f)
-        return params
-
-    return None
 
 
 @jax.jit
@@ -276,44 +196,6 @@ def evaluate(
 
     loss_value = evaluate_jit(model.apply, params, data, targets, loss_fn)
     return float(loss_value)
-
-
-class ApproximationModel(nn.Module):
-    """Base class for approximation models using Flax."""
-
-    input_dim: int
-    output_dim: int
-
-    def get_activation(self, act_str: str):
-        """Get activation function."""
-        match act_str:
-            case "relu":
-                return nn.relu
-            case "tanh":
-                return nn.tanh
-            case _:
-                raise ValueError(f"Unknown activation function: {act_str}")
-
-
-class LinearModel(ApproximationModel):
-    """Linear model with optional hidden layers."""
-
-    hidden_dim: list[int] = field(default_factory=list)
-
-    def setup(self) -> None:
-        if not self.hidden_dim:
-            self.layers = []
-        else:
-            self.layers = [
-                nn.Dense(h, name=f"linear_{i}") for i, h in enumerate(self.hidden_dim)
-            ]
-        self.output_layer = nn.Dense(self.output_dim, name="output")
-
-    def __call__(self, x):
-        for layer in self.layers:
-            x = layer(x)
-        x = self.output_layer(x)
-        return x
 
 
 def initialize_model(model: ApproximationModel, input_shape: int, key=None):

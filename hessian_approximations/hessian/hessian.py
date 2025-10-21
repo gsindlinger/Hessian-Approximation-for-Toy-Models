@@ -1,13 +1,14 @@
 from __future__ import annotations
+
 from typing import Any, Callable
+
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import flatten_util
 from typing_extensions import override
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.models import ApproximationModel, loss_wrapper_flattened
+from models.train import ApproximationModel, loss_wrapper_flattened
 
 
 class Hessian(HessianApproximation):
@@ -70,18 +71,19 @@ class Hessian(HessianApproximation):
         # Important: Flattening structure for linear modules with bias is the following: b, w
         # So for output dim 2, input dim 3, the order is: b1, b2, w1
         params_flat, unravel_fn = flatten_util.ravel_pytree(params)
-        loss_wrapper = lambda p: loss_wrapper_flattened(
-            model, p, unravel_fn, loss_fn, training_data, training_targets
-        )
+
+        def loss_wrapper(p):
+            return loss_wrapper_flattened(
+                model, p, unravel_fn, loss_fn, training_data, training_targets
+            )
 
         # JIT and compute Hessian
         hessian_fn = jax.jit(jax.hessian(loss_wrapper))
         hessian = hessian_fn(params_flat)
 
-        numpy_hessian = np.asarray(hessian)
-
         return jnp.asarray(hessian)
 
+    @override
     def compute_hvp(
         self,
         model: ApproximationModel,
@@ -113,9 +115,11 @@ class Hessian(HessianApproximation):
 
         # Flatten parameters once
         params_flat, unravel_fn = flatten_util.ravel_pytree(params)
-        loss_wrapper = lambda p: loss_wrapper_flattened(
-            model, p, unravel_fn, loss_fn, training_data, training_targets
-        )
+
+        def loss_wrapper(p):
+            return loss_wrapper_flattened(
+                model, p, unravel_fn, loss_fn, training_data, training_targets
+            )
 
         # Use jax.jvp for efficient Hessian-vector product
         _, hvp_result = jax.jvp(
@@ -123,6 +127,52 @@ class Hessian(HessianApproximation):
             (params_flat,),
             (vector,),
         )
-        numpy_hvp = np.asarray(hvp_result)
 
         return jnp.asarray(hvp_result)
+
+    @override
+    def compute_ihvp(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+        vector: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """
+        Compute the inverse Hessian-vector product (IHVP) using JAX's automatic differentiation.
+
+        Args:
+            model: The Flax model.
+            params: Model parameters (PyTree structure).
+            training_data: Input data.
+            training_targets: Target values.
+            loss_fn: Loss function (e.g., mse_loss or cross_entropy_loss).
+            vector: Vector to multiply with the inverse Hessian.
+
+        Returns:
+            IHVP result as a 1D array.
+        """
+        training_data = jnp.asarray(training_data)
+        training_targets = jnp.asarray(training_targets)
+
+        # For debugging purposes
+        index_mapping, total_params = self.get_param_index_mapping(params)
+
+        # Flatten parameters once
+        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+
+        def loss_wrapper(p):
+            return loss_wrapper_flattened(
+                model, p, unravel_fn, loss_fn, training_data, training_targets
+            )
+
+        # Compute Hessian
+        hessian_fn = jax.jit(jax.hessian(loss_wrapper))
+        hessian = hessian_fn(params_flat)
+
+        # Solve H x = v for x
+        ihvp_result = jnp.linalg.solve(hessian, vector)
+
+        return jnp.asarray(ihvp_result)
