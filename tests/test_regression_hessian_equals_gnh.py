@@ -8,7 +8,7 @@ from config.config import (
     TrainingConfig,
     UCIDatasetConfig,
 )
-from hessian_approximations.hessian_approximations import (
+from hessian_approximations.factory import (
     create_hessian_by_name,
     hessian_approximation,
 )
@@ -144,7 +144,7 @@ class TestHessianApproximations:
 
         for name1, name2 in comparisons:
             diff = jnp.linalg.norm(hessians[name1] - hessians[name2], "fro")
-            assert diff < 1e-3, (
+            assert diff < 1e-4, (
                 f"Frobenius norm difference between {name1} and {name2} "
                 f"is too large: {diff}"
             )

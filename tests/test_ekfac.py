@@ -13,12 +13,12 @@ from config.config import (
     TrainingConfig,
 )
 from data.data import AbstractDataset
-from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.hessian_approximations import (
+from hessian_approximations.factory import (
     create_hessian_by_name,
     hessian_approximation,
 )
+from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
+from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC
 from main import train_and_evaluate
 from models.train import ApproximationModel, get_loss_fn

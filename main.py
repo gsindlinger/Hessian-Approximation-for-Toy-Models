@@ -2,7 +2,7 @@ import jax.numpy as jnp
 
 from config.config import Config
 from data.data import create_dataset
-from hessian_approximations.hessian_approximations import (
+from hessian_approximations.factory import (
     create_hessian_by_name,
     hessian_approximation,
 )
