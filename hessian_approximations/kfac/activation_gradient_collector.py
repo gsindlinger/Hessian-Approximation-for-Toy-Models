@@ -1,22 +1,14 @@
+import os
+import pickle
 from dataclasses import dataclass
 from functools import partial
-from typing import Dict, Tuple
+from typing import Callable, Dict, Tuple
 
 import jax
 import jax.numpy as jnp
 
+from hessian_approximations.kfac.layer_components import LayerComponents
 from models.train import ApproximationModel
-
-
-@dataclass
-class LayerComponents:
-    """Container for layer-wise activations and gradients."""
-
-    activations: Dict[str, jnp.ndarray]
-    gradients: Dict[str, jnp.ndarray]
-
-    def __bool__(self):
-        return bool(self.activations) and bool(self.gradients)
 
 
 @dataclass
@@ -28,11 +20,9 @@ class ActivationGradientCollector:
     """
 
     def __init__(self):
-        self.captured_data: Dict[
-            str, Tuple[jnp.ndarray, jnp.ndarray]
-        ] = {}  # layer_name -> (activations, gradients)
+        self.captured_data: LayerComponents = LayerComponents()
 
-    def add(self, layer_name: str, data: Tuple[jnp.ndarray, jnp.ndarray]):
+    def add(self, layer_name: str, data: Tuple[jnp.ndarray, jnp.ndarray]) -> None:
         """
         Store captured data for a layer.
 
@@ -42,12 +32,10 @@ class ActivationGradientCollector:
         """
         self.captured_data[layer_name] = data
 
-    def load_from_disk(self, model: ApproximationModel):
+    def load_from_disk(self, model: ApproximationModel) -> None:
         """
         Load previously captured data from disk.
         """
-        import os
-        import pickle
 
         model_name = model.__class__.__name__
         data_path = f"data/{model_name}/activations_gradients.pkl"
@@ -58,12 +46,10 @@ class ActivationGradientCollector:
         else:
             raise FileNotFoundError(f"No captured data file found at {data_path}")
 
-    def save_to_disk(self, model: ApproximationModel):
+    def save_to_disk(self, model: ApproximationModel) -> None:
         """
         Save captured data to disk for future use.
         """
-        import os
-        import pickle
 
         model_name = model.__class__.__name__
         os.makedirs(f"data/{model_name}", exist_ok=True)
@@ -77,7 +63,13 @@ class ActivationGradientCollector:
 # See application in kfac_apply method of ApproximationModel
 # Most important part establishing hook in JAX's autodiff
 @partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4))
-def layer_wrapper_vjp(pure_apply_fn, params, x, name, collector):
+def layer_wrapper_vjp(
+    pure_apply_fn: Callable,
+    params: Dict,
+    x: jnp.ndarray,
+    name: str,
+    collector: ActivationGradientCollector,
+):
     """
     Custom VJP wrapper for capturing activations and gradients.
 
@@ -94,7 +86,13 @@ def layer_wrapper_vjp(pure_apply_fn, params, x, name, collector):
     return pure_apply_fn(params, x)
 
 
-def layer_wrapper_fwd(pure_apply_fn, params, x, name, collector):
+def layer_wrapper_fwd(
+    pure_apply_fn: Callable,
+    params: Dict,
+    x: jnp.ndarray,
+    name: str,
+    collector: ActivationGradientCollector,
+) -> Tuple[jnp.ndarray, Tuple[jnp.ndarray, Dict]]:
     """
     Forward pass: compute output and save residuals for backward pass.
 
@@ -105,7 +103,13 @@ def layer_wrapper_fwd(pure_apply_fn, params, x, name, collector):
     return output, residuals
 
 
-def layer_wrapper_bwd(pure_apply_fn, name, collector, residuals, g):
+def layer_wrapper_bwd(
+    pure_apply_fn: Callable,
+    name: str,
+    collector: ActivationGradientCollector,
+    residuals: Tuple[jnp.ndarray, Dict],
+    g: jnp.ndarray,
+) -> Tuple[Dict, jnp.ndarray]:
     """
     Backward pass: capture data and compute gradients.
 

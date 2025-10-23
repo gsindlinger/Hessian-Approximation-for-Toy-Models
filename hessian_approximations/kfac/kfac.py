@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import pickle
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Literal
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from scipy.linalg import block_diag
 from typing_extensions import override
 
@@ -13,8 +13,8 @@ from config.config import KFACConfig
 from hessian_approximations.hessian_approximations import HessianApproximation
 from hessian_approximations.kfac.activation_gradient_collector import (
     ActivationGradientCollector,
-    LayerComponents,
 )
+from hessian_approximations.kfac.layer_components import LayerComponents
 from models.loss import get_loss_name
 from models.train import ApproximationModel
 
@@ -38,8 +38,8 @@ class KFAC(HessianApproximation):
         self.collector = ActivationGradientCollector()
 
         # Core components
-        self.covariances = LayerComponents({}, {})
-        self.eigenvectors = LayerComponents({}, {})
+        self.covariances = LayerComponents()
+        self.eigenvectors = LayerComponents()
         self.eigenvalue_corrections: Dict[str, jnp.ndarray] = {}
 
     def get_sample_size(self) -> int:
@@ -72,7 +72,6 @@ class KFAC(HessianApproximation):
             )
 
         hessian_layers = self._compute_layer_hessians(params)
-
         # Combine layer Hessians into full block-diagonal Hessian
         full_hessian = block_diag(*[jnp.asarray(H) for H in hessian_layers.values()])
         return jnp.array(full_hessian)
@@ -133,11 +132,11 @@ class KFAC(HessianApproximation):
         )
 
     def _load_from_disk(self, model: ApproximationModel) -> None:
-        """Load all EKFAC components from disk."""
-        self.load_covariances_from_disk(model)
-        self.eigenvectors = self.storage.load_eigenvectors()
+        """Load all (E)KFAC components from disk."""
+        self.load_covariances_from_disk()
         if self.config.use_eigenvalue_correction:
-            self.compute_eigenvalue_corrections()
+            self.load_eigenvectors_from_disk()
+            self.load_eigenvalue_corrections_from_disk()
 
     def _compute_from_scratch(
         self,
@@ -147,13 +146,15 @@ class KFAC(HessianApproximation):
         training_targets: jnp.ndarray,
         loss_fn: Callable,
     ) -> None:
-        """Compute all EKFAC components from scratch."""
+        """Compute all (E)KFAC components from scratch."""
         self.compute_covariances(
             model, params, training_data, training_targets, loss_fn
         )
-        self.compute_eigenvectors_and_eigenvalues()
         if self.config.use_eigenvalue_correction:
-            self.compute_eigenvalue_corrections()
+            self.compute_eigenvectors()
+            self.compute_eigenvalue_corrections(
+                model, params, training_data, training_targets, loss_fn
+            )
 
     def compute_covariances(
         self,
@@ -162,58 +163,24 @@ class KFAC(HessianApproximation):
         training_data: jnp.ndarray,
         targets: jnp.ndarray,
         loss_fn: Callable,
-    ) -> LayerComponents:
+    ):
         """
         Compute A and G covariance matrices for each layer.
-
         Performs a forward-backward pass to collect activations and gradients,
         then computes their covariance matrices.
         """
 
-        def loss_fn_for_grad(p):
-            predictions = model.apply(
-                p, training_data, self.collector, method=model.kfac_apply
-            )
-            # Use sum reduction to avoid prematurely averaging gradients
-            return loss_fn(predictions, targets, reduction="sum")
-
-        _ = jax.value_and_grad(loss_fn_for_grad)(params)
-        self.collector.save_to_disk(model)
-
-        self.covariances = self._compute_covariances_from_collected_data(
-            use_bias=model.use_bias
+        self._process_multiple_batches_collector(
+            model,
+            params,
+            training_data,
+            targets,
+            loss_fn,
+            compute_method="covariance",
         )
-        return self.covariances
+        self.storage.save_covariances(self.covariances)
 
-    def _compute_covariances_from_collected_data(
-        self, use_bias: bool = False
-    ) -> LayerComponents:
-        """
-        Convert raw captured (activations, gradients) to A and G covariance matrices.
-
-        For each layer:
-        - A = (1/N) * a^T @ a  (optionally with bias term)
-        - G = (1/N) * g^T @ g
-        """
-        if not self.collector.captured_data:
-            raise ValueError("No captured data. Run a forward-backward pass first.")
-
-        A_matrices = {}
-        G_matrices = {}
-        sample_size = self.get_sample_size()
-
-        for layer_name, (a, g) in self.collector.captured_data.items():
-            if use_bias:
-                batch_size = a.shape[0]
-                a = jnp.concatenate([a, jnp.ones((batch_size, 1))], axis=1)
-
-            # Compute covariance matrices as expectations
-            A_matrices[layer_name] = (a.mT @ a) / sample_size
-            G_matrices[layer_name] = (g.mT @ g) / sample_size
-
-        return LayerComponents(A_matrices, G_matrices)
-
-    def compute_eigenvectors_and_eigenvalues(self) -> None:
+    def compute_eigenvectors(self) -> None:
         """Compute eigenvectors of the covariance matrices A and G for each layer."""
         if not self.covariances:
             raise ValueError(
@@ -227,16 +194,27 @@ class KFAC(HessianApproximation):
             A = self.covariances.activations[layer_name]
             G = self.covariances.gradients[layer_name]
 
+            # Ensure numerical stability by using float64 for eigen decomposition
+            A = A.astype(jnp.float64)
+            G = G.astype(jnp.float64)
+
             _, eigvecs_A = jnp.linalg.eigh(A)
             _, eigvecs_G = jnp.linalg.eigh(G)
 
-            activation_eigvecs[layer_name] = eigvecs_A
-            gradient_eigvecs[layer_name] = eigvecs_G
+            activation_eigvecs[layer_name] = eigvecs_A.astype(jnp.float32)
+            gradient_eigvecs[layer_name] = eigvecs_G.astype(jnp.float32)
 
         self.eigenvectors = LayerComponents(activation_eigvecs, gradient_eigvecs)
         self.storage.save_eigenvectors(self.eigenvectors)
 
-    def compute_eigenvalue_corrections(self) -> None:
+    def compute_eigenvalue_corrections(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        loss_fn: Callable,
+    ) -> None:
         """
         Compute eigenvalue corrections for each layer.
 
@@ -252,23 +230,162 @@ class KFAC(HessianApproximation):
                 "Eigenvectors not computed yet. Run compute_eigenvectors_and_eigenvalues first."
             )
 
-        self.eigenvalue_corrections = {}
-
-        for layer_name, (a, g) in self.collector.captured_data.items():
-            Q_A = self.eigenvectors.activations[layer_name]
-            Q_G = self.eigenvectors.gradients[layer_name]
-
-            # Project onto eigenbases
-            g_tilde = jnp.einsum("oi, ni -> no", Q_G.T, g)  # [N, O]
-            a_tilde = jnp.einsum("ij, nj -> ni", Q_A.T, a)  # [N, I]
-
-            # Compute outer product and average
-            outer = jnp.einsum("no, ni -> noi", g_tilde, a_tilde)  # [N, O, I]
-            correction = (outer**2).mean(axis=0) + self.config.damping_lambda  # [O, I]
-
-            self.eigenvalue_corrections[layer_name] = correction
-
+        self._process_multiple_batches_collector(
+            model,
+            params,
+            training_data,
+            training_targets,
+            loss_fn,
+            compute_method="eigenvalue_correction",
+        )
         self.storage.save_eigenvalue_corrections(self.eigenvalue_corrections)
+
+    def covariance(self, input: jnp.ndarray) -> jnp.ndarray:
+        """
+        Compute covariance matrix for given input.
+
+        For each layer:
+        - A = (1/N) * a^T @ a
+        - G = (1/N) * g^T @ g
+        """
+        return input.mT @ input
+
+    def eigenvalue_correction(
+        self,
+        layer_name: str,
+        activations: jnp.ndarray,
+        gradients: jnp.ndarray,
+    ) -> None:
+        """Compute eigenvalue correction for a given layer."""
+        Q_A = self.eigenvectors.activations[layer_name]
+        Q_G = self.eigenvectors.gradients[layer_name]
+
+        g_tilde = jnp.einsum("oi, ni -> no", Q_G.T, gradients)  # [N, O]
+        a_tilde = jnp.einsum("ij, nj -> ni", Q_A.T, activations)  # [N, I]
+
+        # Compute outer product and average
+        outer = jnp.einsum("no, ni -> noi", g_tilde, a_tilde)  # [N, O, I]
+        correction = (outer**2).sum(
+            axis=0
+        )  # [O, I] (averaging is done by the calling method)
+
+        self._accumulate_data(self.eigenvalue_corrections, layer_name, correction)
+
+    def _process_multiple_batches_collector(
+        self,
+        model: ApproximationModel,
+        params: Any,
+        training_data: jnp.ndarray,
+        targets: jnp.ndarray,
+        loss_fn: Callable,
+        compute_method: Literal["covariance", "eigenvalue_correction"],
+    ):
+        """
+        Process data in batches to collect activations and gradients and apply some function to it.
+        So far it is used to compute covariances of the activations and preactivation gradients, as well as computing eigenvalue corrections.
+        """
+
+        def loss_fn_for_grad(p, training_data, targets):
+            predictions = model.apply(
+                p, training_data, self.collector, method=model.kfac_apply
+            )
+            # Use sum reduction to avoid prematurely averaging gradients
+            return loss_fn(predictions, targets, reduction="sum")
+
+        # Optionally generate pseudo-targets for true Fisher computation
+        if self.config.use_pseudo_targets:
+            targets = self.generate_pseudo_targets(
+                model, params, training_data, loss_fn
+            )
+
+        # Process all data in batches
+        n_samples = training_data.shape[0]
+        effective_batch_size = (
+            self.config.batch_size if self.config.batch_size is not None else n_samples
+        )
+
+        for start in range(0, n_samples, effective_batch_size):
+            end = min(start + effective_batch_size, n_samples)
+            batch_data = training_data[start:end]
+            batch_targets = targets[start:end]
+            _ = jax.value_and_grad(loss_fn_for_grad)(params, batch_data, batch_targets)
+            self._process_single_batch_collector(
+                end - start,
+                compute_method,
+                model.use_bias,
+            )
+
+        if compute_method == "covariance":
+            # Average covariances over all samples
+            for layer_name in self.covariances.activations.keys():
+                self.covariances.activations[layer_name] /= n_samples
+                self.covariances.gradients[layer_name] /= n_samples
+        if compute_method == "eigenvalue_correction":
+            # Average eigenvalue corrections over all samples and add damping
+            for layer_name in self.eigenvalue_corrections.keys():
+                self.eigenvalue_corrections[layer_name] = (
+                    self.eigenvalue_corrections[layer_name] / n_samples
+                ) + jnp.ones_like(
+                    self.eigenvalue_corrections[layer_name]
+                ) * self.config.damping_lambda
+
+    def _process_single_batch_collector(
+        self,
+        batch_size,
+        compute_method: Literal["covariance", "eigenvalue_correction"],
+        use_bias: bool = False,
+    ):
+        """
+        Process a batch of activation and gradient data. Compute and accumulate their covariances / eigenvalue corrections.
+        """
+        for layer_name, (a, g) in self.collector.captured_data.items():
+            if use_bias:
+                batch_size = a.shape[0]
+                a = jnp.concatenate([a, jnp.ones((batch_size, 1))], axis=1)
+
+            if compute_method == "covariance":
+                # Compute running covariance / eigenvalue correction by accumulation
+                self._accumulate_covariances(layer_name, a, g)
+
+            elif compute_method == "eigenvalue_correction":
+                self._accumulate_eigenvalue_corrections(layer_name, a, g)
+            else:
+                raise ValueError(f"Unknown compute method: {compute_method}")
+
+    def _accumulate_data(
+        self, store: Dict, key: str, batch_covariance: jnp.ndarray
+    ) -> None:
+        if key in store:
+            store[key] += batch_covariance
+        else:
+            store[key] = batch_covariance
+
+    def _accumulate_covariances(
+        self,
+        layer_name: str,
+        activations: jnp.ndarray,
+        gradients: jnp.ndarray,
+    ):
+        """Accumulate covariance matrices for a given layer."""
+        self._accumulate_data(
+            self.covariances.activations,
+            layer_name,
+            self.covariance(activations),
+        )
+        self._accumulate_data(
+            self.covariances.gradients,
+            layer_name,
+            self.covariance(gradients),
+        )
+
+    def _accumulate_eigenvalue_corrections(
+        self,
+        layer_name: str,
+        activations: jnp.ndarray,
+        gradients: jnp.ndarray,
+    ):
+        """Accumulate eigenvalue corrections for a given layer."""
+        self.eigenvalue_correction(layer_name, activations, gradients)
 
     def _compute_layer_hessians(self, params: Any) -> Dict[str, jnp.ndarray]:
         """Compute Hessian approximation for each layer."""
@@ -375,54 +492,78 @@ class KFAC(HessianApproximation):
         )
         return preds + noise
 
-    def load_covariances_from_disk(self, model: ApproximationModel) -> LayerComponents:
+    def load_covariances_from_disk(self) -> None:
         """Load previously computed covariances from disk."""
-        self.collector.load_from_disk(model)
-        self.covariances = self._compute_covariances_from_collected_data(
-            use_bias=model.use_bias
-        )
-        return self.covariances
+        self.covariances = self.storage.load_covariances()
+
+    def load_eigenvectors_from_disk(self) -> None:
+        """Load previously computed eigenvectors from disk."""
+        self.eigenvectors = self.storage.load_eigenvectors()
+
+    def load_eigenvalue_corrections_from_disk(self) -> None:
+        """Load previously computed eigenvalue corrections from disk."""
+        self.eigenvalue_corrections = self.storage.load_eigenvalue_corrections()
 
 
 class KFACStorage:
-    """Handles all disk I/O operations for EKFAC components."""
+    """Handles all disk I/O operations for (E)KFAC components using NumPy's npz format."""
 
-    def __init__(self, model_name: str, base_path: str = "data"):
-        self.model_name = model_name
+    def __init__(self, model_name: str, base_path: str | Path = "data"):
         self.base_path = Path(base_path) / model_name
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     def _get_path(self, filename: str) -> Path:
         return self.base_path / filename
 
-    def save_eigenvectors(self, eigenvectors: LayerComponents) -> None:
-        """Save eigenvectors to disk."""
-        path = self._get_path("eigenvectors_eigenvalues.pkl")
-        with open(path, "wb") as f:
-            pickle.dump((eigenvectors.activations, eigenvectors.gradients), f)
+    def _save_layer_components(
+        self, filename: str, components: LayerComponents
+    ) -> None:
+        path = self._get_path(filename)
+        save_dict = {
+            f"{prefix}_{name}": np.asarray(arr)
+            for prefix, group in (
+                ("activations", components.activations),
+                ("gradients", components.gradients),
+            )
+            for name, arr in group.items()
+        }
+        np.savez_compressed(path, **save_dict)  # type: ignore
 
-    def load_eigenvectors(self) -> LayerComponents:
-        """Load eigenvectors from disk."""
-        path = self._get_path("eigenvectors_eigenvalues.pkl")
+    def _load_layer_components(self, filename: str) -> LayerComponents:
+        path = self._get_path(filename)
         if not path.exists():
-            raise FileNotFoundError(f"No eigenvector file found at {path}")
-
-        with open(path, "rb") as f:
-            activations, gradients = pickle.load(f)
+            raise FileNotFoundError(f"No file found at {path}")
+        data = np.load(path, allow_pickle=False)
+        activations, gradients = {}, {}
+        for key in data.files:
+            prefix, name = key.split("_", 1)
+            (activations if prefix == "activations" else gradients)[name] = jnp.array(
+                data[key]
+            )
         return LayerComponents(activations, gradients)
 
+    def save_covariances(self, covariances: LayerComponents) -> None:
+        self._save_layer_components("covariances.npz", covariances)
+
+    def load_covariances(self) -> LayerComponents:
+        return self._load_layer_components("covariances.npz")
+
+    def save_eigenvectors(self, eigenvectors: LayerComponents) -> None:
+        self._save_layer_components("eigenvectors.npz", eigenvectors)
+
+    def load_eigenvectors(self) -> LayerComponents:
+        return self._load_layer_components("eigenvectors.npz")
+
     def save_eigenvalue_corrections(self, corrections: Dict[str, jnp.ndarray]) -> None:
-        """Save eigenvalue corrections to disk."""
-        path = self._get_path("eigenvalue_corrections.pkl")
-        with open(path, "wb") as f:
-            pickle.dump(corrections, f)
+        path = self._get_path("eigenvalue_corrections.npz")
+        np.savez_compressed(
+            path,
+            **{name: np.asarray(arr) for name, arr in corrections.items()},  # type: ignore
+        )
 
     def load_eigenvalue_corrections(self) -> Dict[str, jnp.ndarray]:
-        """Load eigenvalue corrections from disk."""
-        path = self._get_path("eigenvalue_corrections.pkl")
+        path = self._get_path("eigenvalue_corrections.npz")
         if not path.exists():
             raise FileNotFoundError(f"No eigenvalue correction file found at {path}")
-
-        with open(path, "rb") as f:
-            corrections = pickle.load(f)
-        return corrections
+        data = np.load(path, allow_pickle=False)
+        return {name: jnp.array(data[name]) for name in data.files}

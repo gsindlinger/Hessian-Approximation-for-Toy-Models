@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Literal
 
+import jax
 from simple_parsing import ArgumentParser
+
+jax.config.update("jax_enable_x64", True)
 
 
 @dataclass
@@ -96,7 +99,9 @@ class KFACConfig(HessianApproximationConfig):
     reload_data: bool = True
     damping_lambda: float = 0.0
     use_eigenvalue_correction: bool = True
+    use_pseudo_targets: bool = False
     pseudo_target_noise_std: float = 0.1
+    batch_size: int | None = None
 
 
 @dataclass
