@@ -1,4 +1,5 @@
 import os
+from abc import abstractmethod
 from typing import Any
 
 from flax import linen as nn
@@ -66,3 +67,8 @@ class ApproximationModel(nn.Module):
             return params
 
         return None
+
+    @abstractmethod
+    def kfac_apply(self, x, collector) -> Any:
+        """Special apply method for K-FAC that wraps layers by custom VJP."""
+        pass

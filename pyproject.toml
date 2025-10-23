@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "flax>=0.12.0",
     "jax>=0.7.2",
+    "jaxtyping>=0.3.3",
     "matplotlib>=3.10.6",
     "optax>=0.2.6",
     "pytest>=8.4.2",

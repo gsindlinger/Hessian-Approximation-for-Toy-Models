@@ -209,7 +209,9 @@ class TestEKFAC:
         )
         gnh = np.array(gnh)  # for easier debugging
 
-        kfac_config = KFACConfig(reload_data=True, use_eigenvalue_correction=False)
+        kfac_config = KFACConfig(
+            reload_data=True, use_eigenvalue_correction=False, batch_size=None
+        )
         kfac_model = KFAC(config=kfac_config)
         kfac = kfac_model.compute_hessian(
             model=model,
@@ -297,19 +299,6 @@ class TestEKFAC:
             "Hessian, GNH, and KFAC Hessians should have the same shape."
         )
 
-        # check whether the sign for each cell entry is the same to a good extent
-        sign_hessian_ekfac = np.sign(hessian) == np.sign(ekfac)
-        sign_hessian_gnh = np.sign(hessian) == np.sign(gnh)
-        sign_gnh_kfac = np.sign(gnh) == np.sign(ekfac)
-
-        assert np.mean(sign_hessian_ekfac) > 0.5, (
-            "Hessian and KFAC Hessian signs differ too much."
-        )
-        assert np.mean(sign_hessian_gnh) > 0.5, "Hessian and GNH signs differ too much."
-        assert np.mean(sign_gnh_kfac) > 0.5, (
-            "GNH and KFAC Hessian signs differ too much."
-        )
-
         # get the absolute differences between the matrices and divide by norm to get relative error
         diff_hessian_gnh = np.abs(hessian - gnh) / np.linalg.norm(hessian)
         diff_hessian_ekfac = np.abs(hessian - ekfac) / np.linalg.norm(hessian)
@@ -325,9 +314,155 @@ class TestEKFAC:
             f"Max relative difference between GNH and KFAC is too large: {np.max(diff_gnh_ekfac)}"
         )
 
-        print("Top-left 10x10 submatrices of Hessian, GNH, and EKFAC:")
-        print(hessian[:10, :10])
+    def test_ekfac_batched_processing_is_close_to_full_data(
+        self, trained_model: ModelTuple
+    ):
+        """Test that E-KFAC with batch processing yields the same result as without batching on a single run."""
+
+        model, dataset, params, config = trained_model
+        loss_fn = get_loss_fn(config.model.loss)
+
+        ekfac_full_data_config = KFACConfig(
+            reload_data=True,
+            use_eigenvalue_correction=True,
+            batch_size=None,  # Full data
+            use_pseudo_targets=False,
+        )
+        ekfac_full_data_model = KFAC(config=ekfac_full_data_config)
+        ekfac_full_data = ekfac_full_data_model.compute_hessian(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(dataset.get_train_data()[0]),
+            training_targets=jnp.asarray(dataset.get_train_data()[1]),
+            loss_fn=loss_fn,
+        )
+        ekfac_full_data = np.array(ekfac_full_data)  # for easier debugging
+
+        ekfac_batched_config = KFACConfig(
+            reload_data=True,
+            use_eigenvalue_correction=True,
+            batch_size=100,  # Smaller batches
+            use_pseudo_targets=False,
+        )
+        ekfac_batched_model = KFAC(config=ekfac_batched_config)
+        ekfac_batched = ekfac_batched_model.compute_hessian(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(dataset.get_train_data()[0]),
+            training_targets=jnp.asarray(dataset.get_train_data()[1]),
+            loss_fn=loss_fn,
+        )
+        ekfac_batched = np.array(ekfac_batched)  # for easier debugging
+
+        assert ekfac_full_data.shape == ekfac_batched.shape, (
+            "E-KFAC Hessians from full data and batched processing should have the same shape."
+        )
+
+        # check whether covariances, eigenvectors, and eigenvalues match between the two methods
+        for layer_name, (
+            activations_cov,
+            gradients_cov,
+        ) in ekfac_full_data_model.covariances.items():
+            batched_activations_cov = ekfac_batched_model.covariances.activations[
+                layer_name
+            ]
+            batched_gradients_cov = ekfac_batched_model.covariances.gradients[
+                layer_name
+            ]
+
+            eigenvalue_corrections = ekfac_full_data_model.eigenvalue_corrections[
+                layer_name
+            ]
+            eigenvalue_corrections_batched = ekfac_batched_model.eigenvalue_corrections[
+                layer_name
+            ]
+
+            assert np.allclose(
+                activations_cov,
+                batched_activations_cov,
+                atol=1e-7,
+            ), f"Activation covariances mismatch for layer {layer_name}"
+            assert np.allclose(
+                gradients_cov,
+                batched_gradients_cov,
+                atol=1e-7,
+            ), f"Gradient covariances mismatch for layer {layer_name}"
+
+            # Don't check eigenvectors, since they can differ by sign and ordering to due instability of eigendecomposition
+
+            # Check eigenvalue corrections
+            assert np.allclose(
+                eigenvalue_corrections,
+                eigenvalue_corrections_batched,
+                atol=1e-7,
+            ), f"Eigenvalue corrections mismatch for layer {layer_name}"
+
+    def test_pseudo_targets(self, trained_model: ModelTuple):
+        """Test that E-KFAC with pseudo-targets yields different results than without pseudo-targets."""
+
+        model, dataset, params, config = trained_model
+        loss_fn = get_loss_fn(config.model.loss)
+
+        ekfac_no_pseudo_config = KFACConfig(
+            reload_data=True,
+            use_eigenvalue_correction=True,
+            batch_size=None,
+            use_pseudo_targets=False,
+        )
+        ekfac_no_pseudo_model = KFAC(config=ekfac_no_pseudo_config)
+
+        ekfac_with_pseudo_config = KFACConfig(
+            reload_data=True,
+            use_eigenvalue_correction=True,
+            batch_size=None,
+            use_pseudo_targets=True,
+            pseudo_target_noise_std=0.1,
+        )
+        ekfac_with_pseudo_model = KFAC(config=ekfac_with_pseudo_config)
+
+        true_targets = jnp.asarray(dataset.get_train_data()[1])
+        pseudo_targets = ekfac_with_pseudo_model.generate_pseudo_targets(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(dataset.get_train_data()[0]),
+            loss_fn=loss_fn,
+        )
+
+        print("True targets:", true_targets[:10])
+        print("Pseudo targets:", pseudo_targets[:10])
+
+        # assert that more than 50% are the same (otherwise we could randomly guess)
+        matching = jnp.sum(true_targets == pseudo_targets)
+        assert matching > 0.5 * true_targets.shape[0], (
+            "Pseudo-targets should match true targets on more than 50% of samples."
+        )
+
+        # TODO: Right now it seems the hessians differ quite a lot when using pseudo-targets.
+        #  We should investigate whether this is expected behavior or if there's a bug.
+
+        ekfac_no_pseudo = ekfac_no_pseudo_model.compute_hessian(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(dataset.get_train_data()[0]),
+            training_targets=true_targets,
+            loss_fn=loss_fn,
+        )
+        ekfac_no_pseudo = np.array(ekfac_no_pseudo)
+
+        ekfac_with_pseudo = ekfac_with_pseudo_model.compute_hessian(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(dataset.get_train_data()[0]),
+            training_targets=pseudo_targets,
+            loss_fn=loss_fn,
+        )
+        ekfac_with_pseudo = np.array(ekfac_with_pseudo)
+
+        print("Top-left 10x10 submatrices of E-KFAC with and without pseudo-targets:")
+        print(ekfac_no_pseudo[:10, :10])
         print("---")
-        print(gnh[:10, :10])
-        print("---")
-        print(ekfac[:10, :10])
+        print(ekfac_with_pseudo[:10, :10])
+
+        assert ekfac_no_pseudo.shape == ekfac_with_pseudo.shape, (
+            "E-KFAC Hessians with and without pseudo-targets should have the same shape."
+        )

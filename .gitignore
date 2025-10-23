@@ -2,10 +2,12 @@
 # Python / uv project .gitignore
 # ------------------------------
 
-# Pickle files / msgpack files
+# Pickle files / msgpack / numpy files 
 *.pickle
 *.pkl
 *.msgpack
+*.npy
+*.npz
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
