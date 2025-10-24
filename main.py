@@ -31,7 +31,7 @@ def main():
 
     train_data, train_targets = dataset.get_train_data()
 
-    hessian_method = create_hessian_by_name("hessian")
+    hessian_method = create_hessian_by_name("kfac")
     loss_fn = get_loss_fn(config.model.loss)
 
     hessian_matrix = hessian_approximation(
