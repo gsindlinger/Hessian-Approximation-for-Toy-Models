@@ -250,27 +250,6 @@ class KFAC(HessianApproximation):
         """
         return input.mT @ input
 
-    def eigenvalue_correction(
-        self,
-        layer_name: str,
-        activations: jnp.ndarray,
-        gradients: jnp.ndarray,
-    ) -> None:
-        """Compute eigenvalue correction for a given layer."""
-        Q_A = self.eigenvectors.activations[layer_name]
-        Q_G = self.eigenvectors.gradients[layer_name]
-
-        g_tilde = jnp.einsum("oi, ni -> no", Q_G.T, gradients)  # [N, O]
-        a_tilde = jnp.einsum("ij, nj -> ni", Q_A.T, activations)  # [N, I]
-
-        # Compute outer product and average
-        outer = jnp.einsum("no, ni -> noi", g_tilde, a_tilde)  # [N, O, I]
-        correction = (outer**2).sum(
-            axis=0
-        )  # [O, I] (averaging is done by the calling method)
-
-        self._accumulate_data(self.eigenvalue_corrections, layer_name, correction)
-
     def _process_multiple_batches_collector(
         self,
         model: ApproximationModel,
@@ -390,6 +369,9 @@ class KFAC(HessianApproximation):
         For each sample n, we compute:
         (Q_A \otimes Q_G)^T vec(g_n * a_n^T)
 
+        Note: The EKFAC paper of Grosse et al. (2023) misses the transpose of the eigenvector basis of (Q_A \otimes Q_G) in equation (20).
+        Refer to George et al. (2018) for the correct formulation.
+
         Using the Kronecker product property (A \otimes B)^T = A^T \otimes B^T and the
         mixed-product property, this simplifies to:
             (Q_A^T a_n) \otimes (Q_G^T g_n)
@@ -408,9 +390,8 @@ class KFAC(HessianApproximation):
         """
         Q_A = self.eigenvectors.activations[layer_name]
         Q_G = self.eigenvectors.gradients[layer_name]
-
         # Project activations and gradients onto eigenbases
-        g_tilde = jnp.einsum("oi, ni -> no", Q_G.T, gradients)  # [N, O]
+        g_tilde = jnp.einsum("op, np -> no", Q_G.T, gradients)  # [N, O]
         a_tilde = jnp.einsum("ij, nj -> ni", Q_A.T, activations)  # [N, I]
 
         # Compute outer product and average
