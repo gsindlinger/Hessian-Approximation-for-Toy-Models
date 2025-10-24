@@ -384,8 +384,42 @@ class KFAC(HessianApproximation):
         activations: jnp.ndarray,
         gradients: jnp.ndarray,
     ):
-        """Accumulate eigenvalue corrections for a given layer."""
-        self.eigenvalue_correction(layer_name, activations, gradients)
+        r"""
+        Compute eigenvalue correction for a given layer.
+
+        For each sample n, we compute:
+        (Q_A \otimes Q_G)^T vec(g_n * a_n^T)
+
+        Using the Kronecker product property (A \otimes B)^T = A^T \otimes B^T and the
+        mixed-product property, this simplifies to:
+            (Q_A^T a_n) \otimes (Q_G^T g_n)
+
+        where:
+        - Q_A, Q_G are the eigenvector matrices of activation and gradient covariances
+        - a_n, g_n are the activation and gradient vectors for sample n
+        - \otimes denotes the Kronecker product
+
+        Implementation steps:
+        1. Transform activations to eigenbasis: a_tilde_n = Q_A^T @ a_n
+        2. Transform gradients to eigenbasis: g_tilde_n = Q_G^T @ g_n
+        3. Compute outer product / Kronecker product: a_tilde_n \otimes g_tilde_n
+        4. Square and sum across samples (averaging is later done by caller after summing over all batches)
+
+        """
+        Q_A = self.eigenvectors.activations[layer_name]
+        Q_G = self.eigenvectors.gradients[layer_name]
+
+        # Project activations and gradients onto eigenbases
+        g_tilde = jnp.einsum("oi, ni -> no", Q_G.T, gradients)  # [N, O]
+        a_tilde = jnp.einsum("ij, nj -> ni", Q_A.T, activations)  # [N, I]
+
+        # Compute outer product and average
+        outer = jnp.einsum("ni, no -> nio", a_tilde, g_tilde)  # [N, I, O]
+        correction = (outer**2).sum(
+            axis=0
+        )  # [I, O] (averaging is done by the calling method)
+
+        self._accumulate_data(self.eigenvalue_corrections, layer_name, correction)
 
     def _compute_layer_hessians(self, params: Any) -> Dict[str, jnp.ndarray]:
         """Compute Hessian approximation for each layer."""

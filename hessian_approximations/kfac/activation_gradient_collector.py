@@ -1,5 +1,3 @@
-import os
-import pickle
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable, Dict, Tuple
@@ -8,55 +6,17 @@ import jax
 import jax.numpy as jnp
 
 from hessian_approximations.kfac.layer_components import LayerComponents
-from models.train import ApproximationModel
 
 
 @dataclass
 class ActivationGradientCollector:
     """
     Captures layer inputs (activations) and output gradients during a forward-backward pass.
-
     This is a simple container that stores (activation, gradient) pairs for each layer.
     """
 
     def __init__(self):
         self.captured_data: LayerComponents = LayerComponents()
-
-    def add(self, layer_name: str, data: Tuple[jnp.ndarray, jnp.ndarray]) -> None:
-        """
-        Store captured data for a layer.
-
-        Args:
-            layer_name: Name of the layer
-            data: Tuple of (activations, gradients)
-        """
-        self.captured_data[layer_name] = data
-
-    def load_from_disk(self, model: ApproximationModel) -> None:
-        """
-        Load previously captured data from disk.
-        """
-
-        model_name = model.__class__.__name__
-        data_path = f"data/{model_name}/activations_gradients.pkl"
-        if os.path.exists(data_path):
-            with open(data_path, "rb") as f:
-                self.captured_data = pickle.load(f)
-            print(f"Loaded captured data from {data_path}")
-        else:
-            raise FileNotFoundError(f"No captured data file found at {data_path}")
-
-    def save_to_disk(self, model: ApproximationModel) -> None:
-        """
-        Save captured data to disk for future use.
-        """
-
-        model_name = model.__class__.__name__
-        os.makedirs(f"data/{model_name}", exist_ok=True)
-        data_path = f"data/{model_name}/activations_gradients.pkl"
-        with open(data_path, "wb") as f:
-            pickle.dump(self.captured_data, f)
-        print(f"Saved captured data to {data_path}")
 
 
 ### Hooks for collecting activations and gradients of specific layers
@@ -120,8 +80,8 @@ def layer_wrapper_bwd(
     """
     a, params = residuals
 
-    # Capture the data for K-FAC
-    collector.add(name, (a, g))
+    # Store the captured activations and gradients for this layer
+    collector.captured_data[name] = (a, g)
 
     # Compute actual gradients using JAX's VJP
     _primals, vjp_fn = jax.vjp(pure_apply_fn, params, a)
