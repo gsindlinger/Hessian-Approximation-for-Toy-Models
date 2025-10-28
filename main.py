@@ -18,16 +18,15 @@ def create_dataset_and_model(config: Config):
     return dataset, model
 
 
-def train_and_evaluate(config: Config):
+def train(config: Config):
     dataset, model = create_dataset_and_model(config)
     model, params = train_model(model, dataset.get_dataloaders(), config.training)
-
     return model, dataset, params
 
 
 def main():
     config = Config.parse_args()
-    model, dataset, params = train_and_evaluate(config)
+    model, dataset, params = train(config)
 
     train_data, train_targets = dataset.get_train_data()
 

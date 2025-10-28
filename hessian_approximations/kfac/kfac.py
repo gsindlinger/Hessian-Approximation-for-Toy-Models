@@ -30,11 +30,12 @@ class KFAC(HessianApproximation):
     def __init__(
         self,
         model_name: str = "model",
+        dataset_name: str = "dataset",
         config: KFACConfig | None = None,
     ):
         super().__init__()
         self.config = config or KFACConfig()
-        self.storage = KFACStorage(model_name)
+        self.storage = KFACStorage(model_name=model_name, dataset_name=dataset_name)
         self.collector = ActivationGradientCollector()
 
         # Core components
@@ -66,11 +67,9 @@ class KFAC(HessianApproximation):
         Not practical for large models but useful for testing and comparison
         with the true Hessian.
         """
-        if not self.covariances:
-            self.generate_ekfac_components(
-                model, params, training_data, training_targets, loss_fn
-            )
-
+        self.generate_ekfac_components(
+            model, params, training_data, training_targets, loss_fn
+        )
         hessian_layers = self._compute_layer_hessians(params)
         # Combine layer Hessians into full block-diagonal Hessian
         full_hessian = block_diag(*[jnp.asarray(H) for H in hessian_layers.values()])
@@ -120,16 +119,15 @@ class KFAC(HessianApproximation):
 
         If config.reload_data is False, attempts to load from disk first.
         """
-        if not self.config.reload_data:
-            try:
-                self._load_from_disk(model)
-                return
-            except FileNotFoundError:
-                print("No saved EKFAC components found. Computing from scratch.")
-
-        self._compute_from_scratch(
-            model, params, training_data, training_targets, loss_fn
-        )
+        # check if kfac components are computed, if so reuse
+        if self.storage.check_storage() and not self.config.reload_data:
+            print("Loading EKFAC components from disk.")
+            self._load_from_disk(model)
+        else:
+            print("Computing EKFAC components from scratch.")
+            self._compute_from_scratch(
+                model, params, training_data, training_targets, loss_fn
+            )
 
     def _load_from_disk(self, model: ApproximationModel) -> None:
         """Load all (E)KFAC components from disk."""
@@ -523,9 +521,24 @@ class KFAC(HessianApproximation):
 class KFACStorage:
     """Handles all disk I/O operations for (E)KFAC components using NumPy's npz format."""
 
-    def __init__(self, model_name: str, base_path: str | Path = "data"):
-        self.base_path = Path(base_path) / model_name
+    def __init__(
+        self,
+        model_name: str,
+        dataset_name: str | None = None,
+        base_path: str | Path = "data",
+    ):
+        if dataset_name is None:
+            self.base_path = Path(base_path) / model_name
+        else:
+            self.base_path = Path(base_path) / model_name / dataset_name
         self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def check_storage(self) -> bool:
+        """Check if EKFAC components are already stored on disk."""
+        cov_path = self._get_path("covariances.npz")
+        eigvec_path = self._get_path("eigenvectors.npz")
+        eigval_corr_path = self._get_path("eigenvalue_corrections.npz")
+        return cov_path.exists() and eigvec_path.exists() and eigval_corr_path.exists()
 
     def _get_path(self, filename: str) -> Path:
         return self.base_path / filename

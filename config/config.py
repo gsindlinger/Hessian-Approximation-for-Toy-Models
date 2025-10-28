@@ -13,17 +13,17 @@ jax.config.update("jax_enable_x64", True)
 
 @dataclass
 class DatasetConfig(ABC):
-    """Configuration for dataset."""
+    train_test_split: float = 0.8
 
 
 @dataclass
 class RandomRegressionConfig(DatasetConfig):
+    name = "random_regression"
     n_samples: int = 1000
     n_features: int = 20
     n_targets: int = 1
     noise: float = 0.1
     random_state: int = 42
-    train_test_split: float = 0.8
 
 
 @dataclass
@@ -34,13 +34,21 @@ class RandomClassificationConfig(DatasetConfig):
     n_informative: int = 10
     n_classes: int = 10
     random_state: int = 42
-    train_test_split: float = 0.8
 
 
 @dataclass
 class UCIDatasetConfig(DatasetConfig):
     name: Literal["energy"] = "energy"
-    train_test_split: float = 0.8
+
+
+@dataclass
+class MNISTDatasetConfig(DatasetConfig):
+    pass
+
+
+@dataclass
+class CIFAR10DatasetConfig(DatasetConfig):
+    pass
 
 
 @dataclass

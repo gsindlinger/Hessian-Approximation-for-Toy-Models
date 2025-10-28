@@ -12,7 +12,7 @@ from config.config import (
     TrainingConfig,
     UCIDatasetConfig,
 )
-from main import train_and_evaluate
+from main import train
 
 
 class TestLinearRegression:
@@ -59,7 +59,7 @@ class TestLinearRegression:
     @pytest.fixture
     def model_trained(self, regression_config):
         """Trained model for regression."""
-        model, dataset, params = train_and_evaluate(regression_config)
+        model, dataset, params = train(regression_config)
         return model, dataset, params, regression_config
 
     def test_jax_vs_sklearn_regression(self, model_trained):

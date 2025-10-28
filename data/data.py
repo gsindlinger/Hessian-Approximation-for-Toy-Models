@@ -1,11 +1,14 @@
 from abc import ABC, abstractmethod
-from typing_extensions import override
-from sklearn.preprocessing import StandardScaler
-from sklearn.datasets import make_regression, make_classification
-import jax.numpy as jnp
+
 import numpy as np
+from sklearn.datasets import fetch_openml, make_classification, make_regression
+from sklearn.preprocessing import StandardScaler
+from typing_extensions import override
+
 from config.config import (
+    CIFAR10DatasetConfig,
     DatasetConfig,
+    MNISTDatasetConfig,
     RandomClassificationConfig,
     RandomRegressionConfig,
     UCIDatasetConfig,
@@ -99,6 +102,8 @@ def create_dataset(config: DatasetConfig) -> AbstractDataset:
         RandomRegressionConfig: RandomRegressionDataset,
         RandomClassificationConfig: RandomClassificationDataset,
         UCIDatasetConfig: UCIDataset,
+        MNISTDatasetConfig: MNISTDataset,
+        CIFAR10DatasetConfig: CIFAR10Dataset,
     }
 
     dataset_cls = dataset_map.get(type(config))
@@ -200,3 +205,53 @@ class UCIDataset(AbstractDataset):
     @override
     def output_dim(self):
         return self.targets.shape[1] if len(self.targets.shape) > 1 else 1
+
+
+class MNISTDataset(AbstractDataset):
+    def __init__(self, train_test_split: float = 0.8):
+        super().__init__(train_test_split=train_test_split)
+
+        mnist = fetch_openml("mnist_784", version=1)
+        X = mnist.data.values
+        Y = mnist.target.values.astype(np.int32)
+
+        # Normalize
+        scaler_X = StandardScaler()
+        X = scaler_X.fit_transform(X)
+
+        # Store as numpy arrays
+        self.data = X.astype(np.float32)
+        self.targets = Y.astype(np.int32)
+
+    @override
+    def input_dim(self):
+        return self.data.shape[1]
+
+    @override
+    def output_dim(self) -> int:
+        return int(self.targets.max() + 1)
+
+
+class CIFAR10Dataset(AbstractDataset):
+    def __init__(self, train_test_split: float = 0.8):
+        super().__init__(train_test_split=train_test_split)
+
+        cifar10 = fetch_openml("CIFAR_10_small", version=1)
+        X = cifar10.data.values
+        Y = cifar10.target.values.astype(np.int32)
+
+        # Normalize
+        scaler_X = StandardScaler()
+        X = scaler_X.fit_transform(X)
+
+        # Store as numpy arrays
+        self.data = X.astype(np.float32)
+        self.targets = Y.astype(np.int32)
+
+    @override
+    def input_dim(self):
+        return self.data.shape[1]
+
+    @override
+    def output_dim(self) -> int:
+        return int(self.targets.max() + 1)

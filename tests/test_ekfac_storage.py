@@ -15,7 +15,7 @@ from config.config import (
 )
 from data.data import AbstractDataset
 from hessian_approximations.kfac.kfac import KFAC, KFACStorage
-from main import train_and_evaluate
+from main import train
 from models.base import ApproximationModel
 from models.train import get_loss_fn
 
@@ -64,7 +64,7 @@ class TestKFACStorage:
         self, simple_config
     ) -> Tuple[ApproximationModel, AbstractDataset, Any, Config]:
         """Trains a small model to generate KFAC components."""
-        model, dataset, params = train_and_evaluate(simple_config)
+        model, dataset, params = train(simple_config)
         return model, dataset, params, simple_config
 
     # --------------------------------------------------------------------------
@@ -97,7 +97,10 @@ class TestKFACStorage:
 
         # Initialize KFAC with custom storage path
         kfac = KFAC(model_name=model_name, config=kfac_config)
-        kfac.storage = KFACStorage(model_name, base_path=tmp_storage_dir)
+        kfac.storage = KFACStorage(
+            model_name,
+            base_path=tmp_storage_dir,
+        )
 
         try:
             x, y = dataset.get_train_data()

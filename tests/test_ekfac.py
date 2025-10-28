@@ -20,7 +20,7 @@ from hessian_approximations.factory import (
 from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC
-from main import train_and_evaluate
+from main import train
 from models.train import ApproximationModel, get_loss_fn
 
 ModelTuple = Tuple[ApproximationModel, AbstractDataset, Any, Config]
@@ -98,7 +98,7 @@ class TestEKFAC:
     @pytest.fixture
     def trained_model(self, random_classification_config) -> ModelTuple:
         """Train a small model for testing."""
-        model, dataset, params = train_and_evaluate(random_classification_config)
+        model, dataset, params = train(random_classification_config)
         return model, dataset, params, random_classification_config
 
     def test_ekfac_existance(
