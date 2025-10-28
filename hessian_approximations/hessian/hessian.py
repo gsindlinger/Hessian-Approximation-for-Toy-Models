@@ -21,7 +21,7 @@ class Hessian(HessianApproximation):
     def get_param_index_mapping(params: Any):
         """
         Build a mapping from parameter names to index ranges in the flattened vector.
-
+        Helps to debug by identifying which parameter in the flattened parameter array corresponds to which entry.
         Returns:
             dict[str, tuple[int, int]] mapping each param path to (start, end)
         """
@@ -65,9 +65,6 @@ class Hessian(HessianApproximation):
         training_data = jnp.asarray(training_data)
         training_targets = jnp.asarray(training_targets)
 
-        # For debugging purposes
-        index_mapping, total_params = self.get_param_index_mapping(params)
-
         # Important: Flattening structure for linear modules with bias is the following: b, w
         # So for output dim 2, input dim 3, the order is: b1, b2, w1
         params_flat, unravel_fn = flatten_util.ravel_pytree(params)
@@ -109,9 +106,6 @@ class Hessian(HessianApproximation):
         """
         training_data = jnp.asarray(training_data)
         training_targets = jnp.asarray(training_targets)
-
-        # For debugging purposes
-        index_mapping, total_params = self.get_param_index_mapping(params)
 
         # Flatten parameters once
         params_flat, unravel_fn = flatten_util.ravel_pytree(params)
@@ -156,9 +150,6 @@ class Hessian(HessianApproximation):
         """
         training_data = jnp.asarray(training_data)
         training_targets = jnp.asarray(training_targets)
-
-        # For debugging purposes
-        index_mapping, total_params = self.get_param_index_mapping(params)
 
         # Flatten parameters once
         params_flat, unravel_fn = flatten_util.ravel_pytree(params)

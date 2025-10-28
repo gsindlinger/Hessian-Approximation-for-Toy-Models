@@ -33,7 +33,6 @@ class TestEKFAC:
     def random_classification_config(self, request):
         """Parametrized configuration for testing across different setups."""
         if request.param == "linear":
-            # Simple linear binary classification
             return Config(
                 dataset=RandomClassificationConfig(
                     n_samples=10000,
