@@ -92,6 +92,7 @@ class HessianName(str, Enum):
     FIM = "fim"
     GAUSS_NEWTON = "gauss-newton"
     KFAC = "kfac"
+    LISSA = "lissa"
 
 
 @dataclass
@@ -102,8 +103,21 @@ class HessianApproximationConfig(ABC):
 
 
 @dataclass
+class LiSSAConfig(HessianApproximationConfig):
+    name: HessianName = HessianName.LISSA
+    num_samples: int = 3
+    recursion_depth: int = 500
+    alpha: float = 0.05
+    damping: float = 0.001
+    batch_size: int = 128
+    seed: int = 42
+    convergence_tol: float = 1e-6
+    check_convergence_every: int = 50
+
+
+@dataclass
 class KFACConfig(HessianApproximationConfig):
-    name: Literal["kfac"] = "kfac"
+    name: HessianName = HessianName.KFAC
     reload_data: bool = True
     damping_lambda: float = 0.0
     use_eigenvalue_correction: bool = True
