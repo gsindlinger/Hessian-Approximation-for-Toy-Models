@@ -86,19 +86,21 @@ class TestKFACStorage:
     ):
         """End-to-end test: compute EKFAC components, save them, and reload them."""
         model_name = "test_model"
+        dataset_name = "test_dataset"
         model, dataset, params, config = trained_model
         loss_fn = get_loss_fn(config.model.loss)
 
         kfac_config = KFACConfig(
             reload_data=True,
             use_eigenvalue_correction=True,
-            batch_size=None,
+            collector_batch_size=None,
         )
 
         # Initialize KFAC with custom storage path
         kfac = KFAC(model_name=model_name, config=kfac_config)
         kfac.storage = KFACStorage(
-            model_name,
+            model_name=model_name,
+            dataset_name=dataset_name,
             base_path=tmp_storage_dir,
         )
 
@@ -113,15 +115,17 @@ class TestKFACStorage:
             )
 
             # --- Verify saved files exist
-            model_path = tmp_storage_dir / model_name
+            model_path = tmp_storage_dir / model_name / dataset_name
             assert (model_path / "covariances.npz").exists()
             assert (model_path / "eigenvectors.npz").exists()
             assert (model_path / "eigenvalue_corrections.npz").exists()
+            assert (model_path / "eigenvalues.npz").exists()
 
             # --- Load back the files
             covariances_loaded = kfac.storage.load_covariances()
             eigenvectors_loaded = kfac.storage.load_eigenvectors()
             corrections_loaded = kfac.storage.load_eigenvalue_corrections()
+            eigenvalues_loaded = kfac.storage.load_eigenvalues()
 
             # --- Compare covariances
             for layer in kfac.covariances.activations.keys():
@@ -152,6 +156,20 @@ class TestKFACStorage:
                     f"Corrections mismatch in {layer}"
                 )
 
+            # --- Compare eigenvalues
+            for layer in kfac.eigenvalues.activations.keys():
+                assert np.allclose(
+                    np.asarray(kfac.eigenvalues.activations[layer]),
+                    np.asarray(eigenvalues_loaded.activations[layer]),
+                    atol=1e-10,
+                ), f"Activation eigenvalues mismatch in layer {layer}"
+
+                assert np.allclose(
+                    np.asarray(kfac.eigenvalues.gradients[layer]),
+                    np.asarray(eigenvalues_loaded.gradients[layer]),
+                    atol=1e-10,
+                ), f"Gradient eigenvalues mismatch in layer {layer}"
+
         finally:
             # Always clean up even if assertions fail
             self._cleanup_model_dir(tmp_storage_dir, model_name)
@@ -159,7 +177,10 @@ class TestKFACStorage:
     def test_storage_handles_missing_files(self, tmp_storage_dir: Path):
         """Ensure FileNotFoundError is raised when loading missing data."""
         model_name = "nonexistent_model"
-        storage = KFACStorage(model_name, base_path=tmp_storage_dir)
+        dataset_name = "nonexistent_dataset"
+        storage = KFACStorage(
+            model_name=model_name, dataset_name=dataset_name, base_path=tmp_storage_dir
+        )
         try:
             with pytest.raises(FileNotFoundError):
                 storage.load_covariances()
@@ -167,6 +188,8 @@ class TestKFACStorage:
                 storage.load_eigenvectors()
             with pytest.raises(FileNotFoundError):
                 storage.load_eigenvalue_corrections()
+            with pytest.raises(FileNotFoundError):
+                storage.load_eigenvalues()
         finally:
             self._cleanup_model_dir(tmp_storage_dir, model_name)
 
@@ -177,14 +200,17 @@ class TestKFACStorage:
     ):
         """Check that re-saving files overwrites them correctly."""
         model_name = "overwrite_test"
+        dataset_name = "overwrite_dataset"
         model, dataset, params, config = trained_model
         loss_fn = get_loss_fn(config.model.loss)
 
         kfac_config = KFACConfig(
-            reload_data=True, use_eigenvalue_correction=False, batch_size=None
+            reload_data=True, use_eigenvalue_correction=False, collector_batch_size=None
         )
         kfac = KFAC(model_name=model_name, config=kfac_config)
-        kfac.storage = KFACStorage(model_name, base_path=tmp_storage_dir)
+        kfac.storage = KFACStorage(
+            model_name=model_name, dataset_name=dataset_name, base_path=tmp_storage_dir
+        )
 
         try:
             x, y = dataset.get_train_data()
@@ -192,7 +218,7 @@ class TestKFACStorage:
                 model, params, jnp.asarray(x), jnp.asarray(y), loss_fn
             )
 
-            path = tmp_storage_dir / model_name / "covariances.npz"
+            path = tmp_storage_dir / model_name / dataset_name / "covariances.npz"
             timestamp_before = path.stat().st_mtime
 
             # Save again (should overwrite file)
