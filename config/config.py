@@ -119,11 +119,11 @@ class LiSSAConfig(HessianApproximationConfig):
 class KFACConfig(HessianApproximationConfig):
     name: HessianName = HessianName.KFAC
     reload_data: bool = True
-    damping_lambda: float = 0.0
+    damping_lambda: float = 0.1
     use_eigenvalue_correction: bool = True
     use_pseudo_targets: bool = False
     pseudo_target_noise_std: float = 0.1
-    batch_size: int | None = None
+    collector_batch_size: int | None = None
 
 
 @dataclass
