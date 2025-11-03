@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Callable, Dict
 
 import jax
 import jax.numpy as jnp
@@ -44,7 +44,7 @@ class LiSSA(HessianApproximation):
     def compute_ihvp(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,

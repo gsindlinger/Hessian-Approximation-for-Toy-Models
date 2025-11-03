@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Callable, Dict
 
 import jax
 import jax.numpy as jnp
@@ -35,7 +35,7 @@ class GaussNewton(HessianApproximation):
     def compute_hessian(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,
@@ -58,7 +58,7 @@ class GaussNewton(HessianApproximation):
     def compute_hvp(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,
@@ -94,7 +94,7 @@ class GaussNewton(HessianApproximation):
     def compute_ihvp(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,
@@ -127,7 +127,7 @@ class GaussNewton(HessianApproximation):
     def _compute_mse_gnh(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
     ) -> jnp.ndarray:
@@ -171,7 +171,7 @@ class GaussNewton(HessianApproximation):
     def _compute_crossentropy_gnh(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
     ) -> jnp.ndarray:
@@ -216,7 +216,7 @@ class GaussNewton(HessianApproximation):
     def _compute_mse_gnvp(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         vector: jnp.ndarray,
@@ -257,7 +257,7 @@ class GaussNewton(HessianApproximation):
     def _compute_crossentropy_gnvp(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         vector: jnp.ndarray,

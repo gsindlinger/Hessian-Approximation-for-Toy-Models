@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Tuple
 
 import numpy as np
 from sklearn.datasets import fetch_openml, make_classification, make_regression
@@ -31,17 +32,25 @@ class AbstractDataset(ABC):
         self.train_test_split = train_test_split
         self.transform = transform
 
-    def get_train_data(self):
+    def get_train_data(self) -> Tuple[np.ndarray, np.ndarray]:
         if self.train_data is None or self.train_targets is None:
-            raise ValueError("Train data not set. Please call split_dataset() first.")
+            self.split_dataset()
+
+        if self.train_data is None or self.train_targets is None:
+            raise ValueError("Training data or targets are not available.")
+
         return self.train_data, self.train_targets
 
-    def get_test_data(self):
+    def get_test_data(self) -> Tuple[np.ndarray, np.ndarray]:
         if self.test_data is None or self.test_targets is None:
-            raise ValueError("Test data not set. Please call split_dataset() first.")
+            self.split_dataset()
+        if self.test_data is None or self.test_targets is None:
+            raise ValueError("Test data or targets are not available.")
         return self.test_data, self.test_targets
 
-    def split_dataset(self):
+    def split_dataset(
+        self,
+    ) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]:
         """Split dataset into train and test sets. Assumes data to be normalized."""
         split_idx = int(len(self) * self.train_test_split)
 
@@ -52,8 +61,8 @@ class AbstractDataset(ABC):
             self.test_data = self.data[split_idx:]
             self.test_targets = self.targets[split_idx:]
         else:
-            self.test_data = None
-            self.test_targets = None
+            self.test_data = np.ndarray([])
+            self.test_targets = np.ndarray([])
 
         return (self.train_data, self.train_targets), (
             self.test_data,

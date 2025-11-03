@@ -1,4 +1,4 @@
-from typing import Any, Callable
+from typing import Callable, Dict
 
 import jax
 import jax.numpy as jnp
@@ -24,7 +24,7 @@ class FisherInformation(HessianApproximation):
     def compute_hessian(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,
@@ -44,7 +44,7 @@ class FisherInformation(HessianApproximation):
     def compute_hvp(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,
@@ -56,7 +56,7 @@ class FisherInformation(HessianApproximation):
     def compute_ihvp(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,
@@ -67,7 +67,7 @@ class FisherInformation(HessianApproximation):
     def _compute_mse_fim(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
     ) -> jnp.ndarray:
@@ -136,7 +136,7 @@ class FisherInformation(HessianApproximation):
     def _compute_crossentropy_fim(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
     ) -> jnp.ndarray:

@@ -18,9 +18,12 @@ def create_dataset_and_model(config: Config):
     return dataset, model
 
 
-def train(config: Config):
+def train(config: Config, reload_model: bool = True):
     dataset, model = create_dataset_and_model(config)
-    model, params = train_model(model, dataset.get_dataloaders(), config.training)
+    if not reload_model and model.check_saved_model():
+        model, params = model.load_model()
+    else:
+        model, params = train_model(model, dataset.get_dataloaders(), config.training)
     return model, dataset, params
 
 

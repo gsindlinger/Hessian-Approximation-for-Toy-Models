@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Callable, Literal, Tuple
+from typing import Any, Callable, Dict, Literal, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -169,7 +169,7 @@ def predict_jit(apply_fn, params, x):
     return apply_fn(params, x)
 
 
-def predict(model: ApproximationModel, params: Any, x):
+def predict(model: ApproximationModel, params: Dict, x):
     """Make predictions."""
     x = jnp.array(x)
     return predict_jit(model.apply, params, x)
@@ -184,7 +184,7 @@ def evaluate_jit(apply_fn, params, data, targets, loss_fn):
 
 def evaluate(
     model: ApproximationModel,
-    params: Any,
+    params: Dict,
     data,
     targets,
     loss_str: Literal["mse", "cross_entropy"] = "mse",
@@ -211,7 +211,7 @@ def initialize_model(model: ApproximationModel, input_shape: int, key=None):
 
 
 # Utility for batched operations with vmap
-def batch_predict(model: ApproximationModel, params: Any, x_batch):
+def batch_predict(model: ApproximationModel, params: Dict, x_batch):
     """Vectorized prediction for efficient batch processing."""
 
     @jax.vmap

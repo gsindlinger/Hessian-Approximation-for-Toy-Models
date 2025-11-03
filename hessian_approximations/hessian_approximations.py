@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Dict
 
 import jax.numpy as jnp
 from pyparsing import Callable
@@ -16,7 +16,7 @@ class HessianApproximation(ABC):
     def compute_hessian(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,
@@ -28,7 +28,7 @@ class HessianApproximation(ABC):
     def compute_hvp(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,
@@ -41,7 +41,7 @@ class HessianApproximation(ABC):
     def compute_ihvp(
         self,
         model: ApproximationModel,
-        params: Any,
+        params: Dict,
         training_data: jnp.ndarray,
         training_targets: jnp.ndarray,
         loss_fn: Callable,
