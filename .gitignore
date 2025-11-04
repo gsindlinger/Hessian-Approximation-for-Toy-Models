@@ -8,6 +8,7 @@
 *.msgpack
 *.npy
 *.npz
+data/**/*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -17,3 +17,6 @@ dependencies = [
     "tqdm>=4.67.1",
     "ucimlrepo>=0.0.7",
 ]
+
+[tool.ruff.lint]
+ignore = ["F722", "F821"]  # Ignore forward annotation syntax errors and undefined names
