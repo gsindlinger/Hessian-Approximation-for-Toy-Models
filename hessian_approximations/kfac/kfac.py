@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
 from typing import Callable, Dict, Literal
 
 import jax
@@ -238,7 +237,7 @@ class KFAC(HessianApproximation):
             if not self.config.run_config.use_eigenvalue_correction:
                 Lambda = self._compute_eigenvalue_lambda_kfac(layer_name)
 
-            vp_piece = self._compute_ihvp_or_hvp_layer(
+            vp_piece: Float[Array, "*batch_size I O"] = self._compute_ihvp_or_hvp_layer(
                 v_layer,
                 self.eigenvectors.activations[layer_name],
                 self.eigenvectors.gradients[layer_name],
@@ -465,6 +464,9 @@ class KFAC(HessianApproximation):
     def _process_multiple_batches_collector(
         self,
         model: ApproximationModel,
+        params: Dict,
+        training_data: Float[Array, "n_samples features"],
+        targets: Float[Array, "n_samples targets"] | Int[Array, "n_samples"],
         params: Dict,
         training_data: Float[Array, "n_samples features"],
         targets: Float[Array, "n_samples targets"] | Int[Array, "n_samples"],
@@ -709,7 +711,7 @@ class KFAC(HessianApproximation):
         return vector_product
 
     def _compute_layer_hessian_with_correction(
-        self, layer_name: str, method: Literal["inverse", "normal"] = "normal"
+        self, layer_name: str
     ) -> Float[Array, "I*O I*O"]:
         """
         Compute layer Hessian with eigenvalue corrections (EKFAC).
