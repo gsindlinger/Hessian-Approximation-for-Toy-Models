@@ -14,7 +14,8 @@ from config.config import (
     TrainingConfig,
 )
 from data.data import AbstractDataset
-from hessian_approximations.kfac.kfac import KFAC, KFACStorage
+from hessian_approximations.kfac.kfac import KFAC
+from hessian_approximations.kfac.storage import KFACStorage
 from main import train
 from models.base import ApproximationModel
 from models.train import get_loss_fn
@@ -90,11 +91,7 @@ class TestKFACStorage:
         model, dataset, params, config = trained_model
         loss_fn = get_loss_fn(config.model.loss)
 
-        kfac_config = KFACConfig(
-            reload_data=True,
-            use_eigenvalue_correction=True,
-            collector_batch_size=None,
-        )
+        kfac_config = KFACConfig()
 
         # Initialize KFAC with custom storage path
         kfac = KFAC(model_name=model_name, config=kfac_config)
@@ -106,7 +103,7 @@ class TestKFACStorage:
 
         try:
             x, y = dataset.get_train_data()
-            kfac.generate_ekfac_components(
+            kfac.get_ekfac_components(
                 model=model,
                 params=params,
                 training_data=jnp.asarray(x),
@@ -204,9 +201,7 @@ class TestKFACStorage:
         model, dataset, params, config = trained_model
         loss_fn = get_loss_fn(config.model.loss)
 
-        kfac_config = KFACConfig(
-            reload_data=True, use_eigenvalue_correction=False, collector_batch_size=None
-        )
+        kfac_config = KFACConfig()
         kfac = KFAC(model_name=model_name, config=kfac_config)
         kfac.storage = KFACStorage(
             model_name=model_name, dataset_name=dataset_name, base_path=tmp_storage_dir

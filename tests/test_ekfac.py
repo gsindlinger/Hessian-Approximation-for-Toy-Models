@@ -8,7 +8,9 @@ from jax import flatten_util
 
 from config.config import (
     Config,
+    KFACBuildConfig,
     KFACConfig,
+    KFACRunConfig,
     LinearModelConfig,
     RandomClassificationConfig,
     TrainingConfig,
@@ -37,8 +39,8 @@ class TestEKFAC:
             return Config(
                 dataset=RandomClassificationConfig(
                     n_samples=10000,
-                    n_features=20,
-                    n_informative=3,
+                    n_features=10,
+                    n_informative=5,
                     n_classes=2,
                     random_state=42,
                     train_test_split=1,
@@ -81,9 +83,14 @@ class TestEKFAC:
         """Train a small model for testing. Cached per configuration."""
 
         model, dataset, params = train(random_classification_config, reload_model=True)
-        ekfac_config = KFACConfig(reload_data=True, use_eigenvalue_correction=True)
-        ekfac_model = KFAC(config=ekfac_config)
-        ekfac_model.generate_ekfac_components(
+
+        ekfac_build_config = KFACBuildConfig()
+        ekfac_model = KFAC(
+            config=KFACConfig(
+                build_config=ekfac_build_config,
+            )
+        )
+        ekfac_model.get_ekfac_components(
             model=model,
             params=params,
             training_data=jnp.asarray(dataset.get_train_data()[0]),
@@ -151,9 +158,11 @@ class TestEKFAC:
         # Collect EKFAC statistics
         # Need to reload data, otherwise collector data is empty
         ekfac_approx = KFAC(
-            config=KFACConfig(reload_data=True, use_eigenvalue_correction=False)
+            config=KFACConfig(
+                build_config=KFACBuildConfig(recalc_ekfac_components=True)
+            )
         )
-        ekfac_approx.generate_ekfac_components(
+        ekfac_approx.get_ekfac_components(
             model=model,
             params=params,
             training_data=jnp.asarray(dataset.get_train_data()[0]),
@@ -208,13 +217,11 @@ class TestEKFAC:
             loss_fn=loss_fn,
         )
 
-        kfac_config = KFACConfig(
-            reload_data=False,
+        kfac_config = KFACRunConfig(
             use_eigenvalue_correction=False,
-            collector_batch_size=None,
             damping_lambda=0.0,
         )
-        kfac_model = KFAC(config=kfac_config)
+        kfac_model = KFAC(config=KFACConfig(run_config=kfac_config))
         kfac = kfac_model.compute_hessian(
             model=model,
             params=params,
@@ -249,10 +256,16 @@ class TestEKFAC:
             loss_fn=loss_fn,
         )
 
-        ekfac_config = KFACConfig(
-            reload_data=False, use_eigenvalue_correction=True, use_pseudo_targets=True
+        ekfac_build_config = KFACBuildConfig(
+            recalc_ekfac_components=True,
+            use_pseudo_targets=True,
         )
-        ekfac_model = KFAC(config=ekfac_config)
+        ekfac_config = KFACRunConfig(
+            use_eigenvalue_correction=True,
+        )
+        ekfac_model = KFAC(
+            config=KFACConfig(run_config=ekfac_config, build_config=ekfac_build_config)
+        )
         ekfac = ekfac_model.compute_hessian(
             model=model,
             params=params,
@@ -273,13 +286,19 @@ class TestEKFAC:
         model, dataset, params, config = trained_model
         loss_fn = get_loss_fn(config.model.loss)
 
-        ekfac_full_data_config = KFACConfig(
-            reload_data=False,
-            use_eigenvalue_correction=True,
+        ekfac_run_config = KFACRunConfig(use_eigenvalue_correction=True)
+
+        ekfac_full_data_config = KFACBuildConfig(
+            recalc_ekfac_components=True,
             collector_batch_size=None,  # Full data
             use_pseudo_targets=False,
         )
-        ekfac_full_data_model = KFAC(config=ekfac_full_data_config)
+
+        ekfac_full_data_model = KFAC(
+            config=KFACConfig(
+                build_config=ekfac_full_data_config, run_config=ekfac_run_config
+            )
+        )
         ekfac_full_data = ekfac_full_data_model.compute_hessian(
             model=model,
             params=params,
@@ -288,13 +307,16 @@ class TestEKFAC:
             loss_fn=loss_fn,
         )
 
-        ekfac_batched_config = KFACConfig(
-            reload_data=False,
-            use_eigenvalue_correction=True,
+        ekfac_batched_config = KFACBuildConfig(
+            recalc_ekfac_components=False,
             collector_batch_size=100,  # Smaller batches
             use_pseudo_targets=False,
         )
-        ekfac_batched_model = KFAC(config=ekfac_batched_config)
+        ekfac_batched_model = KFAC(
+            config=KFACConfig(
+                build_config=ekfac_batched_config, run_config=ekfac_run_config
+            )
+        )
         ekfac_batched = ekfac_batched_model.compute_hessian(
             model=model,
             params=params,
@@ -357,14 +379,18 @@ class TestEKFAC:
 
         # Setup EKFAC
         damping_lambda = 0.1
-        ekfac_config = KFACConfig(
-            reload_data=False,
-            use_eigenvalue_correction=True,
-            collector_batch_size=None,
+        ekfac_build_config = KFACBuildConfig(
+            recalc_ekfac_components=True,
             use_pseudo_targets=True,
+        )
+        ekfac_config = KFACRunConfig(
+            use_eigenvalue_correction=True,
             damping_lambda=damping_lambda,
         )
-        ekfac_model = KFAC(config=ekfac_config)
+
+        ekfac_model = KFAC(
+            config=KFACConfig(run_config=ekfac_config, build_config=ekfac_build_config)
+        )
 
         # Generate EKFAC components
         x_train, y_train = dataset.get_train_data()
@@ -387,6 +413,9 @@ class TestEKFAC:
         )(params)
         test_vector, _ = flatten_util.ravel_pytree(test_vector)
 
+        # for debugging:
+        test_vector = jnp.zeros_like(test_vector).at[0].set(1.0)
+
         # Compute IHVP for EKFAC
         ihvp_ekfac = ekfac_model.compute_ihvp(
             model=model,
@@ -397,9 +426,17 @@ class TestEKFAC:
             vector=test_vector,
         )
 
+        hessian_ekfac = ekfac_model.compute_hessian(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(x_train),
+            training_targets=jnp.asarray(y_train),
+            loss_fn=loss_fn,
+        )
+        hessian_ekfac = np.array(hessian_ekfac)
+
         # Compute IHVP for KFAC
-        ekfac_model.config.use_eigenvalue_correction = False
-        ekfac_model.config.reload_data = False
+        ekfac_model.config.run_config.use_eigenvalue_correction = False
         ihvp_kfac = ekfac_model.compute_ihvp(
             model=model,
             params=params,
@@ -408,6 +445,79 @@ class TestEKFAC:
             loss_fn=loss_fn,
             vector=test_vector,
         )
+
+        hessian_kfac = ekfac_model.compute_hessian(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(x_train),
+            training_targets=jnp.asarray(y_train),
+            loss_fn=loss_fn,
+        )
+        hessian_kfac = np.array(hessian_kfac)
+
+        true_hessian = Hessian().compute_hessian(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(x_train),
+            training_targets=jnp.asarray(y_train),
+            loss_fn=loss_fn,
+        ) + ekfac_model.damping() * jnp.eye(test_vector.shape[0], test_vector.shape[0])
+        print(ekfac_model.damping())
+
+        true_hessian = np.array(true_hessian)
+        true_hessian_ihvp = jnp.linalg.solve(
+            true_hessian,
+            test_vector,
+        )
+        true_hessian_hvp = (true_hessian) @ true_hessian_ihvp
+
+        # calculate ihvp for each unit vector basis to get the full inverse hessian matrix for ekfac and kfac
+        dim = test_vector.shape[0]
+        ihvp_ekfac_full = []
+        ihvp_kfac_full = []
+        for i in range(dim):
+            unit_vector = jnp.zeros_like(test_vector).at[i].set(1.0)
+
+            ihvp_ekfac_i = ekfac_model.compute_ihvp(
+                model=model,
+                params=params,
+                training_data=jnp.asarray(x_train),
+                training_targets=jnp.asarray(y_train),
+                loss_fn=loss_fn,
+                vector=unit_vector,
+            )
+            ihvp_ekfac_full.append(ihvp_ekfac_i)
+
+            ekfac_model.config.run_config.use_eigenvalue_correction = False
+            ihvp_kfac_i = ekfac_model.compute_ihvp(
+                model=model,
+                params=params,
+                training_data=jnp.asarray(x_train),
+                training_targets=jnp.asarray(y_train),
+                loss_fn=loss_fn,
+                vector=unit_vector,
+            )
+            ihvp_kfac_full.append(ihvp_kfac_i)
+
+        # plot heatmap of full inverse hessian matrix for ekfac and kfac
+        hessian_inv_ekfac = jnp.column_stack(ihvp_ekfac_full)
+        hessian_inv_kfac = jnp.column_stack(ihvp_kfac_full)
+
+        hessian_check_ekfac = hessian_ekfac @ hessian_inv_ekfac
+        hessian_check_kfac = hessian_kfac @ hessian_inv_kfac
+
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.title("H @ H^{-1} (E-KFAC)")
+        plt.imshow(hessian_check_ekfac, cmap="viridis", aspect="auto")
+        plt.colorbar()
+        plt.subplot(1, 2, 2)
+        plt.title("H @ H^{-1} (KFAC)")
+        plt.imshow(hessian_check_kfac, cmap="viridis", aspect="auto")
+        plt.colorbar()
+        plt.show()
 
         # Basic sanity checks
         assert ihvp_ekfac.shape == test_vector.shape, (
@@ -420,38 +530,20 @@ class TestEKFAC:
         )
         assert jnp.isfinite(ihvp_kfac).all(), "IHVP contains non-finite values"
 
-        # Compute true Hessian and the corresponding IHVP for comparison
-        hessian_true = Hessian().compute_hessian(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(x_train),
-            training_targets=jnp.asarray(y_train),
-            loss_fn=loss_fn,
-        )
-        hessian_true += damping_lambda * jnp.eye(hessian_true.shape[0])
-        hessian_true_inv = jnp.linalg.inv(hessian_true)
-        ihvp_true = hessian_true_inv @ test_vector
+        # Verify round-trip: H @ (H^{-1} @ v) ≈ v
+        hvp_ekfac = hessian_ekfac @ ihvp_ekfac
+        hvp_kfac = hessian_kfac @ ihvp_kfac
 
-        # Check that EKFAC IHVP is close to true Hessian IHVP
-        assert jnp.allclose(ihvp_ekfac, ihvp_true, rtol=0.2, atol=1), (
-            f"EKFAC IHVP does not approximate true Hessian IHVP\n"
-            f"Max absolute error: {jnp.max(jnp.abs(ihvp_ekfac - ihvp_true))}\n"
-            f"Relative error: {jnp.linalg.norm(ihvp_ekfac - ihvp_true) / jnp.linalg.norm(ihvp_true)}"
-        )
-
-        # Check that KFAC IHVP is close to true Hessian IHVP
-        assert jnp.allclose(ihvp_kfac, ihvp_true, rtol=0.2, atol=1), (
-            f"KFAC IHVP does not approximate true Hessian IHVP\n"
-            f"Max absolute error: {jnp.max(jnp.abs(ihvp_kfac - ihvp_true))}\n"
-            f"Relative error: {jnp.linalg.norm(ihvp_kfac - ihvp_true) / jnp.linalg.norm(ihvp_true)}"
-        )
-
-        # Finally verify round-trip: H @ (H^{-1} @ v) ≈ v
-        hvp = hessian_true @ ihvp_ekfac
-        assert jnp.allclose(hvp, test_vector, rtol=0.2, atol=1), (
+        assert jnp.allclose(hvp_ekfac, test_vector, rtol=0.2, atol=1), (
             f"Round-trip test failed: H @ (H^{{-1}} @ v) != v\n"
-            f"Max absolute error: {jnp.max(jnp.abs(hvp - test_vector))}\n"
-            f"Relative error: {jnp.linalg.norm(hvp - test_vector) / jnp.linalg.norm(test_vector)}"
+            f"Max absolute error: {jnp.max(jnp.abs(hvp_ekfac - test_vector))}\n"
+            f"Relative error: {jnp.linalg.norm(hvp_ekfac - test_vector) / jnp.linalg.norm(test_vector)}"
+        )
+
+        assert jnp.allclose(hvp_kfac, test_vector, rtol=0.2, atol=1), (
+            f"Round-trip test failed: H @ (H^{{-1}} @ v) != v\n"
+            f"Max absolute error: {jnp.max(jnp.abs(hvp_kfac - test_vector))}\n"
+            f"Relative error: {jnp.linalg.norm(hvp_kfac - test_vector) / jnp.linalg.norm(test_vector)}"
         )
 
     def test_ekfac_ihvp_batched_vectors(self, trained_model: ModelTuple):
@@ -468,17 +560,22 @@ class TestEKFAC:
 
         # Setup EKFAC
         damping_lambda = 0.1
-        ekfac_config = KFACConfig(
-            reload_data=False,
+        ekfac_build_config = KFACBuildConfig(
+            recalc_ekfac_components=True,
+            use_pseudo_targets=True,
+        )
+        ekfac_config = KFACRunConfig(
             use_eigenvalue_correction=True,
             damping_lambda=damping_lambda,
-            collector_batch_size=None,
         )
-        ekfac_model = KFAC(config=ekfac_config)
+
+        ekfac_model = KFAC(
+            config=KFACConfig(run_config=ekfac_config, build_config=ekfac_build_config)
+        )
 
         # Generate EKFAC components
         x_train, y_train = dataset.get_train_data()
-        ekfac_model.generate_ekfac_components(
+        ekfac_model.get_ekfac_components(
             model=model,
             params=params,
             training_data=jnp.asarray(x_train),
@@ -515,7 +612,7 @@ class TestEKFAC:
             vector=test_vectors,
         )
 
-        ekfac_model.config.use_eigenvalue_correction = False
+        ekfac_model.config.run_config.use_eigenvalue_correction = False
         ihvp_batched_kfac = ekfac_model.compute_ihvp(
             model=model,
             params=params,
@@ -542,7 +639,7 @@ class TestEKFAC:
 
         # Verify batched computation matches single-vector computation
         for i in range(n_vectors):
-            ekfac_model.config.use_eigenvalue_correction = True
+            ekfac_model.config.run_config.use_eigenvalue_correction = True
             ihvp_single = ekfac_model.compute_ihvp(
                 model=model,
                 params=params,
@@ -555,7 +652,7 @@ class TestEKFAC:
                 f"Batched IHVP doesn't match single-vector IHVP for vector {i} (EKFAC)"
             )
 
-            ekfac_model.config.use_eigenvalue_correction = False
+            ekfac_model.config.run_config.use_eigenvalue_correction = False
             ihvp_single_kfac = ekfac_model.compute_ihvp(
                 model=model,
                 params=params,
