@@ -1,156 +1,33 @@
 from __future__ import annotations
 
-from abc import ABC
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Dict, List, Literal
+from typing import Dict, List
 
 import jax
 from simple_parsing import ArgumentParser
 
+from config.dataset_config import (
+    DatasetConfig,
+    RandomClassificationConfig,
+    RandomRegressionConfig,
+    UCIDatasetConfig,
+)
+from config.hessian_approximation_config import HessianApproximationConfig, HessianName
+from config.model_config import LinearModelConfig, ModelConfig
+from config.training_config import TrainingConfig
+
 jax.config.update("jax_enable_x64", True)
-
-
-@dataclass
-class DatasetConfig(ABC):
-    train_test_split: float = 0.8
-
-
-@dataclass
-class RandomRegressionConfig(DatasetConfig):
-    name = "random_regression"
-    n_samples: int = 1000
-    n_features: int = 20
-    n_targets: int = 1
-    noise: float = 0.1
-    random_state: int = 42
-
-
-@dataclass
-class RandomClassificationConfig(DatasetConfig):
-    name = "random_classification"
-    n_samples: int = 1000
-    n_features: int = 40
-    n_informative: int = 10
-    n_classes: int = 10
-    random_state: int = 42
-
-
-@dataclass
-class UCIDatasetConfig(DatasetConfig):
-    name: Literal["energy"] = "energy"
-
-
-@dataclass
-class MNISTDatasetConfig(DatasetConfig):
-    pass
-
-
-@dataclass
-class CIFAR10DatasetConfig(DatasetConfig):
-    pass
-
-
-@dataclass
-class ModelConfig:
-    """Configuration for model architecture."""
-
-    name: Literal["linear"] = "linear"
-    loss: Literal["mse", "cross_entropy"] = "mse"
-
-
-@dataclass
-class LinearModelConfig(ModelConfig):
-    name: Literal["linear"] = "linear"
-    loss: Literal["mse", "cross_entropy"] = "mse"
-    hidden_dim: List[int] = field(default_factory=list)
-
-
-@dataclass
-class MLPModelConfig(ModelConfig):
-    name: Literal["mlp"] = "mlp"
-    loss: Literal["mse", "cross_entropy"] = "mse"
-    hidden_dim: List[int] = field(default_factory=list)
-    use_bias: bool = False
-
-
-@dataclass
-class TrainingConfig:
-    """Configuration for training."""
-
-    epochs: int = 20  # Number of training epochs
-    lr: float = 0.01  # Learning rate
-    save_checkpoint: bool = True  # Whether to save model checkpoints
-    batch_size: int = 32  # Batch size for training
-    optimizer: Literal["sgd", "adam"] = "sgd"  # Optimizer type
-    loss: Literal["mse", "cross_entropy"] = "mse"  # Loss function
-
-
-class HessianName(str, Enum):
-    EXACT_HESSIAN_REGRESSION = "exact-hessian-regression"
-    HESSIAN = "hessian"
-    FIM = "fim"
-    GAUSS_NEWTON = "gauss-newton"
-    KFAC = "kfac"
-    LISSA = "lissa"
-
-
-@dataclass
-class HessianApproximationConfig(ABC):
-    """Configuration for Hessian approximation."""
-
-    name: HessianName = HessianName.HESSIAN
-
-
-@dataclass
-class LiSSAConfig(HessianApproximationConfig):
-    name: HessianName = HessianName.LISSA
-    num_samples: int = 3
-    recursion_depth: int = 500
-    alpha: float = 0.05
-    damping: float = 0.001
-    batch_size: int = 128
-    seed: int = 42
-    convergence_tol: float = 1e-6
-    check_convergence_every: int = 50
-
-
-@dataclass
-class KFACBuildConfig:
-    use_pseudo_targets: bool = False
-    pseudo_target_noise_std: float = 0.1
-    collector_batch_size: int | None = None
-    recalc_ekfac_components: bool = False
-
-
-@dataclass
-class KFACRunConfig:
-    damping_lambda: float = 0.1
-    damping_mode: Literal["mean_eigenvalue", "mean_corrections"] = "mean_eigenvalue"
-    use_eigenvalue_correction: bool = True
-    recalc_kfac_components: bool = False
-
-
-@dataclass
-class KFACConfig(HessianApproximationConfig):
-    name: HessianName = HessianName.KFAC
-    build_config: KFACBuildConfig = field(default_factory=KFACBuildConfig)
-    run_config: KFACRunConfig = field(default_factory=KFACRunConfig)
 
 
 @dataclass
 class Config:
     """Main configuration for the project."""
 
-    dataset: DatasetConfig = field(
-        default_factory=DatasetConfig
-    )  # Which dataset to use
-    model: ModelConfig = field(default_factory=ModelConfig)  # Which model to use
-    training: TrainingConfig = field(
-        default_factory=TrainingConfig
-    )  # Training parameters
+    dataset: DatasetConfig
+    model: ModelConfig
+    training: TrainingConfig
     hessian_approximation: HessianApproximationConfig = field(
-        default_factory=HessianApproximationConfig
+        default_factory=lambda: HessianApproximationConfig(name=HessianName.HESSIAN)
     )
 
     @staticmethod
@@ -190,6 +67,31 @@ class Config:
 
         return config
 
+    @staticmethod
+    def model_training_dataset_hash(
+        dataset_config: DatasetConfig,
+        model_config: ModelConfig,
+        training_config: TrainingConfig,
+        length: int = 8,
+    ) -> str:
+        """Generate a unique hash string for the combination of dataset, model, and training configs."""
+        import hashlib
+        import json
+
+        # Serialize configurations to JSON strings
+        dataset_json = json.dumps(vars(dataset_config), sort_keys=True)
+        model_json = json.dumps(vars(model_config), sort_keys=True)
+        training_json = json.dumps(vars(training_config), sort_keys=True)
+
+        # Combine all JSON strings
+        combined = dataset_json + model_json + training_json
+
+        # Generate SHA256 hash
+        hash_object = hashlib.sha256(combined.encode())
+        hash_hex = hash_object.hexdigest()[:10]  # Use first 10 characters for brevity
+
+        return hash_hex
+
 
 # Predefined configurations
 CONFIGS: Dict[str, Config] = {
@@ -201,7 +103,7 @@ CONFIGS: Dict[str, Config] = {
             noise=20,
             random_state=42,
         ),
-        model=LinearModelConfig(name="linear", loss="mse", hidden_dim=[]),
+        model=LinearModelConfig(loss="mse", hidden_dim=[]),
         training=TrainingConfig(
             epochs=200,
             lr=0.01,
@@ -209,7 +111,7 @@ CONFIGS: Dict[str, Config] = {
             batch_size=100,
             loss="mse",
         ),
-        hessian_approximation=HessianApproximationConfig(name="fim"),
+        hessian_approximation=HessianApproximationConfig(name=HessianName.FIM),
     ),
     "random_regression_single_feature": Config(
         dataset=RandomRegressionConfig(
@@ -220,14 +122,14 @@ CONFIGS: Dict[str, Config] = {
             random_state=42,
             train_test_split=1,
         ),
-        model=ModelConfig(name="linear", loss="mse"),
+        model=LinearModelConfig(loss="mse"),
         training=TrainingConfig(
             epochs=300,
             lr=0.001,
             optimizer="sgd",
             loss="mse",
         ),
-        hessian_approximation=HessianApproximationConfig(name="hessian"),
+        hessian_approximation=HessianApproximationConfig(name=HessianName.HESSIAN),
     ),
     "random_classification": Config(
         dataset=RandomClassificationConfig(
@@ -249,10 +151,9 @@ CONFIGS: Dict[str, Config] = {
     ),
     "energy": Config(
         dataset=UCIDatasetConfig(
-            name="energy",
             train_test_split=1,
         ),
-        model=LinearModelConfig(name="linear", loss="mse", hidden_dim=[]),
+        model=LinearModelConfig(loss="mse", hidden_dim=[]),
         training=TrainingConfig(
             epochs=200,
             lr=0.001,

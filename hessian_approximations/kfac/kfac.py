@@ -8,15 +8,16 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from scipy.linalg import block_diag
 from typing_extensions import override
 
-from config.config import KFACConfig
+from config.hessian_approximation_config import KFACConfig
 from hessian_approximations.hessian_approximations import HessianApproximation
 from hessian_approximations.kfac.activation_gradient_collector import (
     ActivationGradientCollector,
 )
+from hessian_approximations.kfac.data import KFACData, KFACMeanEigenvaluesAndCorrections
 from hessian_approximations.kfac.layer_components import LayerComponents
 from hessian_approximations.kfac.storage import KFACStorage
-from models.loss import get_loss_name
 from models.train import ApproximationModel
+from models.utils.loss import get_loss_name
 
 
 class KFAC(HessianApproximation):
@@ -26,26 +27,20 @@ class KFAC(HessianApproximation):
 
     def __init__(
         self,
-        model_name: str = "model",
-        dataset_name: str = "dataset",
         config: KFACConfig | None = None,
     ):
         super().__init__()
         self.config = config or KFACConfig()
-        self.storage = KFACStorage(model_name=model_name, dataset_name=dataset_name)
+        self.storage = KFACStorage()
         self.collector = ActivationGradientCollector()
 
         # Core components
-        self.covariances = LayerComponents()
-        self.eigenvalues = LayerComponents()
-        self.eigenvectors = LayerComponents()
-        self.eigenvalue_corrections: Dict[str, Float[Array, "d_in d_out"]] = {}
-
-        # Store the means for reuse in damping
-        self.mean_eigenvalues: Dict[str, Float[Array, ""]] = {}
-        self.mean_eigenvalue_corrections: Dict[str, Float[Array, ""]] = {}
-        self.overall_mean_eigenvalue: Float[Array, ""] = jnp.array(0.0)
-        self.overall_mean_eigenvalue_correction: Float[Array, ""] = jnp.array(0.0)
+        self.kfac_data = (
+            KFACData()
+        )  # includes covariances, eigenvectors, eigenvalues, eigenvalue_corrections
+        self.kfac_data_means = (
+            KFACMeanEigenvaluesAndCorrections()
+        )  # includes mean eigenvalues and corrections
 
     def damping(self) -> Float[Array, ""]:
         """Get damping value from config.
@@ -54,11 +49,14 @@ class KFAC(HessianApproximation):
         Float[Array, ""]: Damping value.
         """
         if self.config.run_config.damping_mode == "mean_eigenvalue":
-            return self.config.run_config.damping_lambda * self.overall_mean_eigenvalue
+            return (
+                self.config.run_config.damping_lambda
+                * self.kfac_data_means.overall_mean_eigenvalues
+            )
         elif self.config.run_config.damping_mode == "mean_corrections":
             return (
                 self.config.run_config.damping_lambda
-                * self.overall_mean_eigenvalue_correction
+                * self.kfac_data_means.overall_mean_corrections
             )
         else:
             raise ValueError(
@@ -219,7 +217,9 @@ class KFAC(HessianApproximation):
         offset = 0
 
         for layer_name in params["params"].keys():
-            Lambda: Float[Array, "I O"] = self.eigenvalue_corrections[layer_name]
+            Lambda: Float[Array, "I O"] = self.kfac_data.eigenvalue_corrections[
+                layer_name
+            ]
             input_dim, output_dim = Lambda.shape
             size = input_dim * output_dim
 
@@ -239,8 +239,8 @@ class KFAC(HessianApproximation):
 
             vp_piece: Float[Array, "*batch_size I O"] = self._compute_ihvp_or_hvp_layer(
                 v_layer,
-                self.eigenvectors.activations[layer_name],
-                self.eigenvectors.gradients[layer_name],
+                self.kfac_data.eigenvectors.activations[layer_name],
+                self.kfac_data.eigenvectors.gradients[layer_name],
                 Lambda,
                 self.damping(),
                 method=method,
@@ -337,11 +337,11 @@ class KFAC(HessianApproximation):
             loss_fn,
             compute_method="covariance",
         )
-        self.storage.save_covariances(self.covariances)
+        self.storage.save_covariances(self.kfac_data.covariances)
 
     def compute_eigenvectors(self) -> None:
         """Compute eigenvectors of the covariance matrices A and G for each layer."""
-        if not self.covariances:
+        if not self.kfac_data.covariances:
             raise ValueError(
                 "Covariances not computed yet. Run compute_covariances first."
             )
@@ -351,9 +351,9 @@ class KFAC(HessianApproximation):
         gradient_eigvals = {}
         gradient_eigvecs = {}
 
-        for layer_name in self.covariances.activations.keys():
-            A: Float[Array, "I I"] = self.covariances.activations[layer_name]
-            G: Float[Array, "O O"] = self.covariances.gradients[layer_name]
+        for layer_name in self.kfac_data.covariances.activations.keys():
+            A: Float[Array, "I I"] = self.kfac_data.covariances.activations[layer_name]
+            G: Float[Array, "O O"] = self.kfac_data.covariances.gradients[layer_name]
 
             # Ensure numerical stability by using float64 for eigen decomposition
             A = A.astype(jnp.float64)
@@ -373,10 +373,14 @@ class KFAC(HessianApproximation):
             activation_eigvals[layer_name] = eigenvals_A.astype(jnp.float32)
             gradient_eigvals[layer_name] = eigenvals_G.astype(jnp.float32)
 
-        self.eigenvectors = LayerComponents(activation_eigvecs, gradient_eigvecs)
-        self.eigenvalues = LayerComponents(activation_eigvals, gradient_eigvals)
-        self.storage.save_eigenvectors(self.eigenvectors)
-        self.storage.save_eigenvalues(self.eigenvalues)
+        self.kfac_data.eigenvectors = LayerComponents(
+            activation_eigvecs, gradient_eigvecs
+        )
+        self.kfac_data.eigenvalues = LayerComponents(
+            activation_eigvals, gradient_eigvals
+        )
+        self.storage.save_eigenvectors(self.kfac_data.eigenvectors)
+        self.storage.save_eigenvalues(self.kfac_data.eigenvalues)
 
     def compute_eigenvalue_corrections(
         self,
@@ -392,11 +396,11 @@ class KFAC(HessianApproximation):
         Projects activations and gradients onto eigenbases and computes
         the empirical eigenvalue corrections as outer products.
         """
-        if not self.covariances:
+        if not self.kfac_data.covariances:
             raise ValueError(
                 "Covariances not computed yet. Run compute_covariances first."
             )
-        if not self.eigenvectors:
+        if not self.kfac_data.eigenvectors:
             raise ValueError(
                 "Eigenvectors not computed yet. Run compute_eigenvectors_and_eigenvalues first."
             )
@@ -409,12 +413,12 @@ class KFAC(HessianApproximation):
             loss_fn,
             compute_method="eigenvalue_correction",
         )
-        self.storage.save_eigenvalue_corrections(self.eigenvalue_corrections)
+        self.storage.save_eigenvalue_corrections(self.kfac_data.eigenvalue_corrections)
 
     def compute_mean_eigenvalues_and_corrections(self) -> None:
         """Compute mean eigenvalues and eigenvalue corrections for damping."""
-        self.mean_eigenvalues = {}
-        self.mean_eigenvalue_corrections = {}
+        self.kfac_data_means.eigenvalues = {}
+        self.kfac_data_means.corrections = {}
 
         overall_mean_eigenvalues = 0.0
         overall_mean_eigenvalue_corrections = 0.0
@@ -423,7 +427,7 @@ class KFAC(HessianApproximation):
             mean_eigenvalue: Float[Array, ""] = jnp.mean(
                 self._compute_eigenvalue_lambda_kfac(layer_name)
             )
-            self.mean_eigenvalues[layer_name] = mean_eigenvalue
+            self.kfac_data_means.eigenvalues[layer_name] = mean_eigenvalue
             overall_mean_eigenvalues += mean_eigenvalue
 
         for layer_name in self.eigenvalue_corrections.keys():
@@ -434,20 +438,15 @@ class KFAC(HessianApproximation):
             overall_mean_eigenvalue_corrections += mean_correction
 
         # Divide overall sums by number of layers
-        n_layers = len(self.eigenvalues.activations)
-        self.overall_mean_eigenvalue = jnp.array(
+        n_layers = len(self.kfac_data.eigenvalues.activations)
+        self.kfac_data_means.overall_mean_eigenvalues = jnp.array(
             overall_mean_eigenvalues / n_layers if n_layers > 0 else 0.0
         )
-        self.overall_mean_eigenvalue_correction = jnp.array(
+        self.kfac_data_means.overall_mean_corrections = jnp.array(
             overall_mean_eigenvalue_corrections / n_layers if n_layers > 0 else 0.0
         )
 
-        self.storage.save_mean_eigenvalues_and_corrections(
-            self.mean_eigenvalues,
-            self.mean_eigenvalue_corrections,
-            self.overall_mean_eigenvalue,
-            self.overall_mean_eigenvalue_correction,
-        )
+        self.storage.save_mean_eigenvalues_and_corrections(self.kfac_data_means)
 
     def covariance(
         self, input: Float[Array, "n_samples features"]
@@ -517,14 +516,14 @@ class KFAC(HessianApproximation):
 
         if compute_method == "covariance":
             # Average covariances over all samples
-            for layer_name in self.covariances.activations.keys():
-                self.covariances.activations[layer_name] /= n_samples
-                self.covariances.gradients[layer_name] /= n_samples
+            for layer_name in self.kfac_data.covariances.activations.keys():
+                self.kfac_data.covariances.activations[layer_name] /= n_samples
+                self.kfac_data.covariances.gradients[layer_name] /= n_samples
         if compute_method == "eigenvalue_correction":
             # Average eigenvalue corrections over all samples
-            for layer_name in self.eigenvalue_corrections.keys():
-                self.eigenvalue_corrections[layer_name] = (
-                    self.eigenvalue_corrections[layer_name] / n_samples
+            for layer_name in self.kfac_data.eigenvalue_corrections.keys():
+                self.kfac_data.eigenvalue_corrections[layer_name] = (
+                    self.kfac_data.eigenvalue_corrections[layer_name] / n_samples
                 )
 
     def _process_single_batch_collector(
@@ -566,12 +565,12 @@ class KFAC(HessianApproximation):
     ):
         """Accumulate covariance matrices for a given layer."""
         self._accumulate_data(
-            self.covariances.activations,
+            self.kfac_data.covariances.activations,
             layer_name,
             self.covariance(activations),
         )
         self._accumulate_data(
-            self.covariances.gradients,
+            self.kfac_data.covariances.gradients,
             layer_name,
             self.covariance(gradients),
         )
@@ -616,8 +615,12 @@ class KFAC(HessianApproximation):
         matrix form. Note, that the resulting matrix represents the row-major flattening
         of the original EKFAC formulation due to the JAX weight layout convention.
         """
-        Q_A: Float[Array, "d_in d_in"] = self.eigenvectors.activations[layer_name]
-        Q_G: Float[Array, "d_out d_out"] = self.eigenvectors.gradients[layer_name]
+        Q_A: Float[Array, "d_in d_in"] = self.kfac_data.eigenvectors.activations[
+            layer_name
+        ]
+        Q_G: Float[Array, "d_out d_out"] = self.kfac_data.eigenvectors.gradients[
+            layer_name
+        ]
 
         # Project activations and gradients onto eigenbases
         g_tilde: Float[Array, "n_batch d_out"] = jnp.einsum(
@@ -635,7 +638,9 @@ class KFAC(HessianApproximation):
             axis=0
         )  # (averaging is done by the calling method)
 
-        self._accumulate_data(self.eigenvalue_corrections, layer_name, correction)
+        self._accumulate_data(
+            self.kfac_data.eigenvalue_corrections, layer_name, correction
+        )
 
     def _compute_layer_hessians(self, params: Dict) -> Dict[str, jnp.ndarray]:
         """
@@ -729,9 +734,15 @@ class KFAC(HessianApproximation):
         Since we store the eigenvalue corrections in the shape [input_dim, output_dim],
         we can directly use them here by flattening in JAX-default row-major order without needing to transpose.
         """
-        A_eigvecs: Float[Array, "I I"] = self.eigenvectors.activations[layer_name]
-        G_eigvecs: Float[Array, "O O"] = self.eigenvectors.gradients[layer_name]
-        corrections: Float[Array, "I O"] = self.eigenvalue_corrections[layer_name]
+        A_eigvecs: Float[Array, "I I"] = self.kfac_data.eigenvectors.activations[
+            layer_name
+        ]
+        G_eigvecs: Float[Array, "O O"] = self.kfac_data.eigenvectors.gradients[
+            layer_name
+        ]
+        corrections: Float[Array, "I O"] = self.kfac_data.eigenvalue_corrections[
+            layer_name
+        ]
 
         Q_kron: Float[Array, "I*O, I*O"] = jnp.kron(A_eigvecs, G_eigvecs)
 
@@ -778,8 +789,12 @@ class KFAC(HessianApproximation):
         Since we store the eigenvalues in the shape [input_dim, output_dim],
         we can directly use them here by flattening in JAX-default row-major order without needing to transpose.
         """
-        eigenvectors_A: Float[Array, "I I"] = self.eigenvectors.activations[layer_name]
-        eigenvectors_G: Float[Array, "O O"] = self.eigenvectors.gradients[layer_name]
+        eigenvectors_A: Float[Array, "I I"] = self.kfac_data.eigenvectors.activations[
+            layer_name
+        ]
+        eigenvectors_G: Float[Array, "O O"] = self.kfac_data.eigenvectors.gradients[
+            layer_name
+        ]
 
         Q: Float[Array, "I*O, I*O"] = jnp.kron(eigenvectors_A, eigenvectors_G)
         Lambda: Float[Array, "I O"] = self._compute_eigenvalue_lambda_kfac(layer_name)

@@ -6,9 +6,9 @@ from sklearn.datasets import fetch_openml, make_classification, make_regression
 from sklearn.preprocessing import StandardScaler
 from typing_extensions import override
 
-from config.config import (
+from config.config import DatasetConfig
+from config.dataset_config import (
     CIFAR10DatasetConfig,
-    DatasetConfig,
     MNISTDatasetConfig,
     RandomClassificationConfig,
     RandomRegressionConfig,

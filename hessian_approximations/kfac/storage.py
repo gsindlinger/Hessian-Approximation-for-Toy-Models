@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float
 
+from hessian_approximations.kfac.data import KFACData, KFACMeanEigenvaluesAndCorrections
 from hessian_approximations.kfac.layer_components import LayerComponents
 
 
@@ -120,10 +121,7 @@ class KFACStorage:
 
     def save_mean_eigenvalues_and_corrections(
         self,
-        mean_eigenvalues: Dict[str, Float[Array, ""]],
-        mean_corrections: Dict[str, Float[Array, ""]],
-        overall_mean_eigenvalue: Float[Array, ""],
-        overall_mean_correction: Float[Array, ""],
+        kfac_means: KFACMeanEigenvaluesAndCorrections,
     ) -> None:
         # store as a json file
         path = self._get_path("mean_eigenvalues_and_corrections.json")
@@ -131,13 +129,17 @@ class KFACStorage:
             json.dump(
                 {
                     "mean_eigenvalues": {
-                        k: float(v) for k, v in mean_eigenvalues.items()
+                        k: float(v) for k, v in kfac_means.eigenvalues.items()
                     },
                     "mean_corrections": {
-                        k: float(v) for k, v in mean_corrections.items()
+                        k: float(v) for k, v in kfac_means.corrections.items()
                     },
-                    "overall_mean_eigenvalue": float(overall_mean_eigenvalue),
-                    "overall_mean_correction": float(overall_mean_correction),
+                    "overall_mean_eigenvalue": float(
+                        kfac_means.overall_mean_eigenvalues
+                    ),
+                    "overall_mean_correction": float(
+                        kfac_means.overall_mean_corrections
+                    ),
                 },
                 f,
                 indent=4,
@@ -173,3 +175,21 @@ class KFACStorage:
             jnp.array(data["overall_mean_eigenvalue"]),
             jnp.array(data["overall_mean_correction"]),
         )
+
+    def load_kfac_data(self):
+        kfac_data = KFACData()
+        kfac_data.covariances = self.load_covariances()
+        kfac_data.eigenvectors = self.load_eigenvectors()
+        kfac_data.eigenvalues = self.load_eigenvalues()
+        kfac_data.eigenvalue_corrections = self.load_eigenvalue_corrections()
+        return kfac_data
+
+    def load_kfac_mean_eigenvalues_and_corrections(self):
+        kfac_means = KFACMeanEigenvaluesAndCorrections()
+        (
+            kfac_means.eigenvalues,
+            kfac_means.corrections,
+            kfac_means.overall_mean_eigenvalues,
+            kfac_means.overall_mean_corrections,
+        ) = self.load_mean_eigenvalues_and_corrections()
+        return kfac_means

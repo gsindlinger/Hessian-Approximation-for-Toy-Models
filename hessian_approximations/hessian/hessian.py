@@ -8,7 +8,8 @@ from jax import flatten_util
 from typing_extensions import override
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.train import ApproximationModel, loss_wrapper_flattened
+from models.train import ApproximationModel
+from models.utils.loss import loss_wrapper_flattened
 
 
 class Hessian(HessianApproximation):

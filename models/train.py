@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Callable, Dict, Literal, Tuple
+from typing import Any, Dict, Literal, Tuple
 
 import jax
 import jax.numpy as jnp
-import optax
 from flax.training import train_state
 from tqdm import tqdm
 
 from config.config import Config, TrainingConfig
+from data.data import create_dataset
 from models.base import ApproximationModel
 from models.linear_model import LinearModel
-from models.loss import get_loss_fn
 from models.mlp import MLPModel
+from models.utils.checkpoint_storage import (
+    check_saved_model,
+    load_model_checkpoint,
+    save_model_checkpoint,
+)
+from models.utils.loss import get_loss_fn
+from models.utils.optimizers import get_optimizer
 
 
 def create_model(config: Config, input_dim: int, output_dim: int) -> ApproximationModel:
@@ -40,30 +46,35 @@ def create_model(config: Config, input_dim: int, output_dim: int) -> Approximati
     return model_cls(**model_kwargs)
 
 
-def loss_wrapper_flattened(
-    model: ApproximationModel,
-    params_flat: Any,
-    unravel_fn: Callable[[Any], Any],
-    loss_fn: Callable,
-    training_data: jnp.ndarray,
-    training_targets: jnp.ndarray,
-):
-    params_unraveled = unravel_fn(params_flat)
-    outputs = model.apply(params_unraveled, training_data)
-    return loss_fn(outputs, training_targets)
+def create_dataset_and_model(config: Config):
+    dataset = create_dataset(config.dataset)
+    model = create_model(
+        config, input_dim=dataset.input_dim(), output_dim=dataset.output_dim()
+    )
+    return dataset, model
 
 
-def get_optimizer(
-    optimizer_str: Literal["sgd", "adam"], lr: float
-) -> optax.GradientTransformation:
-    """Return optimizer."""
-    match optimizer_str:
-        case "sgd":
-            return optax.sgd(lr)
-        case "adam":
-            return optax.adam(lr)
-        case _:
-            raise ValueError(f"Unknown optimizer: {optimizer_str}")
+def train_or_load(config: Config, reload_model: bool = True):
+    dataset, model = create_dataset_and_model(config)
+    if not reload_model and check_saved_model(
+        dataset_config=config.dataset,
+        model_config=config.model,
+        training_config=config.training,
+    ):
+        params = load_model_checkpoint(
+            dataset_config=config.dataset,
+            model_config=config.model,
+            training_config=config.training,
+        )
+    else:
+        model, params = train_model(model, dataset.get_dataloaders(), config.training)
+        save_model_checkpoint(
+            params=params,
+            dataset_config=config.dataset,
+            model_config=config.model,
+            training_config=config.training,
+        )
+    return model, dataset, params
 
 
 def create_train_state(model, params, optimizer):
@@ -155,10 +166,6 @@ def train_model(
                 val_loss = validate_model(state, val_loader, loss_fn)
                 tqdm.write(f"Epoch {epoch + 1} Train Loss: {epoch_loss:.4f}")
                 tqdm.write(f"Epoch {epoch + 1} Validation Loss: {val_loss:.4f}")
-
-    # Save checkpoint of the model
-    if training_config.save_checkpoint:
-        model.save_model(state.params)
 
     return model, state.params
 

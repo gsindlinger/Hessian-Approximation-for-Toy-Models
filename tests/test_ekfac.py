@@ -9,13 +9,15 @@ from jaxtyping import Array, Float
 
 from config.config import (
     Config,
+)
+from config.dataset_config import RandomClassificationConfig
+from config.hessian_approximation_config import (
     KFACBuildConfig,
     KFACConfig,
     KFACRunConfig,
-    LinearModelConfig,
-    RandomClassificationConfig,
-    TrainingConfig,
 )
+from config.model_config import LinearModelConfig
+from config.training_config import TrainingConfig
 from data.data import AbstractDataset
 from hessian_approximations.factory import (
     create_hessian_by_name,
@@ -24,7 +26,7 @@ from hessian_approximations.factory import (
 from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC, KFACStorage
-from main import train
+from main import train_or_load
 from models.train import ApproximationModel, get_loss_fn
 
 ModelTuple = Tuple[ApproximationModel, AbstractDataset, Any, Config]
@@ -83,7 +85,9 @@ class TestEKFAC:
     ) -> Generator[ModelTuple, None, None]:
         """Train a small model for testing. Cached per configuration."""
 
-        model, dataset, params = train(random_classification_config, reload_model=True)
+        model, dataset, params = train_or_load(
+            random_classification_config, reload_model=True
+        )
 
         ekfac_build_config = KFACBuildConfig()
         ekfac_model = KFAC(
