@@ -1,9 +1,11 @@
 from functools import partial
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 import jax
 import jax.numpy as jnp
 import optax
+
+from models.base import ApproximationModel
 
 
 @partial(jax.jit, static_argnames=("reduction",))
@@ -43,3 +45,16 @@ def get_loss_name(loss_fn: Callable) -> str:
         return "cross_entropy"
     else:
         return "unknown"
+
+
+def loss_wrapper_flattened(
+    model: ApproximationModel,
+    params_flat: Any,
+    unravel_fn: Callable[[Any], Any],
+    loss_fn: Callable,
+    training_data: jnp.ndarray,
+    training_targets: jnp.ndarray,
+):
+    params_unraveled = unravel_fn(params_flat)
+    outputs = model.apply(params_unraveled, training_data)
+    return loss_fn(outputs, training_targets)

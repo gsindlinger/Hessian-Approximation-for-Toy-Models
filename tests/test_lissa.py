@@ -13,7 +13,7 @@ from config.config import (
 )
 from hessian_approximations.factory import create_hessian_by_name
 from hessian_approximations.lissa.lissa import LiSSA
-from main import train
+from main import train_or_load
 from models.train import get_loss_fn
 
 
@@ -71,13 +71,13 @@ class TestLiSSA:
     @pytest.fixture
     def trained_model(self, classification_config):
         """Train a simple classification model for testing LiSSA."""
-        model, dataset, params = train(classification_config)
+        model, dataset, params = train_or_load(classification_config)
         return model, dataset, params, classification_config
 
     @pytest.fixture
     def regression_trained_model(self, random_regression_config):
         """Train a regression model for testing LiSSA."""
-        model, dataset, params = train(random_regression_config)
+        model, dataset, params = train_or_load(random_regression_config)
         return model, dataset, params, random_regression_config
 
     # ------------------------------

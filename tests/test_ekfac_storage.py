@@ -8,15 +8,14 @@ import pytest
 
 from config.config import (
     Config,
-    KFACConfig,
-    LinearModelConfig,
-    RandomClassificationConfig,
-    TrainingConfig,
 )
+from config.dataset_config import RandomClassificationConfig
+from config.model_config import LinearModelConfig
+from config.training_config import TrainingConfig
 from data.data import AbstractDataset
 from hessian_approximations.kfac.kfac import KFAC
 from hessian_approximations.kfac.storage import KFACStorage
-from main import train
+from main import train_or_load
 from models.base import ApproximationModel
 from models.train import get_loss_fn
 
@@ -65,7 +64,7 @@ class TestKFACStorage:
         self, simple_config
     ) -> Tuple[ApproximationModel, AbstractDataset, Any, Config]:
         """Trains a small model to generate KFAC components."""
-        model, dataset, params = train(simple_config)
+        model, dataset, params = train_or_load(simple_config)
         return model, dataset, params, simple_config
 
     # --------------------------------------------------------------------------

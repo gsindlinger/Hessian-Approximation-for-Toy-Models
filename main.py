@@ -1,38 +1,19 @@
 import jax.numpy as jnp
 
 from config.config import Config
-from data.data import create_dataset
 from hessian_approximations.factory import (
     create_hessian_by_name,
     hessian_approximation,
 )
-from models.loss import get_loss_fn
-from models.train import create_model, train_model
-
-
-def create_dataset_and_model(config: Config):
-    dataset = create_dataset(config.dataset)
-    model = create_model(
-        config, input_dim=dataset.input_dim(), output_dim=dataset.output_dim()
-    )
-    return dataset, model
-
-
-def train(config: Config, reload_model: bool = True):
-    dataset, model = create_dataset_and_model(config)
-    if not reload_model and model.check_saved_model():
-        model, params = model.load_model()
-    else:
-        model, params = train_model(model, dataset.get_dataloaders(), config.training)
-    return model, dataset, params
+from models.train import train_or_load
+from models.utils.loss import get_loss_fn
 
 
 def main():
     config = Config.parse_args()
-    model, dataset, params = train(config)
+    model, dataset, params = train_or_load(config)
 
     train_data, train_targets = dataset.get_train_data()
-
     hessian_method = create_hessian_by_name("kfac")
     loss_fn = get_loss_fn(config.model.loss)
 
