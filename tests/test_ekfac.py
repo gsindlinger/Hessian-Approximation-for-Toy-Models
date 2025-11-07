@@ -426,14 +426,23 @@ class TestEKFAC:
             vector=test_vector,
         )
 
-        hessian_ekfac = ekfac_model.compute_hessian(
+        hessian_ekfac_explicit = ekfac_model.compute_hessian(
             model=model,
             params=params,
             training_data=jnp.asarray(x_train),
             training_targets=jnp.asarray(y_train),
             loss_fn=loss_fn,
         )
-        hessian_ekfac = np.array(hessian_ekfac)
+
+        ekfac_lambda = ekfac_model.eigenvalue_corrections["output"] + damping_lambda
+
+        hessian_inv_ekfac_explicit = ekfac_model.compute_inverse_hessian(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(x_train),
+            training_targets=jnp.asarray(y_train),
+            loss_fn=loss_fn,
+        )
 
         # Compute IHVP for KFAC
         ekfac_model.config.run_config.use_eigenvalue_correction = False
@@ -446,14 +455,25 @@ class TestEKFAC:
             vector=test_vector,
         )
 
-        hessian_kfac = ekfac_model.compute_hessian(
+        hessian_kfac_explicit = ekfac_model.compute_hessian(
             model=model,
             params=params,
             training_data=jnp.asarray(x_train),
             training_targets=jnp.asarray(y_train),
             loss_fn=loss_fn,
         )
-        hessian_kfac = np.array(hessian_kfac)
+
+        hessian_inv_kfac_explicit = ekfac_model.compute_inverse_hessian(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(x_train),
+            training_targets=jnp.asarray(y_train),
+            loss_fn=loss_fn,
+        )
+
+        kfac_lambda = (
+            ekfac_model._compute_eigenvalue_lambda_kfac("output") + damping_lambda
+        )
 
         true_hessian = Hessian().compute_hessian(
             model=model,
@@ -462,7 +482,6 @@ class TestEKFAC:
             training_targets=jnp.asarray(y_train),
             loss_fn=loss_fn,
         ) + ekfac_model.damping() * jnp.eye(test_vector.shape[0], test_vector.shape[0])
-        print(ekfac_model.damping())
 
         true_hessian = np.array(true_hessian)
         true_hessian_ihvp = jnp.linalg.solve(
@@ -475,6 +494,10 @@ class TestEKFAC:
         dim = test_vector.shape[0]
         ihvp_ekfac_full = []
         ihvp_kfac_full = []
+
+        hvp_efkac_full = []
+        hvp_kfac_full = []
+
         for i in range(dim):
             unit_vector = jnp.zeros_like(test_vector).at[i].set(1.0)
 
@@ -488,6 +511,16 @@ class TestEKFAC:
             )
             ihvp_ekfac_full.append(ihvp_ekfac_i)
 
+            hvp_ekfac_i = ekfac_model.compute_hvp(
+                model=model,
+                params=params,
+                training_data=jnp.asarray(x_train),
+                training_targets=jnp.asarray(y_train),
+                loss_fn=loss_fn,
+                vector=unit_vector,
+            )
+            hvp_efkac_full.append(hvp_ekfac_i)
+
             ekfac_model.config.run_config.use_eigenvalue_correction = False
             ihvp_kfac_i = ekfac_model.compute_ihvp(
                 model=model,
@@ -499,22 +532,181 @@ class TestEKFAC:
             )
             ihvp_kfac_full.append(ihvp_kfac_i)
 
-        # plot heatmap of full inverse hessian matrix for ekfac and kfac
-        hessian_inv_ekfac = jnp.column_stack(ihvp_ekfac_full)
-        hessian_inv_kfac = jnp.column_stack(ihvp_kfac_full)
+            hvp_kfac_i = ekfac_model.compute_hvp(
+                model=model,
+                params=params,
+                training_data=jnp.asarray(x_train),
+                training_targets=jnp.asarray(y_train),
+                loss_fn=loss_fn,
+                vector=unit_vector,
+            )
+            hvp_kfac_full.append(hvp_kfac_i)
 
-        hessian_check_ekfac = hessian_ekfac @ hessian_inv_ekfac
-        hessian_check_kfac = hessian_kfac @ hessian_inv_kfac
+        hessian_inv_ekfac_implicit = jnp.column_stack(ihvp_ekfac_full)
+        hessian_inv_kfac_implicit = jnp.column_stack(ihvp_kfac_full)
+
+        hessian_ekfac_implicit = jnp.column_stack(hvp_efkac_full)
+        hessian_kfac_implicit = jnp.column_stack(hvp_kfac_full)
+
+        # # plot lambdas for ekfac and kfac to compare as lineplot by flattening them in a single plot
+        # import matplotlib.pyplot as plt
+
+        # plt.figure(figsize=(10, 5))
+        # plt.plot(ekfac_lambda.flatten(), label="E-KFAC Lambda")
+        # plt.plot(kfac_lambda.flatten(), label="KFAC Lambda")
+        # plt.title("Eigenvalue Corrections (Lambda) Comparison")
+        # plt.xlabel("Index")
+        # plt.ylabel("Lambda Value")
+        # plt.legend()
+        # plt.show()
+
+        # # and their difference
+        # plt.figure(figsize=(5, 5))
+        # plt.title("Difference Lambda (E-KFAC - KFAC)")
+        # plt.imshow(ekfac_lambda - kfac_lambda, cmap="viridis", aspect="auto")
+        # plt.colorbar()
+        # plt.show()
+
+        # # plot heatmap of full hessian matrix for ekfac and kfac computed via explicit and implicit methods
+        # import matplotlib.pyplot as plt
+
+        # plt.figure(figsize=(15, 5))
+        # plt.subplot(1, 3, 1)
+        # plt.title("H (E-KFAC) Explicit")
+        # plt.imshow(hessian_ekfac_explicit, cmap="viridis", aspect="auto")
+        # plt.colorbar()
+        # plt.subplot(1, 3, 2)
+        # plt.title("H (E-KFAC) Implicit")
+        # plt.imshow(hessian_ekfac_implicit, cmap="viridis", aspect="auto")
+        # plt.colorbar()
+        # plt.subplot(1, 3, 3)
+        # plt.title("H (True)")
+        # plt.imshow(true_hessian, cmap="viridis", aspect="auto")
+        # plt.colorbar()
+        # plt.show()
+
+        # plt.figure(figsize=(15, 5))
+        # plt.subplot(1, 3, 1)
+        # plt.title("H (KFAC) Explicit")
+        # plt.imshow(hessian_kfac_explicit, cmap="viridis", aspect="auto")
+        # plt.colorbar()
+        # plt.subplot(1, 3, 2)
+        # plt.title("H (KFAC) Implicit")
+        # plt.imshow(hessian_kfac_implicit, cmap="viridis", aspect="auto")
+        # plt.colorbar()
+        # plt.subplot(1, 3, 3)
+        # plt.title("H (True)")
+        # plt.imshow(true_hessian, cmap="viridis", aspect="auto")
+        # plt.colorbar()
+        # plt.show()
+
+        # plot heatmap of difference between hessian computed via explicit and via implicit methods
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.title("Difference H (E-KFAC)")
+        plt.imshow(
+            hessian_ekfac_explicit - hessian_ekfac_implicit,
+            cmap="viridis",
+            aspect="auto",
+        )
+        plt.colorbar()
+        plt.subplot(1, 2, 2)
+        plt.title("Difference H (KFAC)")
+        plt.imshow(
+            hessian_kfac_explicit - hessian_kfac_implicit,
+            cmap="viridis",
+            aspect="auto",
+        )
+        plt.colorbar()
+        plt.suptitle(
+            "Difference between Explicit and Implicit Hessian \n (H (Explicit) - H (Implicit))",
+        )
+        plt.tight_layout(rect=(0, 0, 1, 0.95))  # reserve top 5% for title
+        plt.show()
+
+        # plot H_implicit @ H_implicit^-1 for ekfac and kfac
+        hessian_check_ekfac_implicit = (
+            hessian_ekfac_implicit @ hessian_inv_ekfac_implicit
+        )
+        hessian_check_kfac_implicit = hessian_kfac_implicit @ hessian_inv_kfac_implicit
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.title("H @ H^{-1} (E-KFAC) (both implicit)")
+        plt.imshow(hessian_check_ekfac_implicit, cmap="viridis", aspect="auto")
+        plt.colorbar()
+        plt.subplot(1, 2, 2)
+        plt.title("H @ H^{-1} (KFAC) (both implicit)")
+        plt.imshow(hessian_check_kfac_implicit, cmap="viridis", aspect="auto")
+        plt.colorbar()
+        plt.show()
+
+        # plot heatmap of hessian inverse computed via ihvp and via direct inverse
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.title("H^{-1} Implicit (KFAC)")
+        plt.imshow(hessian_inv_kfac_implicit, cmap="viridis", aspect="auto")
+        plt.colorbar()
+        plt.subplot(1, 2, 2)
+        plt.title("H^{-1} Explicit (KFAC)")
+        plt.imshow(hessian_inv_kfac_explicit, cmap="viridis", aspect="auto")
+        plt.colorbar()
+        plt.show()
+
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.title("H^{-1} Implicit (E-KFAC)")
+        plt.imshow(hessian_inv_ekfac_implicit, cmap="viridis", aspect="auto")
+        plt.colorbar()
+        plt.subplot(1, 2, 2)
+        plt.title("H^{-1} Explicit (E-KFAC)")
+        plt.imshow(hessian_inv_ekfac_explicit, cmap="viridis", aspect="auto")
+        plt.colorbar()
+        plt.show()
+
+        # plot heatmap of difference between hessian inverse computed via ihvp and via direct inverse
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1)
+        plt.title("Difference H^{-1} (KFAC)")
+        plt.imshow(
+            hessian_inv_kfac_implicit - hessian_inv_kfac_explicit,
+            cmap="viridis",
+            aspect="auto",
+        )
+        plt.colorbar()
+        plt.subplot(1, 2, 2)
+        plt.title("Difference H^{-1} (E-KFAC)")
+        plt.imshow(
+            hessian_inv_ekfac_implicit - hessian_inv_ekfac_explicit,
+            cmap="viridis",
+            aspect="auto",
+        )
+        plt.colorbar()
+        plt.suptitle(
+            "Difference between Implicit and Explicit Inverse Hessian \n (H^{-1} (Implicit) - H^{-1} (Explicit))",
+        )
+        plt.tight_layout(rect=(0, 0, 1, 0.95))  # reserve top 5% for title
+        plt.show()
+
+        # plot heatmap of full inverse hessian matrix for ekfac and kfac
+
+        hessian_check_ekfac = hessian_ekfac_explicit @ hessian_inv_ekfac_implicit
+        hessian_check_kfac = hessian_kfac_explicit @ hessian_inv_kfac_implicit
 
         import matplotlib.pyplot as plt
 
         plt.figure(figsize=(10, 5))
         plt.subplot(1, 2, 1)
-        plt.title("H @ H^{-1} (E-KFAC)")
+        plt.title("H @ H^{-1} (E-KFAC) (implicit)")
         plt.imshow(hessian_check_ekfac, cmap="viridis", aspect="auto")
         plt.colorbar()
         plt.subplot(1, 2, 2)
-        plt.title("H @ H^{-1} (KFAC)")
+        plt.title("H @ H^{-1} (KFAC) (implicit)")
         plt.imshow(hessian_check_kfac, cmap="viridis", aspect="auto")
         plt.colorbar()
         plt.show()
@@ -531,8 +723,8 @@ class TestEKFAC:
         assert jnp.isfinite(ihvp_kfac).all(), "IHVP contains non-finite values"
 
         # Verify round-trip: H @ (H^{-1} @ v) ≈ v
-        hvp_ekfac = hessian_ekfac @ ihvp_ekfac
-        hvp_kfac = hessian_kfac @ ihvp_kfac
+        hvp_ekfac = hessian_ekfac_explicit @ ihvp_ekfac
+        hvp_kfac = hessian_kfac_explicit @ ihvp_kfac
 
         assert jnp.allclose(hvp_ekfac, test_vector, rtol=0.2, atol=1), (
             f"Round-trip test failed: H @ (H^{{-1}} @ v) != v\n"
