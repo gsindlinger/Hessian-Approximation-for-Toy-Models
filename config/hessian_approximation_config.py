@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Literal
+
+from typing_extensions import override
 
 
 class HessianName(str, Enum):
@@ -19,6 +21,9 @@ class HessianApproximationConfig:
     """Configuration for Hessian approximation."""
 
     name: HessianName
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass
@@ -41,6 +46,11 @@ class KFACBuildConfig:
     collector_batch_size: int | None = None
     recalc_ekfac_components: bool = False
 
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        ignored = {"recalc_ekfac_components", "collector_batch_size"}
+        return {k: v for k, v in data.items() if k not in ignored}
+
 
 @dataclass
 class KFACRunConfig:
@@ -55,3 +65,14 @@ class KFACConfig(HessianApproximationConfig):
     name: HessianName = field(default=HessianName.KFAC, init=False)
     build_config: KFACBuildConfig = field(default_factory=KFACBuildConfig)
     run_config: KFACRunConfig = field(default_factory=KFACRunConfig)
+
+    @property
+    def recalc_ekfac_components(self) -> bool:
+        return (
+            self.build_config.recalc_ekfac_components
+            or self.run_config.recalc_kfac_components
+        )
+
+    @override
+    def to_dict(self) -> dict:
+        return self.build_config.to_dict()

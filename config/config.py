@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Dict, List
 
 import jax
@@ -26,9 +26,7 @@ class Config:
     dataset: DatasetConfig
     model: ModelConfig
     training: TrainingConfig
-    hessian_approximation: HessianApproximationConfig = field(
-        default_factory=lambda: HessianApproximationConfig(name=HessianName.HESSIAN)
-    )
+    hessian_approximation: HessianApproximationConfig | None = None
 
     @staticmethod
     def parse_args() -> Config:
@@ -72,23 +70,31 @@ class Config:
         dataset_config: DatasetConfig,
         model_config: ModelConfig,
         training_config: TrainingConfig,
-        length: int = 8,
+        hessian_approx_config: HessianApproximationConfig | None = None,
+        length: int = 10,
     ) -> str:
         """Generate a unique hash string for the combination of dataset, model, and training configs."""
         import hashlib
         import json
 
         # Serialize configurations to JSON strings
-        dataset_json = json.dumps(vars(dataset_config), sort_keys=True)
-        model_json = json.dumps(vars(model_config), sort_keys=True)
-        training_json = json.dumps(vars(training_config), sort_keys=True)
+        dataset_json = json.dumps(asdict(dataset_config), sort_keys=True)
+        model_json = json.dumps(asdict(model_config), sort_keys=True)
+        training_json = json.dumps(asdict(training_config), sort_keys=True)
 
-        # Combine all JSON strings
-        combined = dataset_json + model_json + training_json
+        if hessian_approx_config is not None:
+            hessian_json = json.dumps(hessian_approx_config.to_dict(), sort_keys=True)
+            # Combine all JSON strings including Hessian config
+            combined = dataset_json + model_json + training_json + hessian_json
+        else:
+            # Combine all JSON strings
+            combined = dataset_json + model_json + training_json
 
         # Generate SHA256 hash
         hash_object = hashlib.sha256(combined.encode())
-        hash_hex = hash_object.hexdigest()[:10]  # Use first 10 characters for brevity
+        hash_hex = hash_object.hexdigest()[
+            :length
+        ]  # Use first length characters for brevity
 
         return hash_hex
 

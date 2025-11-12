@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Tuple
 
 from jax import numpy as jnp
@@ -8,15 +8,16 @@ from jax import numpy as jnp
 class LayerComponents:
     """Container for layer-wise activations and gradients."""
 
-    activations: Dict[str, jnp.ndarray]
-    gradients: Dict[str, jnp.ndarray]
-
-    def __init__(self, activations=None, gradients=None):
-        self.activations = activations if activations is not None else {}
-        self.gradients = gradients if gradients is not None else {}
+    activations: Dict[str, jnp.ndarray] = field(default_factory=dict)
+    gradients: Dict[str, jnp.ndarray] = field(default_factory=dict)
 
     def __bool__(self):
-        return bool(self.activations) and bool(self.gradients)
+        return (
+            bool(self.activations)
+            and bool(self.gradients)
+            and self.activations != {}
+            and self.gradients != {}
+        )
 
     def items(self):
         for layer_name in self.activations.keys():

@@ -1,4 +1,4 @@
-from typing import Any, Dict, Generator, Tuple
+from typing import Any, Dict, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -13,21 +13,15 @@ from config.config import (
 from config.dataset_config import RandomClassificationConfig
 from config.hessian_approximation_config import (
     KFACBuildConfig,
-    KFACConfig,
     KFACRunConfig,
 )
 from config.model_config import LinearModelConfig
 from config.training_config import TrainingConfig
 from data.data import AbstractDataset
-from hessian_approximations.factory import (
-    create_hessian_by_name,
-    hessian_approximation,
-)
 from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
 from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC, KFACStorage
-from main import train_or_load
-from models.train import ApproximationModel, get_loss_fn
+from hessian_approximations.kfac.kfac import KFAC
+from models.train import ApproximationModel, get_loss_fn, train_or_load
 
 ModelTuple = Tuple[ApproximationModel, AbstractDataset, Any, Config]
 
@@ -36,10 +30,10 @@ class TestEKFAC:
     """Tests for various Hessian approximation methods including E-KFAC."""
 
     @pytest.fixture(params=["linear", "multi_layer"], scope="session")
-    def random_classification_config(self, request):
+    def config(self, request):
         """Parametrized configuration for testing across different setups."""
         if request.param == "linear":
-            return Config(
+            config = Config(
                 dataset=RandomClassificationConfig(
                     n_samples=10000,
                     n_features=10,
@@ -59,7 +53,7 @@ class TestEKFAC:
                 ),
             )
         elif request.param == "multi_layer":
-            return Config(
+            config = Config(
                 dataset=RandomClassificationConfig(
                     n_samples=10000,
                     n_features=10,
@@ -79,41 +73,7 @@ class TestEKFAC:
                 ),
             )
 
-    @pytest.fixture(scope="session")
-    def trained_model(
-        self, random_classification_config, request
-    ) -> Generator[ModelTuple, None, None]:
-        """Train a small model for testing. Cached per configuration."""
-
-        model, dataset, params = train_or_load(
-            random_classification_config, reload_model=True
-        )
-
-        ekfac_build_config = KFACBuildConfig()
-        ekfac_model = KFAC(
-            config=KFACConfig(
-                build_config=ekfac_build_config,
-            )
-        )
-        ekfac_model.get_ekfac_components(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=get_loss_fn(random_classification_config.model.loss),
-        )
-
-        yield model, dataset, params, random_classification_config
-
-        # Cleanup happens after all tests for this parameter are done
-        KFACStorage().delete_storage()
-
-    # Keep the session-level cleanup as a fallback
-    @pytest.fixture(scope="session", autouse=True)
-    def cleanup_kfac_data(self):
-        yield  # run all tests
-        # Final cleanup after all sessions
-        KFACStorage().delete_storage()
+        yield config
 
     def _get_test_vector(
         self,
@@ -134,9 +94,37 @@ class TestEKFAC:
         vec, _ = flatten_util.ravel_pytree(grad)
         return vec
 
-    def _compute_full_implicit_matrices(
-        self, model_obj, model, params, x_train, y_train, loss_fn, dim
-    ):
+    def _get_test_vector_batch(self, config: Config, n_vectors: int = 5):
+        """Utility: Generate batched test vectors for IHVP tests."""
+        model, dataset, params, loss = train_or_load(config)
+        loss_fn = get_loss_fn(config.model.loss)
+        x_train, y_train = dataset.get_train_data()
+        x_train = jnp.asarray(x_train)
+
+        ekfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=True, damping_lambda=0.1
+            ),
+        )
+
+        pseudo_targets = ekfac_model.generate_pseudo_targets(
+            model=model,
+            params=params,
+            training_data=jnp.asarray(x_train[:n_vectors]),
+            loss_fn=loss_fn,
+        )
+
+        gradient_vecs = []
+        for i in range(n_vectors):
+            grad = jax.grad(
+                lambda p: loss_fn(model.apply(p, x_train[i]), pseudo_targets[i])
+            )(params)
+            gradient_vecs.append(flatten_util.ravel_pytree(grad)[0])
+
+        return jnp.stack(gradient_vecs)
+
+    def _compute_full_implicit_matrices(self, model_obj: KFAC, dim: int):
         """Helper method to compute full H and H^-1 matrices
         implicitly via hvp and ihvp for each basis vector."""
         hvp_full = []
@@ -144,45 +132,23 @@ class TestEKFAC:
         for i in range(dim):
             unit_vec = jnp.zeros(dim).at[i].set(1.0)
             hvp = model_obj.compute_hvp(
-                model=model,
-                params=params,
-                training_data=jnp.asarray(x_train),
-                training_targets=jnp.asarray(y_train),
-                loss_fn=loss_fn,
                 vector=unit_vec,
             )
             ihvp = model_obj.compute_ihvp(
-                model=model,
-                params=params,
-                training_data=jnp.asarray(x_train),
-                training_targets=jnp.asarray(y_train),
-                loss_fn=loss_fn,
                 vector=unit_vec,
             )
             hvp_full.append(hvp)
             ihvp_full.append(ihvp)
         return jnp.column_stack(hvp_full), jnp.column_stack(ihvp_full)
 
-    def test_ekfac_existence(self, trained_model: ModelTuple):
+    def test_ekfac_existence(self, config: Config):
         """Test if Hessian approximation can be computed without errors."""
-        model, dataset, params, config = trained_model
-
-        x, y = dataset.get_train_data()
-        hessian_method = create_hessian_by_name("kfac")
-
-        ekfac_hessian = hessian_approximation(
-            method=hessian_method,
-            model=model,
-            parameters=params,
-            test_data=jnp.asarray(x),
-            test_targets=jnp.asarray(y),
-            loss=get_loss_fn(config.model.loss),
-        )
+        ekfac_hessian = KFAC(full_config=config).compute_hessian()
 
         assert ekfac_hessian is not None
         assert jnp.isfinite(ekfac_hessian).all()
 
-    def test_gradient_consistency(self, trained_model: ModelTuple):
+    def test_gradient_consistency(self, config: Config):
         """
         Verify E-KFAC collector vs true gradients (sanity test).
         The following should hold for each linear layer l:
@@ -193,8 +159,7 @@ class TestEKFAC:
             - a_{l-1} = activations of the previous layer
             - s_l = preactivation gradients = ∇_{W_l a_{l-1}} log p(y | x; θ)
         """
-        model, dataset, params, config = trained_model
-        loss_fn = get_loss_fn(config.model.loss)
+        model, dataset, params, loss_fn = train_or_load(config)
 
         def normal_loss_fn(params, x, y, model):
             """Standard loss function without EKFAC wrapper."""
@@ -208,18 +173,11 @@ class TestEKFAC:
 
         # Collect EKFAC statistics
         # Need to reload data, otherwise collector data is empty
-        ekfac_approx = KFAC(
-            config=KFACConfig(
-                build_config=KFACBuildConfig(recalc_ekfac_components=True)
-            )
+        ekfac_build_config = KFACBuildConfig(recalc_ekfac_components=True)
+        ekfac_approx = KFAC.setup_with_run_and_build_config(
+            full_config=config, build_config=ekfac_build_config
         )
-        ekfac_approx.get_ekfac_components(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=loss_fn,
-        )
+        ekfac_approx.get_ekfac_components()
 
         # Compare each layer’s gradients
         for key in ground_truth_grads["params"].keys():
@@ -246,135 +204,71 @@ class TestEKFAC:
                 f"E[a kron g] does not match E[ground truth gradient] for layer {key}"
             )
 
-    def test_kfac_hessian(self, trained_model: ModelTuple):
+    def test_kfac_hessian(self, config: Config):
         """Test KFAC Hessian computation (without eigenvalue correction)."""
 
-        model, dataset, params, config = trained_model
-        loss_fn = get_loss_fn(config.model.loss)
+        hessian = Hessian(full_config=config).compute_hessian()
 
-        hessian = Hessian().compute_hessian(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=loss_fn,
-        )
-
-        gnh = GaussNewton().compute_hessian(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=loss_fn,
-        )
+        gnh = GaussNewton(full_config=config).compute_hessian()
 
         kfac_config = KFACRunConfig(
             use_eigenvalue_correction=False,
             damping_lambda=0.0,
         )
-        kfac_model = KFAC(config=KFACConfig(run_config=kfac_config))
-        kfac = kfac_model.compute_hessian(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=loss_fn,
+        kfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config, run_config=kfac_config
         )
+        kfac = kfac_model.compute_hessian()
 
         assert hessian.shape == gnh.shape == kfac.shape, (
             "Hessian, GNH, and KFAC Hessians should have the same shape."
         )
 
-    def test_ekfac_hessian(self, trained_model: ModelTuple):
+    def test_ekfac_hessian(self, config: Config):
         """Test KFAC Hessian computation (without eigenvalue correction)."""
 
-        model, dataset, params, config = trained_model
-        loss_fn = get_loss_fn(config.model.loss)
+        hessian = Hessian(full_config=config).compute_hessian()
 
-        hessian = Hessian().compute_hessian(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=loss_fn,
-        )
+        gnh = GaussNewton(full_config=config).compute_hessian()
 
-        gnh = GaussNewton().compute_hessian(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=loss_fn,
-        )
-
-        ekfac_build_config = KFACBuildConfig(
-            recalc_ekfac_components=True,
-            use_pseudo_targets=False,
-        )
         ekfac_config = KFACRunConfig(
             use_eigenvalue_correction=True,
         )
-        ekfac_model = KFAC(
-            config=KFACConfig(run_config=ekfac_config, build_config=ekfac_build_config)
+        ekfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config, run_config=ekfac_config
         )
-        ekfac = ekfac_model.compute_hessian(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=loss_fn,
-        )
+        ekfac = ekfac_model.compute_hessian()
 
         assert hessian.shape == gnh.shape == ekfac.shape, (
             "Hessian, GNH, and KFAC Hessians should have the same shape."
         )
 
-    def test_ekfac_batched_processing_is_close_to_full_data(
-        self, trained_model: ModelTuple
-    ):
+    def test_ekfac_batched_processing_is_close_to_full_data(self, config: Config):
         """Test that E-KFAC with batch processing yields the same result as without batching on a single run."""
 
-        model, dataset, params, config = trained_model
-        loss_fn = get_loss_fn(config.model.loss)
-
         ekfac_run_config = KFACRunConfig(use_eigenvalue_correction=True)
-
         ekfac_full_data_config = KFACBuildConfig(
             recalc_ekfac_components=True,
             collector_batch_size=None,  # Full data
             use_pseudo_targets=False,
         )
 
-        ekfac_full_data_model = KFAC(
-            config=KFACConfig(
-                build_config=ekfac_full_data_config, run_config=ekfac_run_config
-            )
+        ekfac_full_data_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=ekfac_run_config,
+            build_config=ekfac_full_data_config,
         )
-        ekfac_full_data = ekfac_full_data_model.compute_hessian(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=loss_fn,
-        )
+        ekfac_full_data = ekfac_full_data_model.compute_hessian()
 
         ekfac_batched_config = KFACBuildConfig(
-            recalc_ekfac_components=False,
             collector_batch_size=100,  # Smaller batches
-            use_pseudo_targets=False,
         )
-        ekfac_batched_model = KFAC(
-            config=KFACConfig(
-                build_config=ekfac_batched_config, run_config=ekfac_run_config
-            )
+        ekfac_batched_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=ekfac_run_config,
+            build_config=ekfac_batched_config,
         )
-        ekfac_batched = ekfac_batched_model.compute_hessian(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(dataset.get_train_data()[0]),
-            training_targets=jnp.asarray(dataset.get_train_data()[1]),
-            loss_fn=loss_fn,
-        )
+        ekfac_batched = ekfac_batched_model.compute_hessian()
 
         assert ekfac_full_data.shape == ekfac_batched.shape, (
             "E-KFAC Hessians from full data and batched processing should have the same shape."
@@ -384,20 +278,20 @@ class TestEKFAC:
         for layer_name, (
             activations_cov,
             gradients_cov,
-        ) in ekfac_full_data_model.covariances.items():
-            batched_activations_cov = ekfac_batched_model.covariances.activations[
-                layer_name
-            ]
-            batched_gradients_cov = ekfac_batched_model.covariances.gradients[
+        ) in ekfac_full_data_model.kfac_data.covariances.items():
+            batched_activations_cov = (
+                ekfac_batched_model.kfac_data.covariances.activations[layer_name]
+            )
+            batched_gradients_cov = ekfac_batched_model.kfac_data.covariances.gradients[
                 layer_name
             ]
 
-            eigenvalue_corrections = ekfac_full_data_model.eigenvalue_corrections[
-                layer_name
-            ]
-            eigenvalue_corrections_batched = ekfac_batched_model.eigenvalue_corrections[
-                layer_name
-            ]
+            eigenvalue_corrections = (
+                ekfac_full_data_model.kfac_data.eigenvalue_corrections[layer_name]
+            )
+            eigenvalue_corrections_batched = (
+                ekfac_batched_model.kfac_data.eigenvalue_corrections[layer_name]
+            )
 
             assert np.allclose(
                 activations_cov,
@@ -417,59 +311,55 @@ class TestEKFAC:
                 atol=1e-7,
             ), f"Eigenvalue corrections mismatch for layer {layer_name}"
 
-    def test_ekfac_hessian_ihvp_consistency(self, trained_model):
-        """Test EKFAC: explicit vs implicit consistency and round-trip."""
-        model, dataset, params, config = trained_model
+    def test_ekfac_hessian_ihvp_and_hvp_consistency(self, config: Config):
+        """Test E-KFAC: Check whether H @ (H^{-1} @ v) ≈ v and H^{-1} @ (H @ v) ≈ v."""
+        model, dataset, params, loss = train_or_load(config)
         x_train, y_train = dataset.get_train_data()
+        x_train = jnp.asarray(x_train)
         loss_fn = get_loss_fn(config.model.loss)
 
-        ekfac_model = KFAC(
-            config=KFACConfig(
-                build_config=KFACBuildConfig(
-                    use_pseudo_targets=False, recalc_ekfac_components=True
-                ),
-                run_config=KFACRunConfig(
-                    use_eigenvalue_correction=True, damping_lambda=0.1
-                ),
-            )
+        ekfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=True, damping_lambda=0.1
+            ),
         )
 
-        test_vec = self._get_test_vector(ekfac_model, model, params, x_train, loss_fn)
-        dim = test_vec.shape[0]
-
-        H = ekfac_model.compute_hessian(model, params, x_train, y_train, loss_fn)
-        H_inv = ekfac_model.compute_inverse_hessian(
-            model, params, x_train, y_train, loss_fn
-        )
-        H_implicit, H_inv_implicit = self._compute_full_implicit_matrices(
-            ekfac_model, model, params, x_train, y_train, loss_fn, dim
+        test_vec = self._get_test_vector(
+            ekfac_model=ekfac_model,
+            model=model,
+            params=params,
+            x_train=x_train,
+            loss_fn=loss_fn,
         )
 
-        # Consistency between explicit and implicit
-        assert jnp.allclose(H, H_implicit, atol=1e-3)
-        assert jnp.allclose(H_inv, H_inv_implicit, atol=1e-3)
+        H = ekfac_model.compute_hessian()
+        H_inv = ekfac_model.compute_inverse_hessian()
+        ihvp = ekfac_model.compute_ihvp(test_vec)
+        hvp = ekfac_model.compute_hvp(test_vec)
 
         # Round-trip tests
-        hvp = H @ (H_inv @ test_vec)
-        ihvp = H_inv @ (H @ test_vec)
-        assert jnp.allclose(hvp, test_vec, rtol=0.1, atol=1e-5)
-        assert jnp.allclose(ihvp, test_vec, rtol=0.1, atol=1e-5)
+        ihvp_round_trip = H @ ihvp
+        assert jnp.allclose(ihvp_round_trip, test_vec, rtol=0.01, atol=1e-5), (
+            "IHVP round-trip failed."
+        )
+        hvp_round_trip = H_inv @ hvp
+        assert jnp.allclose(hvp_round_trip, test_vec, rtol=0.01, atol=1e-5), (
+            "HVP round-trip failed."
+        )
 
-    def test_kfac_hessian_ihvp_consistency(self, trained_model):
-        """Test KFAC: explicit vs implicit consistency and round-trip."""
-        model, dataset, params, config = trained_model
+    def test_kfac_hessian_ihvp_and_hvp_consistency(self, config: Config):
+        """Check whether H @ (H^{-1} @ v) ≈ v and H^{-1} @ (H @ v) ≈ v."""
+        model, dataset, params, loss = train_or_load(config)
         x_train, y_train = dataset.get_train_data()
+        x_train = jnp.asarray(x_train)
         loss_fn = get_loss_fn(config.model.loss)
 
-        kfac_model = KFAC(
-            config=KFACConfig(
-                build_config=KFACBuildConfig(
-                    use_pseudo_targets=False, recalc_ekfac_components=True
-                ),
-                run_config=KFACRunConfig(
-                    use_eigenvalue_correction=False, damping_lambda=0.1
-                ),
-            )
+        kfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=False, damping_lambda=0.1
+            ),
         )
 
         test_vec = self._get_test_vector(
@@ -479,203 +369,138 @@ class TestEKFAC:
             x_train=x_train,
             loss_fn=loss_fn,
         )
-        dim = test_vec.shape[0]
 
-        H = kfac_model.compute_hessian(model, params, x_train, y_train, loss_fn)
-        H_inv = kfac_model.compute_inverse_hessian(
-            model, params, x_train, y_train, loss_fn
-        )
-        H_implicit, H_inv_implicit = self._compute_full_implicit_matrices(
-            kfac_model, model, params, x_train, y_train, loss_fn, dim
-        )
-
-        # Consistency between explicit and implicit
-        assert jnp.allclose(H, H_implicit, atol=1e-3)
-        assert jnp.allclose(H_inv, H_inv_implicit, atol=1e-3)
+        H = kfac_model.compute_hessian()
+        H_inv = kfac_model.compute_inverse_hessian()
+        ihvp = kfac_model.compute_ihvp(test_vec)
+        hvp = kfac_model.compute_hvp(test_vec)
 
         # Round-trip tests
-        hvp = H @ (H_inv @ test_vec)
-        ihvp = H_inv @ (H @ test_vec)
-        assert jnp.allclose(hvp, test_vec, rtol=0.01, atol=1e-5)
-        assert jnp.allclose(ihvp, test_vec, rtol=0.01, atol=1e-5)
+        ihvp_round_trip = H @ ihvp
+        assert jnp.allclose(ihvp_round_trip, test_vec, rtol=0.01, atol=1e-5), (
+            "IHVP round-trip failed."
+        )
+        hvp_round_trip = H_inv @ hvp
+        assert jnp.allclose(hvp_round_trip, test_vec, rtol=0.01, atol=1e-5), (
+            "HVP round-trip failed."
+        )
 
-    def test_ekfac_explicit_vs_implicit_equivalence(self, trained_model):
+    def test_ekfac_explicit_vs_implicit_equivalence(self, config: Config):
         """EKFAC explicit vs implicit Hessian and inverse equivalence check."""
-        model, dataset, params, config = trained_model
-        x_train, y_train = dataset.get_train_data()
-        loss_fn = get_loss_fn(config.model.loss)
+        model, dataset, params, loss = train_or_load(config)
 
-        ekfac_model = KFAC(
-            config=KFACConfig(
-                build_config=KFACBuildConfig(
-                    use_pseudo_targets=False, recalc_ekfac_components=True
-                ),
-                run_config=KFACRunConfig(
-                    use_eigenvalue_correction=True, damping_lambda=0.1
-                ),
-            )
+        ekfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=True, damping_lambda=0.1
+            ),
         )
 
         dim = flatten_util.ravel_pytree(params)[0].shape[0]
-        H_explicit = ekfac_model.compute_hessian(
-            model, params, x_train, y_train, loss_fn
-        )
-        H_inv_explicit = ekfac_model.compute_inverse_hessian(
-            model, params, x_train, y_train, loss_fn
-        )
+        H_explicit = ekfac_model.compute_hessian()
+        H_inv_explicit = ekfac_model.compute_inverse_hessian()
         H_implicit, H_inv_implicit = self._compute_full_implicit_matrices(
-            ekfac_model, model, params, x_train, y_train, loss_fn, dim
+            ekfac_model, dim
         )
 
-        assert jnp.allclose(H_explicit, H_implicit, atol=1e-3)
-        assert jnp.allclose(H_inv_explicit, H_inv_implicit, atol=1e-3)
+        assert jnp.allclose(H_explicit, H_implicit, atol=1e-3), (
+            "E-KFAC Hessian explicit vs implicit mismatch"
+        )
+        assert jnp.allclose(H_inv_explicit, H_inv_implicit, atol=1e-3), (
+            "E-KFAC Inverse Hessian explicit vs implicit mismatch"
+        )
 
-    def test_kfac_explicit_vs_implicit_equivalence(self, trained_model):
+    def test_kfac_explicit_vs_implicit_equivalence(self, config: Config):
         """KFAC explicit vs implicit Hessian and inverse equivalence check."""
-        model, dataset, params, config = trained_model
-        x_train, y_train = dataset.get_train_data()
-        loss_fn = get_loss_fn(config.model.loss)
+        model, dataset, params, loss = train_or_load(config)
+        dim = flatten_util.ravel_pytree(params)[0].shape[0]
 
-        kfac_model = KFAC(
-            config=KFACConfig(
-                build_config=KFACBuildConfig(
-                    use_pseudo_targets=False, recalc_ekfac_components=True
-                ),
-                run_config=KFACRunConfig(
-                    use_eigenvalue_correction=False, damping_lambda=0.1
-                ),
-            )
+        kfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=False, damping_lambda=0.1
+            ),
         )
 
         dim = flatten_util.ravel_pytree(params)[0].shape[0]
-        H_explicit = kfac_model.compute_hessian(
-            model, params, x_train, y_train, loss_fn
-        )
-        H_inv_explicit = kfac_model.compute_inverse_hessian(
-            model, params, x_train, y_train, loss_fn
-        )
+        H_explicit = kfac_model.compute_hessian()
+        H_inv_explicit = kfac_model.compute_inverse_hessian()
         H_implicit, H_inv_implicit = self._compute_full_implicit_matrices(
-            kfac_model, model, params, x_train, y_train, loss_fn, dim
+            kfac_model, dim
         )
 
-        assert jnp.allclose(H_explicit, H_implicit, atol=1e-3)
-        assert jnp.allclose(H_inv_explicit, H_inv_implicit, atol=1e-3)
-
-    def test_ekfac_ihvp_batched_vectors(self, trained_model: ModelTuple):
-        """
-        Test EKFAC IHVP computation for multiple vectors in batch.
-
-        Verifies that:
-        1. Batched IHVP handles multiple vectors correctly
-        2. Batched computation matches single-vector computation
-        3. H @ (H^{-1} @ V) ≈ V for batch of vectors
-        """
-        model, dataset, params, config = trained_model
-        loss_fn = get_loss_fn(config.model.loss)
-
-        # Setup EKFAC
-        damping_lambda = 0.1
-        ekfac_build_config = KFACBuildConfig(
-            recalc_ekfac_components=True,
-            use_pseudo_targets=False,
+        assert jnp.allclose(H_explicit, H_implicit, atol=1e-3), (
+            "KFAC Hessian explicit vs implicit mismatch"
         )
-        ekfac_config = KFACRunConfig(
-            use_eigenvalue_correction=True,
-            damping_lambda=damping_lambda,
+        assert jnp.allclose(H_inv_explicit, H_inv_implicit, atol=1e-3), (
+            "KFAC Inverse Hessian explicit vs implicit mismatch"
         )
 
-        ekfac_model = KFAC(
-            config=KFACConfig(run_config=ekfac_config, build_config=ekfac_build_config)
+    def test_ekfac_ihvp_batched_shape_and_finiteness(self, config: Config):
+        """Verify batched IHVP shape and finiteness."""
+        test_vectors = self._get_test_vector_batch(config)
+
+        ekfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=True, damping_lambda=0.1
+            ),
         )
 
-        # Generate EKFAC components
-        x_train, y_train = dataset.get_train_data()
-        ekfac_model.get_ekfac_components(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(x_train),
-            training_targets=jnp.asarray(y_train),
-            loss_fn=loss_fn,
-        )
+        ihvp_batched = ekfac_model.compute_ihvp(vector=test_vectors)
 
-        # Generate multiple test vectors from gradients
-        n_vectors = 5
-        pseudo_targets = ekfac_model.generate_pseudo_targets(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(x_train[:n_vectors]),
-            loss_fn=loss_fn,
-        )
-
-        # Compute gradients for each example
-        gradient_vecs = []
-        for i in range(n_vectors):
-            grad = jax.grad(
-                lambda p: loss_fn(model.apply(p, x_train[i]), pseudo_targets[i])
-            )(params)
-            gradient_vecs.append(flatten_util.ravel_pytree(grad)[0])
-
-        test_vectors = jnp.stack(gradient_vecs)
-
-        # Compute batched IHVP
-        ihvp_batched = ekfac_model.compute_ihvp(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(x_train),
-            training_targets=jnp.asarray(y_train),
-            loss_fn=loss_fn,
-            vector=test_vectors,
-        )
-
-        ekfac_model.config.run_config.use_eigenvalue_correction = False
-        ihvp_batched_kfac = ekfac_model.compute_ihvp(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(x_train),
-            training_targets=jnp.asarray(y_train),
-            loss_fn=loss_fn,
-            vector=test_vectors,
-        )
-
-        # Basic sanity checks
         assert ihvp_batched.shape == test_vectors.shape, (
-            f"Batched IHVP shape {ihvp_batched.shape} doesn't match input shape {test_vectors.shape}"
+            f"Batched IHVP shape {ihvp_batched.shape} doesn't match input {test_vectors.shape}"
         )
         assert jnp.isfinite(ihvp_batched).all(), (
             "Batched IHVP contains non-finite values"
         )
 
-        assert ihvp_batched_kfac.shape == test_vectors.shape, (
-            f"Batched IHVP shape {ihvp_batched_kfac.shape} doesn't match input shape {test_vectors.shape}"
+    def test_ekfac_ihvp_batched_vs_single_consistency(self, config: Config):
+        """Verify batched IHVP matches single-vector IHVP (EKFAC + KFAC)."""
+        test_vectors = self._get_test_vector_batch(config)
+        ekfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=True, damping_lambda=0.1
+            ),
         )
-        assert jnp.isfinite(ihvp_batched_kfac).all(), (
-            "Batched IHVP contains non-finite values"
+        kfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=False, damping_lambda=0.1
+            ),
         )
 
-        # Verify batched computation matches single-vector computation
-        for i in range(n_vectors):
-            ekfac_model.config.run_config.use_eigenvalue_correction = True
-            ihvp_single = ekfac_model.compute_ihvp(
-                model=model,
-                params=params,
-                training_data=jnp.asarray(x_train),
-                training_targets=jnp.asarray(y_train),
-                loss_fn=loss_fn,
-                vector=test_vectors[i],
-            )
-            assert jnp.allclose(ihvp_batched[i], ihvp_single, rtol=1e-6, atol=1e-4), (
-                f"Batched IHVP doesn't match single-vector IHVP for vector {i} (EKFAC)"
-            )
+        ihvp_batched_ekfac = ekfac_model.compute_ihvp(vector=test_vectors)
+        ihvp_batched_kfac = kfac_model.compute_ihvp(vector=test_vectors)
 
-            ekfac_model.config.run_config.use_eigenvalue_correction = False
-            ihvp_single_kfac = ekfac_model.compute_ihvp(
-                model=model,
-                params=params,
-                training_data=jnp.asarray(x_train),
-                training_targets=jnp.asarray(y_train),
-                loss_fn=loss_fn,
-                vector=test_vectors[i],
-            )
+        for i in range(test_vectors.shape[0]):
+            ihvp_single_ekfac = ekfac_model.compute_ihvp(vector=test_vectors[i])
+            ihvp_single_kfac = kfac_model.compute_ihvp(vector=test_vectors[i])
+
+            assert jnp.allclose(
+                ihvp_batched_ekfac[i], ihvp_single_ekfac, rtol=1e-6, atol=1e-4
+            ), f"Batched IHVP != single-vector IHVP for vector {i} (EKFAC)"
             assert jnp.allclose(
                 ihvp_batched_kfac[i], ihvp_single_kfac, rtol=1e-6, atol=1e-4
-            ), f"Batched IHVP doesn't match single-vector IHVP for vector {i} (KFAC)"
+            ), f"Batched IHVP != single-vector IHVP for vector {i} (KFAC)"
+
+    def test_ekfac_ihvp_hessian_roundtrip_batched(self, config: Config):
+        """Verify H @ (H^{-1} @ V) ≈ V for batched IHVPs."""
+        test_vectors = self._get_test_vector_batch(config)
+
+        ekfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config,
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=True, damping_lambda=0.1
+            ),
+        )
+
+        H = ekfac_model.compute_hessian()
+        ihvp_batched = ekfac_model.compute_ihvp(vector=test_vectors)
+        hvp_roundtrip = H @ ihvp_batched.T  # Apply H to each vector
+
+        assert jnp.allclose(hvp_roundtrip.T, test_vectors, rtol=1e-2, atol=1e-5), (
+            "Round-trip H @ (H^{-1} @ V) ≈ V failed for batched IHVP."
+        )

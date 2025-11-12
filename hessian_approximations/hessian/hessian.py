@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Callable, Dict
+from dataclasses import dataclass
+from typing import Dict
 
 import jax
 import jax.numpy as jnp
@@ -8,15 +9,13 @@ from jax import flatten_util
 from typing_extensions import override
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.train import ApproximationModel
+from models.train import train_or_load
 from models.utils.loss import loss_wrapper_flattened
 
 
+@dataclass
 class Hessian(HessianApproximation):
     """Hessian Calculation via automatic differentiation (JAX native)."""
-
-    def __init__(self):
-        super().__init__()
 
     @staticmethod
     def get_param_index_mapping(params: Dict):
@@ -44,11 +43,7 @@ class Hessian(HessianApproximation):
     @override
     def compute_hessian(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
+        damping: float | None = None,
     ) -> jnp.ndarray:
         """
         Compute the exact Hessian matrix of the loss function for the whole model.
@@ -63,8 +58,8 @@ class Hessian(HessianApproximation):
         Returns:
             Hessian matrix as a 2D array.
         """
-        training_data = jnp.asarray(training_data)
-        training_targets = jnp.asarray(training_targets)
+        model, dataset, params, loss_fn = train_or_load(self.full_config)
+        training_data, training_targets = dataset.get_train_data()
 
         # Important: Flattening structure for linear modules with bias is the following: b, w
         # So for output dim 2, input dim 3, the order is: b1, b2, w1
@@ -78,18 +73,16 @@ class Hessian(HessianApproximation):
         # JIT and compute Hessian
         hessian_fn = jax.jit(jax.hessian(loss_wrapper))
         hessian = hessian_fn(params_flat)
+        if damping is not None:
+            hessian += damping * jnp.eye(hessian.shape[0])
 
         return jnp.asarray(hessian)
 
     @override
     def compute_hvp(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
         vector: jnp.ndarray,
+        damping: float | None = None,
     ) -> jnp.ndarray:
         """
         Compute the Hessian-vector product (HVP) using JAX's automatic differentiation.
@@ -105,15 +98,20 @@ class Hessian(HessianApproximation):
         Returns:
             HVP result as a 1D array.
         """
-        training_data = jnp.asarray(training_data)
-        training_targets = jnp.asarray(training_targets)
+        model, dataset, params, loss_fn = train_or_load(self.full_config)
+        training_data, training_targets = dataset.get_train_data()
 
         # Flatten parameters once
         params_flat, unravel_fn = flatten_util.ravel_pytree(params)
 
         def loss_wrapper(p):
             return loss_wrapper_flattened(
-                model, p, unravel_fn, loss_fn, training_data, training_targets
+                model,
+                p,
+                unravel_fn,
+                loss_fn,
+                training_data,
+                training_targets,  # type: ignore
             )
 
         # Use jax.jvp for efficient Hessian-vector product
@@ -128,12 +126,8 @@ class Hessian(HessianApproximation):
     @override
     def compute_ihvp(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
         vector: jnp.ndarray,
+        damping: float | None = None,
     ) -> jnp.ndarray:
         """
         Compute the inverse Hessian-vector product (IHVP) using JAX's automatic differentiation.
@@ -149,8 +143,8 @@ class Hessian(HessianApproximation):
         Returns:
             IHVP result as a 1D array.
         """
-        training_data = jnp.asarray(training_data)
-        training_targets = jnp.asarray(training_targets)
+        model, dataset, params, loss_fn = train_or_load(self.full_config)
+        training_data, training_targets = dataset.get_train_data()
 
         # Flatten parameters once
         params_flat, unravel_fn = flatten_util.ravel_pytree(params)
