@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -8,6 +9,8 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float
 
+from config.config import Config
+from config.hessian_approximation_config import KFACConfig
 from hessian_approximations.kfac.data import KFACData, KFACMeanEigenvaluesAndCorrections
 from hessian_approximations.kfac.layer_components import LayerComponents
 
@@ -15,16 +18,53 @@ from hessian_approximations.kfac.layer_components import LayerComponents
 class KFACStorage:
     """Handles all disk I/O operations for (E)KFAC components using NumPy's npz format."""
 
+    config: Config
+    base_directory: Path
+
     def __init__(
         self,
-        model_name: str = "model",
-        dataset_name: str = "dataset",
-        base_path: str | Path = "data",
+        config: Config,
+        base_path: str | Path = "data/artifacts/kfac_storage",
     ):
-        self.base_path = Path(base_path) / model_name / dataset_name
-        self.base_path.mkdir(parents=True, exist_ok=True)
+        self.config = config
+        self.base_directory = self.generate_kfac_directory(base_path)
+        if not self.check_component_storage():
+            self.save_config()
 
-    def check_storage(self) -> bool:
+    def generate_kfac_directory(
+        self,
+        base_path: str | Path,
+    ) -> Path:
+        """Generate the KFAC directory path based on the config."""
+        dataset_config = self.config.dataset
+        model_config = self.config.model
+        training_config = self.config.training
+        kfac_config = self.config.hessian_approximation
+
+        assert isinstance(kfac_config, KFACConfig), (
+            "KFACConfig expected for KFACStorage"
+        )
+
+        # Create a unique hash for model, dataset, training, and kfac configs
+        dataset_name = dataset_config.name
+        model_name = model_config.name
+        use_pseudo_targets = kfac_config.build_config.use_pseudo_targets
+        hashed_model_dataset_training = Config.model_training_dataset_hash(
+            dataset_config, model_config, training_config, kfac_config
+        )
+
+        model_checkpoint_dir = Path(
+            base_path,
+            dataset_name,
+            model_name
+            + "_"
+            + f"psT_{'Y' if use_pseudo_targets else 'N'}_"
+            + hashed_model_dataset_training,
+        )
+        model_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        return model_checkpoint_dir
+
+    def check_component_storage(self) -> bool:
         """Check if EKFAC components are already stored on disk."""
         for filename in [
             "covariances.npz",
@@ -38,6 +78,45 @@ class KFACStorage:
                 return False
         return True
 
+    def check_storage(self) -> bool:
+        """Check if the stored config matches the current config."""
+        config_path = self._get_path("kfac_storage_config.json")
+        if not config_path.exists():
+            return False
+        with open(config_path, "r") as f:
+            saved_config = json.load(f)
+
+        assert isinstance(self.config.hessian_approximation, KFACConfig), (
+            "KFACConfig expected for KFACStorage"
+        )
+        return (
+            saved_config["dataset_config"] == asdict(self.config.dataset)
+            and saved_config["model_config"] == asdict(self.config.model)
+            and saved_config["training_config"] == asdict(self.config.training)
+            and saved_config["kfac_config"]
+            == self.config.hessian_approximation.to_dict()
+            and self.check_component_storage()
+        )
+
+    def save_config(self) -> None:
+        """Save the current config to disk."""
+        config_path = self._get_path("kfac_storage_config.json")
+
+        assert isinstance(self.config.hessian_approximation, KFACConfig), (
+            "KFACConfig expected for KFACStorage"
+        )
+        with open(config_path, "w") as f:
+            json.dump(
+                {
+                    "dataset_config": asdict(self.config.dataset),
+                    "model_config": asdict(self.config.model),
+                    "training_config": asdict(self.config.training),
+                    "kfac_config": self.config.hessian_approximation.to_dict(),
+                },
+                f,
+                indent=4,
+            )
+
     def delete_storage(self) -> None:
         """Delete all stored EKFAC component files from disk including parent folder."""
         for filename in [
@@ -46,17 +125,18 @@ class KFACStorage:
             "eigenvalues.npz",
             "eigenvalue_corrections.npz",
             "mean_eigenvalues_and_corrections.json",
+            "kfac_storage_config.json",
         ]:
             path = self._get_path(filename)
             if path.exists():
                 path.unlink()
         try:
-            self.base_path.rmdir()
+            self.base_directory.rmdir()
         except OSError:
             pass  # Directory not empty
 
     def _get_path(self, filename: str) -> Path:
-        return self.base_path / filename
+        return self.base_directory / filename
 
     def _save_layer_components(
         self, filename: str, components: LayerComponents
@@ -176,15 +256,14 @@ class KFACStorage:
             jnp.array(data["overall_mean_correction"]),
         )
 
-    def load_kfac_data(self):
-        kfac_data = KFACData()
-        kfac_data.covariances = self.load_covariances()
-        kfac_data.eigenvectors = self.load_eigenvectors()
-        kfac_data.eigenvalues = self.load_eigenvalues()
-        kfac_data.eigenvalue_corrections = self.load_eigenvalue_corrections()
-        return kfac_data
+    def load_kfac_data(self) -> Tuple[KFACData, KFACMeanEigenvaluesAndCorrections]:
+        kfac_data = KFACData(
+            covariances=self.load_covariances(),
+            eigenvectors=self.load_eigenvectors(),
+            eigenvalues=self.load_eigenvalues(),
+            eigenvalue_corrections=self.load_eigenvalue_corrections(),
+        )
 
-    def load_kfac_mean_eigenvalues_and_corrections(self):
         kfac_means = KFACMeanEigenvaluesAndCorrections()
         (
             kfac_means.eigenvalues,
@@ -192,4 +271,4 @@ class KFACStorage:
             kfac_means.overall_mean_eigenvalues,
             kfac_means.overall_mean_corrections,
         ) = self.load_mean_eigenvalues_and_corrections()
-        return kfac_means
+        return kfac_data, kfac_means

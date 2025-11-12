@@ -1,3 +1,5 @@
+from typing import Dict
+
 import jax.numpy as jnp
 import pytest
 
@@ -8,12 +10,13 @@ from config.config import (
     TrainingConfig,
     UCIDatasetConfig,
 )
-from hessian_approximations.factory import (
-    create_hessian_by_name,
-    hessian_approximation,
+from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
+from hessian_approximations.hessian.exact_hessian_regression import (
+    HessianExactRegression,
 )
-from main import train_or_load
-from models.train import get_loss_fn
+from hessian_approximations.hessian.hessian import Hessian
+from hessian_approximations.hessian_approximations import HessianApproximation
+from models.train import train_or_load
 
 
 class TestHessianApproximations:
@@ -46,10 +49,9 @@ class TestHessianApproximations:
         """Config for energy dataset regression."""
         return Config(
             dataset=UCIDatasetConfig(
-                name="energy",
                 train_test_split=1,
             ),
-            model=LinearModelConfig(name="linear", loss="mse", hidden_dim=[]),
+            model=LinearModelConfig(loss="mse", hidden_dim=[]),
             training=TrainingConfig(
                 epochs=200,
                 lr=0.01,
@@ -62,36 +64,26 @@ class TestHessianApproximations:
     @pytest.fixture
     def random_model_trained(self, random_regression_config):
         """Trained model for random regression."""
-        model, dataset, params = train_or_load(random_regression_config)
+        model, dataset, params, _ = train_or_load(random_regression_config)
         return model, dataset, params, random_regression_config
 
     @pytest.fixture
     def energy_model_trained(self, energy_regression_config):
-        model, dataset, params = train_or_load(energy_regression_config)
+        model, dataset, params, loss = train_or_load(energy_regression_config)
         return model, dataset, params, energy_regression_config
 
     def compute_hessians(self, model, params, dataset, config):
         """Helper to compute all Hessian approximations."""
-        hessian_methods = {
-            "exact-hessian-regression": create_hessian_by_name(
-                "exact-hessian-regression"
-            ),
-            "hessian": create_hessian_by_name("hessian"),
-            "gauss-newton": create_hessian_by_name("gauss-newton"),
+        hessian_methods: Dict[str, HessianApproximation] = {
+            "exact-hessian-regression": HessianExactRegression(full_config=config),
+            "hessian": Hessian(full_config=config),
+            "gauss-newton": GaussNewton(full_config=config),
         }
 
         results = {}
-        x, y = dataset.get_train_data()
 
         for name, method in hessian_methods.items():
-            hessian_matrix = hessian_approximation(
-                method=method,
-                model=model,
-                parameters=params,
-                test_data=jnp.asarray(x),
-                test_targets=jnp.asarray(y),
-                loss=get_loss_fn(config.model.loss),
-            )
+            hessian_matrix = method.compute_hessian()
             results[name] = hessian_matrix
 
         return results
