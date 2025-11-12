@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Dict
+from typing import Dict
 
 import jax
 import jax.numpy as jnp
@@ -9,8 +9,8 @@ from jax import flatten_util
 from typing_extensions import override
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.loss import get_loss_name
-from models.train import ApproximationModel
+from models.train import ApproximationModel, train_or_load
+from models.utils.loss import get_loss_name
 
 
 class GaussNewton(HessianApproximation):
@@ -28,23 +28,15 @@ class GaussNewton(HessianApproximation):
     GNH is always positive semi-definite, unlike the full Hessian.
     """
 
-    def __init__(self):
-        super().__init__()
-
     @override
     def compute_hessian(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
     ) -> jnp.ndarray:
         """
         Compute the Generalized Gauss-Newton approximation of the Hessian.
         """
-        training_data = jnp.asarray(training_data)
-        training_targets = jnp.asarray(training_targets)
+        model, dataset, params, loss_fn = train_or_load(self.full_config)
+        training_data, training_targets = dataset.get_train_data()
 
         if get_loss_name(loss_fn) == "cross_entropy":
             return self._compute_crossentropy_gnh(
@@ -57,11 +49,6 @@ class GaussNewton(HessianApproximation):
     @override
     def compute_hvp(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
         vector: jnp.ndarray,
     ) -> jnp.ndarray:
         """
@@ -78,8 +65,8 @@ class GaussNewton(HessianApproximation):
         Returns:
             GNVP result as a 1D array.
         """
-        training_data = jnp.asarray(training_data)
-        training_targets = jnp.asarray(training_targets)
+        model, dataset, params, loss_fn = train_or_load(self.full_config)
+        training_data, training_targets = dataset.get_train_data()
 
         if get_loss_name(loss_fn) == "cross_entropy":
             return self._compute_crossentropy_gnvp(
@@ -93,11 +80,6 @@ class GaussNewton(HessianApproximation):
     @override
     def compute_ihvp(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
         vector: jnp.ndarray,
     ) -> jnp.ndarray:
         """
@@ -117,8 +99,8 @@ class GaussNewton(HessianApproximation):
         Returns:
             Inverse GNVP result as a 1D array.
         """
-        training_data = jnp.asarray(training_data)
-        training_targets = jnp.asarray(training_targets)
+        model, dataset, params, loss_fn = train_or_load(self.full_config)
+        training_data, training_targets = dataset.get_train_data()
 
         raise NotImplementedError(
             "Inverse Gauss-Newton-vector product not implemented."
