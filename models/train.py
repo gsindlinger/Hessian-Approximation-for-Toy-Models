@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Dict, Literal, Tuple
+from typing import Any, Callable, Dict, Literal, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -9,7 +9,7 @@ from flax.training import train_state
 from tqdm import tqdm
 
 from config.config import Config, TrainingConfig
-from data.data import create_dataset
+from data.data import AbstractDataset, create_dataset
 from models.base import ApproximationModel
 from models.linear_model import LinearModel
 from models.mlp import MLPModel
@@ -54,8 +54,18 @@ def create_dataset_and_model(config: Config):
     return dataset, model
 
 
-def train_or_load(config: Config, reload_model: bool = True):
+def train_or_load(
+    config: Config, reload_model: bool = False
+) -> Tuple[ApproximationModel, AbstractDataset, Dict, Callable]:
+    """Train or load a model based on the given config.
+
+    Returns:
+        model: The trained or loaded model.
+        dataset: The dataset used for training.
+        params: The model parameters.
+        loss: The loss function used."""
     dataset, model = create_dataset_and_model(config)
+    loss = get_loss_fn(config.model.loss)
     if not reload_model and check_saved_model(
         dataset_config=config.dataset,
         model_config=config.model,
@@ -74,7 +84,7 @@ def train_or_load(config: Config, reload_model: bool = True):
             model_config=config.model,
             training_config=config.training,
         )
-    return model, dataset, params
+    return model, dataset, params, loss
 
 
 def create_train_state(model, params, optimizer):

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Callable, Dict, Tuple
 
@@ -15,8 +15,7 @@ class ActivationGradientCollector:
     This is a simple container that stores (activation, gradient) pairs for each layer.
     """
 
-    def __init__(self):
-        self.captured_data: LayerComponents = LayerComponents()
+    captured_data: LayerComponents = field(default_factory=LayerComponents)
 
 
 ### Hooks for collecting activations and gradients of specific layers

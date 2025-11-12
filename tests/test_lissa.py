@@ -1,20 +1,18 @@
+import copy
+
 import jax
 import jax.numpy as jnp
 import pytest
 from jax import flatten_util
 
-from config.config import (
-    Config,
-    LinearModelConfig,
-    LiSSAConfig,
-    RandomClassificationConfig,
-    RandomRegressionConfig,
-    TrainingConfig,
-)
-from hessian_approximations.factory import create_hessian_by_name
+from config.config import Config
+from config.dataset_config import RandomClassificationConfig, RandomRegressionConfig
+from config.hessian_approximation_config import LiSSAConfig
+from config.model_config import LinearModelConfig
+from config.training_config import TrainingConfig
+from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.lissa.lissa import LiSSA
-from main import train_or_load
-from models.train import get_loss_fn
+from models.train import train_or_load
 
 
 class TestLiSSA:
@@ -47,7 +45,7 @@ class TestLiSSA:
 
     # ------------------------------
     @pytest.fixture
-    def random_regression_config(self):
+    def config(self):
         """Config for random regression with multiple features and targets."""
         return Config(
             dataset=RandomRegressionConfig(
@@ -68,66 +66,42 @@ class TestLiSSA:
             ),
         )
 
-    @pytest.fixture
-    def trained_model(self, classification_config):
-        """Train a simple classification model for testing LiSSA."""
-        model, dataset, params = train_or_load(classification_config)
-        return model, dataset, params, classification_config
-
-    @pytest.fixture
-    def regression_trained_model(self, random_regression_config):
-        """Train a regression model for testing LiSSA."""
-        model, dataset, params = train_or_load(random_regression_config)
-        return model, dataset, params, random_regression_config
-
     # ------------------------------
     # Tests
     # ------------------------------
 
-    def test_lissa_matches_exact_inverse(self, regression_trained_model):
+    def test_lissa_matches_exact_inverse(self, config: Config):
         """
         Test that LiSSA's IHVP approximation is close to the IHVP
         computed by the exact Hessian method.
         """
-        model, dataset, params, config = regression_trained_model
-        x_train, y_train = dataset.get_train_data()
-        loss_fn = get_loss_fn(config.model.loss)
-
-        # Create LiSSA and exact Hessian methods
-        lissa_method = LiSSA(
-            config=LiSSAConfig(
-                num_samples=3,
-                recursion_depth=500,
-                alpha=0.005,
-                damping=0.001,
-                batch_size=128,
-                seed=42,
-                convergence_tol=1e-3,
-            )
+        lissa_config = LiSSAConfig(
+            num_samples=5,
+            recursion_depth=500,
+            alpha=0.01,
+            damping=0.001,
+            batch_size=128,
+            seed=42,
+            convergence_tol=1e-3,
         )
-        hessian_method = create_hessian_by_name("hessian")
+        config = copy.deepcopy(config)
+        config.hessian_approximation = lissa_config
+        lissa_method = LiSSA(full_config=config)
+
+        hessian_method = Hessian(full_config=config)
 
         # Flatten parameters and sample random vector
+        _, _, params, _ = train_or_load(config)
         params_flat, _ = flatten_util.ravel_pytree(params)
         rng = jax.random.PRNGKey(0)
         v = jax.random.normal(rng, params_flat.shape, dtype=params_flat.dtype)
 
         # Compute IHVPs
         ihvp_lissa = lissa_method.compute_ihvp(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(x_train),
-            training_targets=jnp.asarray(y_train),
-            loss_fn=loss_fn,
             vector=v,
         )
 
         ihvp_exact = hessian_method.compute_ihvp(
-            model=model,
-            params=params,
-            training_data=jnp.asarray(x_train),
-            training_targets=jnp.asarray(y_train),
-            loss_fn=loss_fn,
             vector=v,
         )
 
@@ -140,13 +114,11 @@ class TestLiSSA:
         assert rel_diff < 0.05, f"Relative norm difference too large: {rel_diff}"
         assert max_diff < 0.1, f"Max absolute difference too large: {max_diff}"
 
-    def test_lissa_is_stochastic_but_consistent(self, trained_model):
+    def test_lissa_is_stochastic_but_consistent(self, config: Config):
         """
         Test that different random seeds yield similar IHVPs (stochastic consistency).
         """
-        model, dataset, params, config = trained_model
-        x_train, y_train = dataset.get_train_data()
-        loss_fn = get_loss_fn(config.model.loss)
+        model, dataset, params, loss_fn = train_or_load(config)
 
         params_flat, _ = flatten_util.ravel_pytree(params)
         rng = jax.random.PRNGKey(0)
@@ -154,22 +126,19 @@ class TestLiSSA:
 
         results = []
         for seed in [0, 1, 2]:
-            lissa = LiSSA(
-                config=LiSSAConfig(
-                    num_samples=1,
-                    recursion_depth=300,
-                    alpha=0.005,
-                    damping=0.001,
-                    batch_size=128,
-                    seed=seed,
-                )
+            config = copy.deepcopy(config)
+            lissa_config = LiSSAConfig(
+                num_samples=3,
+                recursion_depth=500,
+                alpha=0.01,
+                damping=0.001,
+                batch_size=128,
+                seed=seed,
+                convergence_tol=1e-3,
             )
+            config.hessian_approximation = lissa_config
+            lissa = LiSSA(full_config=config)
             ihvp = lissa.compute_ihvp(
-                model=model,
-                params=params,
-                training_data=jnp.asarray(x_train),
-                training_targets=jnp.asarray(y_train),
-                loss_fn=loss_fn,
                 vector=v,
             )
             results.append(ihvp)

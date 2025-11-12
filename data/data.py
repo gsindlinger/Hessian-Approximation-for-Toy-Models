@@ -1,10 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Optional, Tuple
 
-import numpy as np
+from jax import numpy as jnp
+from jaxtyping import Array
 from sklearn.datasets import fetch_openml, make_classification, make_regression
 from sklearn.preprocessing import StandardScaler
 from typing_extensions import override
+from ucimlrepo import fetch_ucirepo
 
 from config.config import DatasetConfig
 from config.dataset_config import (
@@ -17,22 +20,20 @@ from config.dataset_config import (
 from data.jax_dataloader import JAXDataLoader
 
 
+@dataclass
 class AbstractDataset(ABC):
     """Abstract base class for datasets in JAX."""
 
-    data: np.ndarray
-    targets: np.ndarray
-    train_data: np.ndarray | None = None
-    train_targets: np.ndarray | None = None
-    test_data: np.ndarray | None = None
-    test_targets: np.ndarray | None = None
+    train_test_split: float = 0.8
+    transform: Optional[Callable] = None
+    data: Array = field(init=False)
+    targets: Array = field(init=False)
+    train_data: Optional[Array] = field(default=None, init=False)
+    train_targets: Optional[Array] = field(default=None, init=False)
+    test_data: Optional[Array] = field(default=None, init=False)
+    test_targets: Optional[Array] = field(default=None, init=False)
 
-    def __init__(self, train_test_split=0.8, transform=None):
-        super().__init__()
-        self.train_test_split = train_test_split
-        self.transform = transform
-
-    def get_train_data(self) -> Tuple[np.ndarray, np.ndarray]:
+    def get_train_data(self) -> Tuple[Array, Array]:
         if self.train_data is None or self.train_targets is None:
             self.split_dataset()
 
@@ -41,7 +42,7 @@ class AbstractDataset(ABC):
 
         return self.train_data, self.train_targets
 
-    def get_test_data(self) -> Tuple[np.ndarray, np.ndarray]:
+    def get_test_data(self) -> Tuple[Array, Array]:
         if self.test_data is None or self.test_targets is None:
             self.split_dataset()
         if self.test_data is None or self.test_targets is None:
@@ -50,7 +51,7 @@ class AbstractDataset(ABC):
 
     def split_dataset(
         self,
-    ) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]:
+    ) -> Tuple[Tuple[Array, Array], Tuple[Array, Array]]:
         """Split dataset into train and test sets. Assumes data to be normalized."""
         split_idx = int(len(self) * self.train_test_split)
 
@@ -61,15 +62,15 @@ class AbstractDataset(ABC):
             self.test_data = self.data[split_idx:]
             self.test_targets = self.targets[split_idx:]
         else:
-            self.test_data = np.ndarray([])
-            self.test_targets = np.ndarray([])
+            self.test_data = jnp.array([])
+            self.test_targets = jnp.array([])
 
         return (self.train_data, self.train_targets), (
             self.test_data,
             self.test_targets,
         )
 
-    def get_dataloaders(self, batch_size=32, shuffle=True):
+    def get_dataloaders(self, batch_size: int = 32, shuffle: bool = True):
         """
         Split dataset into train and test sets and return data iterators.
         Returns tuple of (train_loader, test_loader).
@@ -123,57 +124,57 @@ def create_dataset(config: DatasetConfig) -> AbstractDataset:
     return dataset_cls(**dataset_kwargs)
 
 
+@dataclass
 class RandomRegressionDataset(AbstractDataset):
-    def __init__(
-        self, n_samples, n_features, n_targets, noise, random_state, train_test_split
-    ):
-        super().__init__(train_test_split=train_test_split)
+    n_samples: int = field(default=100)
+    n_features: int = field(default=10)
+    n_targets: int = field(default=1)
+    noise: float = field(default=0.1)
+    random_state: Optional[int] = field(default=None)
+
+    def __post_init__(self):
         data, targets = make_regression(
-            n_samples=n_samples,
-            n_features=n_features,
-            n_targets=n_targets,
-            noise=noise,
-            random_state=random_state,
+            n_samples=self.n_samples,
+            n_features=self.n_features,
+            n_targets=self.n_targets,
+            noise=self.noise,
+            random_state=self.random_state,
         )[:2]
 
-        # Store as numpy arrays first
-        self.data = data.astype(np.float32)
-        self.targets = targets.reshape(-1, 1).astype(np.float32)
+        self.data = jnp.array(data, dtype=jnp.float32)
+        self.targets = jnp.array(targets.reshape(-1, 1), dtype=jnp.float32)
 
     @override
-    def input_dim(self):
+    def input_dim(self) -> int:
         return self.data.shape[1]
 
     @override
-    def output_dim(self):
+    def output_dim(self) -> int:
         return self.targets.shape[1]
 
 
+@dataclass
 class RandomClassificationDataset(AbstractDataset):
-    def __init__(
-        self,
-        n_samples,
-        n_features,
-        n_informative,
-        n_classes,
-        random_state,
-        train_test_split,
-    ):
-        super().__init__(train_test_split=train_test_split)
+    n_samples: int = field(default=100)
+    n_features: int = field(default=10)
+    n_informative: int = field(default=5)
+    n_classes: int = field(default=2)
+    random_state: Optional[int] = field(default=42)
+
+    def __post_init__(self):
         data, targets = make_classification(
-            n_samples=n_samples,
-            n_features=n_features,
-            n_informative=n_informative,
-            n_classes=n_classes,
-            random_state=random_state,
+            n_samples=self.n_samples,
+            n_features=self.n_features,
+            n_informative=self.n_informative,
+            n_classes=self.n_classes,
+            random_state=self.random_state,
         )[:2]
 
-        # Store as numpy arrays
-        self.data = data.astype(np.float32)
-        self.targets = targets.astype(np.int32)
+        self.data = jnp.array(data, dtype=jnp.float32)
+        self.targets = jnp.array(targets, dtype=jnp.int32)
 
     @override
-    def input_dim(self):
+    def input_dim(self) -> int:
         return self.data.shape[1]
 
     @override
@@ -181,17 +182,16 @@ class RandomClassificationDataset(AbstractDataset):
         return int(self.targets.max() + 1)
 
 
+@dataclass
 class UCIDataset(AbstractDataset):
-    def __init__(self, name: str, train_test_split: float = 0.8):
-        super().__init__(train_test_split=train_test_split)
+    name: str = field(default="energy")
 
-        match name:
+    def __post_init__(self):
+        match self.name:
             case "energy":
                 id = 242
             case _:
-                raise ValueError(f"Unknown UCI dataset: {name}")
-
-        from ucimlrepo import fetch_ucirepo
+                raise ValueError(f"Unknown UCI dataset: {self.name}")
 
         dataset = fetch_ucirepo(id=id)
         X = dataset.data.features  # type: ignore
@@ -203,37 +203,34 @@ class UCIDataset(AbstractDataset):
         scaler_Y = StandardScaler()
         Y = scaler_Y.fit_transform(Y)
 
-        # Store as numpy arrays
-        self.data = X.astype(np.float32)
-        self.targets = Y.astype(np.float32)
+        self.data = jnp.array(X, dtype=jnp.float32)
+        self.targets = jnp.array(Y, dtype=jnp.float32)
 
     @override
-    def input_dim(self):
+    def input_dim(self) -> int:
         return self.data.shape[1]
 
     @override
-    def output_dim(self):
+    def output_dim(self) -> int:
         return self.targets.shape[1] if len(self.targets.shape) > 1 else 1
 
 
+@dataclass
 class MNISTDataset(AbstractDataset):
-    def __init__(self, train_test_split: float = 0.8):
-        super().__init__(train_test_split=train_test_split)
-
+    def __post_init__(self):
         mnist = fetch_openml("mnist_784", version=1)
         X = mnist.data.values
-        Y = mnist.target.values.astype(np.int32)
+        Y = mnist.target.values.astype(jnp.int32)
 
         # Normalize
         scaler_X = StandardScaler()
         X = scaler_X.fit_transform(X)
 
-        # Store as numpy arrays
-        self.data = X.astype(np.float32)
-        self.targets = Y.astype(np.int32)
+        self.data = jnp.array(X, dtype=jnp.float32)
+        self.targets = jnp.array(Y, dtype=jnp.int32)
 
     @override
-    def input_dim(self):
+    def input_dim(self) -> int:
         return self.data.shape[1]
 
     @override
@@ -241,24 +238,22 @@ class MNISTDataset(AbstractDataset):
         return int(self.targets.max() + 1)
 
 
+@dataclass
 class CIFAR10Dataset(AbstractDataset):
-    def __init__(self, train_test_split: float = 0.8):
-        super().__init__(train_test_split=train_test_split)
-
+    def __post_init__(self):
         cifar10 = fetch_openml("CIFAR_10_small", version=1)
         X = cifar10.data.values
-        Y = cifar10.target.values.astype(np.int32)
+        Y = cifar10.target.values.astype(jnp.int32)
 
         # Normalize
         scaler_X = StandardScaler()
         X = scaler_X.fit_transform(X)
 
-        # Store as numpy arrays
-        self.data = X.astype(np.float32)
-        self.targets = Y.astype(np.int32)
+        self.data = jnp.array(X, dtype=jnp.float32)
+        self.targets = jnp.array(Y, dtype=jnp.int32)
 
     @override
-    def input_dim(self):
+    def input_dim(self) -> int:
         return self.data.shape[1]
 
     @override

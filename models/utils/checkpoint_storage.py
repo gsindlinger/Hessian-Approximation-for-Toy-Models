@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import pickle
+from dataclasses import asdict
 from typing import Dict
 
 from flax import serialization
@@ -20,7 +21,7 @@ def save_model_checkpoint(
     dataset_config: DatasetConfig,
     model_config: ModelConfig,
     training_config: TrainingConfig,
-    base_path: str = "data/model_checkpoints",
+    base_path: str = "data/artifacts/model_checkpoints",
 ) -> None:
     """Save model parameters using orbax for better compatibility."""
 
@@ -33,9 +34,9 @@ def save_model_checkpoint(
     with open(f"{model_checkpoint_dir}/{CONFIGS_STR}.json", "w") as f:
         json.dump(
             {
-                "dataset_config": dataset_config,
-                "model_config": model_config,
-                "training_config": training_config,
+                "dataset_config": asdict(dataset_config),
+                "model_config": asdict(model_config),
+                "training_config": asdict(training_config),
             },
             f,
             indent=4,
@@ -59,7 +60,7 @@ def generate_model_checkpoint_path(
     dataset_config: DatasetConfig,
     model_config: ModelConfig,
     training_config: TrainingConfig,
-    base_path: str = "data/model_checkpoints",
+    base_path: str = "data/artifacts/model_checkpoints",
 ) -> str:
     dataset_name = dataset_config.name
     model_name = model_config.name
@@ -93,9 +94,9 @@ def check_saved_model(
         with open(f"{model_checkpoint_dir}/{CONFIGS_STR}.json", "r") as f:
             saved_config = json.load(f)
         if (
-            saved_config["dataset_config"] == vars(dataset_config)
-            and saved_config["model_config"] == vars(model_config)
-            and saved_config["training_config"] == vars(training_config)
+            saved_config["dataset_config"] == asdict(dataset_config)
+            and saved_config["model_config"] == asdict(model_config)
+            and saved_config["training_config"] == asdict(training_config)
         ):
             return True
     return False

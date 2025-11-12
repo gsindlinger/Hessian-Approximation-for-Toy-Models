@@ -1,38 +1,31 @@
-from typing import Callable, Dict
+from dataclasses import dataclass, field
+from typing import Dict
 
 import jax
 import jax.numpy as jnp
 from jax import flatten_util, random
+from jaxtyping import Array
 from typing_extensions import override
 
+from config.config import Config
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.loss import get_loss_name
-from models.train import ApproximationModel
+from models.train import ApproximationModel, train_or_load
+from models.utils.loss import get_loss_name
 
 
+@dataclass
 class FisherInformation(HessianApproximation):
-    def __init__(
-        self, fisher_type="empirical", num_samples=1, sigma=1.0, key=random.PRNGKey(0)
-    ):
-        super().__init__()
-        self.fisher_type = fisher_type
-        self.num_samples = num_samples
-        self.sigma = sigma
-        self.key = key
+    fisher_type: str = field(default="empirical")
+    num_samples: int = field(default=1)
+    sigma: float = field(default=1.0)
+    key: Array = field(default_factory=lambda: random.PRNGKey(0))
 
     @override
-    def compute_hessian(
-        self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
-    ) -> jnp.ndarray:
-        training_data = jnp.asarray(training_data)
-        training_targets = jnp.asarray(training_targets)
+    def compute_hessian(self) -> jnp.ndarray:
+        model, dataset, params, loss = train_or_load(self.full_config)
+        training_data, training_targets = dataset.get_train_data()
 
-        if get_loss_name(loss_fn) == "cross_entropy":
+        if get_loss_name(loss) == "cross_entropy":
             return self._compute_crossentropy_fim(
                 model, params, training_data, training_targets
             )
@@ -43,11 +36,6 @@ class FisherInformation(HessianApproximation):
     @override
     def compute_hvp(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
         vector: jnp.ndarray,
     ) -> jnp.ndarray:
         raise NotImplementedError("Not implemented yet: Fisher Information HVP")
@@ -55,11 +43,7 @@ class FisherInformation(HessianApproximation):
     @override
     def compute_ihvp(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
+        config: Config,
         vector: jnp.ndarray,
     ) -> jnp.ndarray:
         raise NotImplementedError("Not implemented yet: Fisher Information IHVP")
