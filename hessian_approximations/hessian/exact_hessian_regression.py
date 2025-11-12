@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from typing import Callable, Dict
+from dataclasses import dataclass
 
 import jax.numpy as jnp
 from typing_extensions import override
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.train import ApproximationModel
+from models.train import train_or_load
 
 
+@dataclass
 class HessianExactRegression(HessianApproximation):
     """Exact Hessian for linear regression with MSE loss.
     Supports multi-dimensional outputs.
@@ -17,21 +18,16 @@ class HessianExactRegression(HessianApproximation):
     Note, that the Fisher Information Matrix (FIM) is equivalent to the Hessian, expect for a different sign.
     """
 
-    def __init__(self):
-        super().__init__()
-
     @override
     def compute_hessian(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
     ) -> jnp.ndarray:
         """
         Compute the Hessian of a linear regression model w.r.t. its parameters.
         """
+
+        model, dataset, _, _ = train_or_load(self.full_config)
+        training_data, training_targets = dataset.get_train_data()
 
         # Ensure inputs are JAX arrays
         training_data = jnp.array(training_data)
@@ -88,31 +84,17 @@ class HessianExactRegression(HessianApproximation):
     @override
     def compute_hvp(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
         vector: jnp.ndarray,
     ) -> jnp.ndarray:
-        hessian = self.compute_hessian(
-            model, params, training_data, training_targets, loss_fn
-        )
+        hessian = self.compute_hessian()
         hvp = hessian @ vector
         return hvp
 
     @override
     def compute_ihvp(
         self,
-        model: ApproximationModel,
-        params: Dict,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        loss_fn: Callable,
         vector: jnp.ndarray,
     ) -> jnp.ndarray:
-        hessian = self.compute_hessian(
-            model, params, training_data, training_targets, loss_fn
-        )
+        hessian = self.compute_hessian()
         ihvp = jnp.linalg.solve(hessian, vector)
         return ihvp

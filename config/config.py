@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Dict, List
 
 import jax
@@ -13,7 +13,7 @@ from config.dataset_config import (
     UCIDatasetConfig,
 )
 from config.hessian_approximation_config import HessianApproximationConfig, HessianName
-from config.model_config import LinearModelConfig, ModelConfig
+from config.model_config import LinearModelConfig, MLPModelConfig, ModelConfig
 from config.training_config import TrainingConfig
 
 jax.config.update("jax_enable_x64", True)
@@ -26,9 +26,7 @@ class Config:
     dataset: DatasetConfig
     model: ModelConfig
     training: TrainingConfig
-    hessian_approximation: HessianApproximationConfig = field(
-        default_factory=lambda: HessianApproximationConfig(name=HessianName.HESSIAN)
-    )
+    hessian_approximation: HessianApproximationConfig | None = None
 
     @staticmethod
     def parse_args() -> Config:
@@ -48,7 +46,7 @@ class Config:
             help="List all available configuration presets and exit",
         )
 
-        parser.add_arguments(Config, dest="config")
+        # parser.add_arguments(Config, dest="config")
         args = parser.parse_args()
 
         # List presets if requested
@@ -72,23 +70,31 @@ class Config:
         dataset_config: DatasetConfig,
         model_config: ModelConfig,
         training_config: TrainingConfig,
-        length: int = 8,
+        hessian_approx_config: HessianApproximationConfig | None = None,
+        length: int = 10,
     ) -> str:
         """Generate a unique hash string for the combination of dataset, model, and training configs."""
         import hashlib
         import json
 
         # Serialize configurations to JSON strings
-        dataset_json = json.dumps(vars(dataset_config), sort_keys=True)
-        model_json = json.dumps(vars(model_config), sort_keys=True)
-        training_json = json.dumps(vars(training_config), sort_keys=True)
+        dataset_json = json.dumps(asdict(dataset_config), sort_keys=True)
+        model_json = json.dumps(asdict(model_config), sort_keys=True)
+        training_json = json.dumps(asdict(training_config), sort_keys=True)
 
-        # Combine all JSON strings
-        combined = dataset_json + model_json + training_json
+        if hessian_approx_config is not None:
+            hessian_json = json.dumps(hessian_approx_config.to_dict(), sort_keys=True)
+            # Combine all JSON strings including Hessian config
+            combined = dataset_json + model_json + training_json + hessian_json
+        else:
+            # Combine all JSON strings
+            combined = dataset_json + model_json + training_json
 
         # Generate SHA256 hash
         hash_object = hashlib.sha256(combined.encode())
-        hash_hex = hash_object.hexdigest()[:10]  # Use first 10 characters for brevity
+        hash_hex = hash_object.hexdigest()[
+            :length
+        ]  # Use first length characters for brevity
 
         return hash_hex
 
@@ -145,6 +151,24 @@ CONFIGS: Dict[str, Config] = {
             epochs=100,
             batch_size=100,
             lr=0.001,
+            optimizer="sgd",
+            loss="cross_entropy",
+        ),
+    ),
+    "random_classification_large": Config(
+        dataset=RandomClassificationConfig(
+            n_samples=2000,
+            n_features=100,
+            n_informative=50,
+            n_classes=10,
+            random_state=42,
+            train_test_split=1,
+        ),
+        model=MLPModelConfig(loss="cross_entropy", hidden_dim=[]),
+        training=TrainingConfig(
+            epochs=200,
+            lr=0.001,
+            batch_size=100,
             optimizer="sgd",
             loss="cross_entropy",
         ),
