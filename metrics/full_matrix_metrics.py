@@ -96,21 +96,7 @@ class FullMatrixMetric(Enum):
                 raise NotImplementedError(f"Metric {self} not implemented.")
 
 
-class HVPMetric(Enum):
-    """Metrics for comparing Hessian-vector products."""
-
-    pass
-
-
-class IHVPMetric(Enum):
-    """
-    Metrics for comparing inverse Hessian-vector products.
-    """
-
-    pass
-
-
-METRICS = {
+MATRIX_METRICS = {
     "comprehensive": [
         FullMatrixMetric.RELATIVE_FROBENIUS,
         FullMatrixMetric.RELATIVE_SPECTRAL,
@@ -136,7 +122,7 @@ def compare_matrices(
         Dictionary mapping metric names to values
     """
     if metrics is None:
-        metrics = METRICS["comprehensive"]
+        metrics = MATRIX_METRICS["comprehensive"]
 
     results = {}
     for metric in metrics:
