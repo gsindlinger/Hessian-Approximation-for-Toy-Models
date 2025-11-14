@@ -99,9 +99,8 @@ class FullMatrixMetric(Enum):
 MATRIX_METRICS = {
     "comprehensive": [
         FullMatrixMetric.RELATIVE_FROBENIUS,
-        FullMatrixMetric.RELATIVE_SPECTRAL,
         FullMatrixMetric.COSINE_SIMILARITY,
-        FullMatrixMetric.EIGENVALUE_MAX,
+        FullMatrixMetric.TRACE_DISTANCE,
     ],
     "all_matrix": list(FullMatrixMetric),
 }

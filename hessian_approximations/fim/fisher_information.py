@@ -22,16 +22,18 @@ class FisherInformation(HessianApproximation):
 
     @override
     def compute_hessian(self) -> jnp.ndarray:
-        model, dataset, params, loss = train_or_load(self.full_config)
-        training_data, training_targets = dataset.get_train_data()
+        model_data = train_or_load(self.full_config)
+        training_data, training_targets = model_data.dataset.get_train_data()
 
-        if get_loss_name(loss) == "cross_entropy":
+        if get_loss_name(model_data.loss) == "cross_entropy":
             return self._compute_crossentropy_fim(
-                model, params, training_data, training_targets
+                model_data.model, model_data.params, training_data, training_targets
             )
         else:
             # Default to MSE/regression
-            return self._compute_mse_fim(model, params, training_data, training_targets)
+            return self._compute_mse_fim(
+                model_data.model, model_data.params, training_data, training_targets
+            )
 
     @override
     def compute_hvp(
