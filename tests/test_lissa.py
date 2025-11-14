@@ -91,7 +91,8 @@ class TestLiSSA:
         hessian_method = Hessian(full_config=config)
 
         # Flatten parameters and sample random vector
-        _, _, params, _ = train_or_load(config)
+        model_data = train_or_load(config)
+        params = model_data.params
         params_flat, _ = flatten_util.ravel_pytree(params)
         rng = jax.random.PRNGKey(0)
         v = jax.random.normal(rng, params_flat.shape, dtype=params_flat.dtype)
@@ -118,9 +119,9 @@ class TestLiSSA:
         """
         Test that different random seeds yield similar IHVPs (stochastic consistency).
         """
-        model, dataset, params, loss_fn = train_or_load(config)
+        model_data = train_or_load(config)
 
-        params_flat, _ = flatten_util.ravel_pytree(params)
+        params_flat, _ = flatten_util.ravel_pytree(model_data.params)
         rng = jax.random.PRNGKey(0)
         v = jax.random.normal(rng, params_flat.shape, dtype=params_flat.dtype)
 

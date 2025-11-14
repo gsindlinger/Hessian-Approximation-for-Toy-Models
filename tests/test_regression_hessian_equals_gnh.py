@@ -64,13 +64,23 @@ class TestHessianApproximations:
     @pytest.fixture
     def random_model_trained(self, random_regression_config):
         """Trained model for random regression."""
-        model, dataset, params, _ = train_or_load(random_regression_config)
-        return model, dataset, params, random_regression_config
+        model_data = train_or_load(random_regression_config)
+        return (
+            model_data.model,
+            model_data.dataset,
+            model_data.params,
+            random_regression_config,
+        )
 
     @pytest.fixture
     def energy_model_trained(self, energy_regression_config):
-        model, dataset, params, loss = train_or_load(energy_regression_config)
-        return model, dataset, params, energy_regression_config
+        model_data = train_or_load(energy_regression_config)
+        return (
+            model_data.model,
+            model_data.dataset,
+            model_data.params,
+            energy_regression_config,
+        )
 
     def compute_hessians(self, model, params, dataset, config):
         """Helper to compute all Hessian approximations."""

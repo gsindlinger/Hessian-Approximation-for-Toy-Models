@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple
 
+import jax
 from jax import numpy as jnp
 from jaxtyping import Array
 from sklearn.datasets import fetch_openml, make_classification, make_regression
@@ -17,6 +18,7 @@ from config.dataset_config import (
     RandomRegressionConfig,
     UCIDatasetConfig,
 )
+from data.device_handling import get_device_by_name
 from data.jax_dataloader import JAXDataLoader
 
 
@@ -33,20 +35,41 @@ class AbstractDataset(ABC):
     test_data: Optional[Array] = field(default=None, init=False)
     test_targets: Optional[Array] = field(default=None, init=False)
 
-    def get_train_data(self) -> Tuple[Array, Array]:
+    def get_train_data(self, device: str | None = None) -> Tuple[Array, Array]:
         if self.train_data is None or self.train_targets is None:
             self.split_dataset()
 
         if self.train_data is None or self.train_targets is None:
             raise ValueError("Training data or targets are not available.")
 
+        if device is not None:
+            self.train_data = jax.device_put(
+                self.train_data, get_device_by_name(device)
+            )
+            self.train_targets = jax.device_put(
+                self.train_targets, get_device_by_name(device)
+            )
+
+        assert self.train_data is not None, "Train data should not be None"
+        assert self.train_targets is not None, "Train targets should not be None"
+
         return self.train_data, self.train_targets
 
-    def get_test_data(self) -> Tuple[Array, Array]:
+    def get_test_data(self, device: str | None = None) -> Tuple[Array, Array]:
         if self.test_data is None or self.test_targets is None:
             self.split_dataset()
         if self.test_data is None or self.test_targets is None:
             raise ValueError("Test data or targets are not available.")
+
+        if device is not None:
+            self.test_data = jax.device_put(self.test_data, get_device_by_name(device))
+            self.test_targets = jax.device_put(
+                self.test_targets, get_device_by_name(device)
+            )
+
+        assert self.test_data is not None, "Test data should not be None"
+        assert self.test_targets is not None, "Test targets should not be None"
+
         return self.test_data, self.test_targets
 
     def split_dataset(
@@ -70,7 +93,7 @@ class AbstractDataset(ABC):
             self.test_targets,
         )
 
-    def get_dataloaders(self, batch_size: int = 32, shuffle: bool = True):
+    def get_dataloaders(self, batch_size: int | None = None, shuffle: bool = True):
         """
         Split dataset into train and test sets and return data iterators.
         Returns tuple of (train_loader, test_loader).
