@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import jax.numpy as jnp
 
 from config.config import Config
+from models.train import ModelData, train_or_load
 
 
 @dataclass
@@ -13,6 +14,10 @@ class HessianApproximation(ABC):
     """Abstract base class for Hessian approximations."""
 
     full_config: Config
+    model_data: ModelData = field(init=False)
+
+    def __post_init__(self):
+        self.model_data = train_or_load(self.full_config)
 
     @abstractmethod
     def compute_hessian(self) -> jnp.ndarray:
