@@ -96,9 +96,9 @@ class TestEKFAC:
 
     def _get_test_vector_batch(self, config: Config, n_vectors: int = 5):
         """Utility: Generate batched test vectors for IHVP tests."""
-        model, dataset, params, loss = train_or_load(config)
+        model_data = train_or_load(config)
         loss_fn = get_loss_fn(config.model.loss)
-        x_train, y_train = dataset.get_train_data()
+        x_train, y_train = model_data.dataset.get_train_data()
         x_train = jnp.asarray(x_train)
 
         ekfac_model = KFAC.setup_with_run_and_build_config(
@@ -109,8 +109,8 @@ class TestEKFAC:
         )
 
         pseudo_targets = ekfac_model.generate_pseudo_targets(
-            model=model,
-            params=params,
+            model=model_data.model,
+            params=model_data.params,
             training_data=jnp.asarray(x_train[:n_vectors]),
             loss_fn=loss_fn,
         )
@@ -118,8 +118,10 @@ class TestEKFAC:
         gradient_vecs = []
         for i in range(n_vectors):
             grad = jax.grad(
-                lambda p: loss_fn(model.apply(p, x_train[i]), pseudo_targets[i])
-            )(params)
+                lambda p: loss_fn(
+                    model_data.model.apply(p, x_train[i]), pseudo_targets[i]
+                )
+            )(model_data.params)
             gradient_vecs.append(flatten_util.ravel_pytree(grad)[0])
 
         return jnp.stack(gradient_vecs)
@@ -159,21 +161,29 @@ class TestEKFAC:
             - a_{l-1} = activations of the previous layer
             - s_l = preactivation gradients = ∇_{W_l a_{l-1}} log p(y | x; θ)
         """
-        model, dataset, params, loss_fn = train_or_load(config)
+        model_data = train_or_load(config)
 
         def normal_loss_fn(params, x, y, model):
             """Standard loss function without EKFAC wrapper."""
             pred = model.apply(params, x)
-            return loss_fn(pred, y, reduction="sum")  # Sum to match EKFAC behavior
+            return model_data.loss(
+                pred, y, reduction="sum"
+            )  # Sum to match EKFAC behavior
 
         # Compute true gradients via autodiff
         ground_truth_grads = jax.grad(normal_loss_fn)(
-            params, dataset.get_train_data()[0], dataset.get_train_data()[1], model
+            model_data.params,
+            model_data.dataset.get_train_data()[0],
+            model_data.dataset.get_train_data()[1],
+            model_data.model,
         )
 
         # Collect EKFAC statistics
         # Need to reload data, otherwise collector data is empty
-        ekfac_build_config = KFACBuildConfig(recalc_ekfac_components=True)
+        ekfac_build_config = KFACBuildConfig(
+            recalc_ekfac_components=True,
+            collector_batch_size=model_data.dataset.get_train_data()[0].shape[0],
+        )
         ekfac_approx = KFAC.setup_with_run_and_build_config(
             full_config=config, build_config=ekfac_build_config
         )
@@ -313,8 +323,8 @@ class TestEKFAC:
 
     def test_ekfac_hessian_ihvp_and_hvp_consistency(self, config: Config):
         """Test E-KFAC: Check whether H @ (H^{-1} @ v) ≈ v and H^{-1} @ (H @ v) ≈ v."""
-        model, dataset, params, loss = train_or_load(config)
-        x_train, y_train = dataset.get_train_data()
+        model_data = train_or_load(config)
+        x_train, y_train = model_data.dataset.get_train_data()
         x_train = jnp.asarray(x_train)
         loss_fn = get_loss_fn(config.model.loss)
 
@@ -327,8 +337,8 @@ class TestEKFAC:
 
         test_vec = self._get_test_vector(
             ekfac_model=ekfac_model,
-            model=model,
-            params=params,
+            model=model_data.model,
+            params=model_data.params,
             x_train=x_train,
             loss_fn=loss_fn,
         )
@@ -350,8 +360,8 @@ class TestEKFAC:
 
     def test_kfac_hessian_ihvp_and_hvp_consistency(self, config: Config):
         """Check whether H @ (H^{-1} @ v) ≈ v and H^{-1} @ (H @ v) ≈ v."""
-        model, dataset, params, loss = train_or_load(config)
-        x_train, y_train = dataset.get_train_data()
+        model_data = train_or_load(config)
+        x_train, y_train = model_data.dataset.get_train_data()
         x_train = jnp.asarray(x_train)
         loss_fn = get_loss_fn(config.model.loss)
 
@@ -364,8 +374,8 @@ class TestEKFAC:
 
         test_vec = self._get_test_vector(
             ekfac_model=kfac_model,
-            model=model,
-            params=params,
+            model=model_data.model,
+            params=model_data.params,
             x_train=x_train,
             loss_fn=loss_fn,
         )
@@ -387,7 +397,7 @@ class TestEKFAC:
 
     def test_ekfac_explicit_vs_implicit_equivalence(self, config: Config):
         """EKFAC explicit vs implicit Hessian and inverse equivalence check."""
-        model, dataset, params, loss = train_or_load(config)
+        model_data = train_or_load(config)
 
         ekfac_model = KFAC.setup_with_run_and_build_config(
             full_config=config,
@@ -396,7 +406,7 @@ class TestEKFAC:
             ),
         )
 
-        dim = flatten_util.ravel_pytree(params)[0].shape[0]
+        dim = flatten_util.ravel_pytree(model_data.params)[0].shape[0]
         H_explicit = ekfac_model.compute_hessian()
         H_inv_explicit = ekfac_model.compute_inverse_hessian()
         H_implicit, H_inv_implicit = self._compute_full_implicit_matrices(
@@ -412,8 +422,8 @@ class TestEKFAC:
 
     def test_kfac_explicit_vs_implicit_equivalence(self, config: Config):
         """KFAC explicit vs implicit Hessian and inverse equivalence check."""
-        model, dataset, params, loss = train_or_load(config)
-        dim = flatten_util.ravel_pytree(params)[0].shape[0]
+        model_data = train_or_load(config)
+        dim = flatten_util.ravel_pytree(model_data.params)[0].shape[0]
 
         kfac_model = KFAC.setup_with_run_and_build_config(
             full_config=config,
@@ -422,7 +432,6 @@ class TestEKFAC:
             ),
         )
 
-        dim = flatten_util.ravel_pytree(params)[0].shape[0]
         H_explicit = kfac_model.compute_hessian()
         H_inv_explicit = kfac_model.compute_inverse_hessian()
         H_implicit, H_inv_implicit = self._compute_full_implicit_matrices(

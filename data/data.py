@@ -40,6 +40,9 @@ class AbstractDataset(ABC):
         if self.train_data is None or self.train_targets is None:
             raise ValueError("Training data or targets are not available.")
 
+        assert self.train_data is not None, "Train data should not be None"
+        assert self.train_targets is not None, "Train targets should not be None"
+
         return self.train_data, self.train_targets
 
     def get_test_data(self) -> Tuple[Array, Array]:
@@ -47,6 +50,10 @@ class AbstractDataset(ABC):
             self.split_dataset()
         if self.test_data is None or self.test_targets is None:
             raise ValueError("Test data or targets are not available.")
+
+        assert self.test_data is not None, "Test data should not be None"
+        assert self.test_targets is not None, "Test targets should not be None"
+
         return self.test_data, self.test_targets
 
     def split_dataset(
@@ -70,7 +77,7 @@ class AbstractDataset(ABC):
             self.test_targets,
         )
 
-    def get_dataloaders(self, batch_size: int = 32, shuffle: bool = True):
+    def get_dataloaders(self, batch_size: int | None = None, shuffle: bool = False):
         """
         Split dataset into train and test sets and return data iterators.
         Returns tuple of (train_loader, test_loader).

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Dict, List
+from typing import Dict, List, Literal
 
-import jax
 from simple_parsing import ArgumentParser
 
 from config.dataset_config import (
@@ -16,7 +15,7 @@ from config.hessian_approximation_config import HessianApproximationConfig, Hess
 from config.model_config import LinearModelConfig, MLPModelConfig, ModelConfig
 from config.training_config import TrainingConfig
 
-jax.config.update("jax_enable_x64", True)
+# jax.config.update("jax_enable_x64", True)
 
 
 @dataclass
@@ -27,6 +26,7 @@ class Config:
     model: ModelConfig
     training: TrainingConfig
     hessian_approximation: HessianApproximationConfig | None = None
+    device: Literal["auto", "cpu", "gpu", "tpu"] = "auto"
 
     @staticmethod
     def parse_args() -> Config:
@@ -44,6 +44,13 @@ class Config:
             "--list-presets",
             action="store_true",
             help="List all available configuration presets and exit",
+        )
+        parser.add_argument(
+            "--device",
+            type=str,
+            default="auto",
+            choices=["auto", "cpu", "gpu", "tpu"],
+            help="Select device to run on: 'auto' lets JAX decide, 'cpu' forces CPU, 'gpu' forces GPU if available",
         )
 
         # parser.add_arguments(Config, dest="config")
@@ -63,6 +70,7 @@ class Config:
         else:
             config = args.config
 
+        config.device = args.device
         return config
 
     @staticmethod
@@ -139,7 +147,7 @@ CONFIGS: Dict[str, Config] = {
     ),
     "random_classification": Config(
         dataset=RandomClassificationConfig(
-            n_samples=1000,
+            n_samples=500,
             n_features=10,
             n_informative=5,
             n_classes=2,
@@ -148,7 +156,7 @@ CONFIGS: Dict[str, Config] = {
         ),
         model=LinearModelConfig(loss="cross_entropy", hidden_dim=[]),
         training=TrainingConfig(
-            epochs=100,
+            epochs=30,
             batch_size=100,
             lr=0.001,
             optimizer="sgd",
@@ -158,13 +166,13 @@ CONFIGS: Dict[str, Config] = {
     "random_classification_large": Config(
         dataset=RandomClassificationConfig(
             n_samples=2000,
-            n_features=100,
+            n_features=200,
             n_informative=50,
             n_classes=10,
             random_state=42,
             train_test_split=1,
         ),
-        model=MLPModelConfig(loss="cross_entropy", hidden_dim=[]),
+        model=MLPModelConfig(loss="cross_entropy", hidden_dim=[100]),
         training=TrainingConfig(
             epochs=200,
             lr=0.001,

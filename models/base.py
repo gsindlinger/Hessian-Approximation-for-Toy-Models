@@ -25,3 +25,11 @@ class ApproximationModel(nn.Module):
     def kfac_apply(self, x, collector) -> Any:
         """Special apply method for K-FAC that wraps layers by custom VJP."""
         pass
+
+    def get_num_params(self, params: dict) -> int:
+        """Get total number of parameters in the model."""
+        from jax.flatten_util import ravel_pytree
+
+        _, unravel_fn = ravel_pytree(params)
+        flat_params, _ = ravel_pytree(params)
+        return flat_params.shape[0]
