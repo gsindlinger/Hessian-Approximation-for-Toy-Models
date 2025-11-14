@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Dict, List
+from typing import Dict, List, Literal
 
 import jax
 from simple_parsing import ArgumentParser
@@ -27,6 +27,7 @@ class Config:
     model: ModelConfig
     training: TrainingConfig
     hessian_approximation: HessianApproximationConfig | None = None
+    device: Literal["auto", "cpu", "gpu", "tpu"] = "auto"
 
     @staticmethod
     def parse_args() -> Config:
@@ -45,8 +46,15 @@ class Config:
             action="store_true",
             help="List all available configuration presets and exit",
         )
+        parser.add_argument(
+            "--device",
+            type=str,
+            default="auto",
+            choices=["auto", "cpu", "gpu", "tpu"],
+            help="Select device to run on: 'auto' lets JAX decide, 'cpu' forces CPU, 'gpu' forces GPU if available",
+        )
 
-        parser.add_arguments(Config, dest="config")
+        # parser.add_arguments(Config, dest="config")
         args = parser.parse_args()
 
         # List presets if requested
@@ -63,6 +71,7 @@ class Config:
         else:
             config = args.config
 
+        config.device = args.device
         return config
 
     @staticmethod
@@ -139,7 +148,7 @@ CONFIGS: Dict[str, Config] = {
     ),
     "random_classification": Config(
         dataset=RandomClassificationConfig(
-            n_samples=1000,
+            n_samples=500,
             n_features=10,
             n_informative=5,
             n_classes=2,
@@ -148,7 +157,7 @@ CONFIGS: Dict[str, Config] = {
         ),
         model=LinearModelConfig(loss="cross_entropy", hidden_dim=[]),
         training=TrainingConfig(
-            epochs=100,
+            epochs=30,
             batch_size=100,
             lr=0.001,
             optimizer="sgd",
