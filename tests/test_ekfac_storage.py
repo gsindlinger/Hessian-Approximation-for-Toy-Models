@@ -64,8 +64,8 @@ class TestKFACStorage:
         self, simple_config
     ) -> Tuple[ApproximationModel, AbstractDataset, Any, Config]:
         """Trains a small model to generate KFAC components."""
-        model, dataset, params, _ = train_or_load(simple_config)
-        return model, dataset, params, simple_config
+        model_data = train_or_load(simple_config)
+        return model_data.model, model_data.dataset, model_data.params, simple_config
 
     # --------------------------------------------------------------------------
     # Helper
@@ -98,7 +98,6 @@ class TestKFACStorage:
         )
 
         try:
-            x, y = dataset.get_train_data()
             kfac.get_ekfac_components()
 
             # --- Verify saved files exist
@@ -236,7 +235,6 @@ class TestKFACStorage:
         )
 
         try:
-            x, y = dataset.get_train_data()
             kfac.get_ekfac_components()
 
             # Check with same config should return True
@@ -262,7 +260,6 @@ class TestKFACStorage:
         )
 
         try:
-            x, y = dataset.get_train_data()
             kfac.get_ekfac_components()
 
             # Create storage with different config

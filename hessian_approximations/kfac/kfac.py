@@ -3,12 +3,11 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Callable, Dict, Literal
+from typing import Callable, Dict, List, Literal, Tuple
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
-from scipy.linalg import block_diag
 from typing_extensions import override
 
 from config.config import Config
@@ -17,6 +16,7 @@ from config.hessian_approximation_config import (
     KFACConfig,
     KFACRunConfig,
 )
+from data.jax_dataloader import JAXDataLoader
 from hessian_approximations.hessian_approximations import HessianApproximation
 from hessian_approximations.kfac.activation_gradient_collector import (
     ActivationGradientCollector,
@@ -24,8 +24,9 @@ from hessian_approximations.kfac.activation_gradient_collector import (
 from hessian_approximations.kfac.data import KFACData, KFACMeanEigenvaluesAndCorrections
 from hessian_approximations.kfac.layer_components import LayerComponents
 from hessian_approximations.kfac.storage import KFACStorage
-from models.train import ApproximationModel, train_or_load
+from models.train import ApproximationModel
 from models.utils.loss import get_loss_name
+from utils.utils import print_device_memory_stats
 
 
 @dataclass
@@ -45,6 +46,8 @@ class KFAC(HessianApproximation):
     kfac_config: KFACConfig = field(init=False)
 
     def __post_init__(self):
+        super().__post_init__()
+
         if not self.full_config.hessian_approximation:
             self.full_config.hessian_approximation = KFACConfig()
 
@@ -121,6 +124,7 @@ class KFAC(HessianApproximation):
         Not practical for large models but useful for testing and comparison
         with the true Hessian.
         """
+
         return self.compute_hessian_or_inverse_hessian(
             method="normal",
         )
@@ -157,21 +161,79 @@ class KFAC(HessianApproximation):
         Kronecker-factored curvature blocks.
         """
 
-        params = train_or_load(self.full_config)[2]
+        print_device_memory_stats("Before (E)KFAC Hessian Computation")
         self.get_ekfac_components()
-        hessian_layers = {}
-        for layer_name in params["params"].keys():
+
+        activations_eigenvectors = []
+        gradients_eigenvectors = []
+        Lambdas = []
+
+        for layer_name in self.model_data.params["params"].keys():
+            activations_eigenvectors.append(
+                self.kfac_data.eigenvectors.activations[layer_name]
+            )
+            gradients_eigenvectors.append(
+                self.kfac_data.eigenvectors.gradients[layer_name]
+            )
             if self.kfac_config.run_config.use_eigenvalue_correction:
-                hessian_layers[layer_name] = self.compute_layer_hessian_with_correction(
-                    layer_name, method
-                )
+                Lambdas.append(self.kfac_data.eigenvalue_corrections[layer_name])
             else:
-                hessian_layers[layer_name] = self.compute_layer_hessian_kfac_only(
-                    layer_name, method
-                )
-        # Combine layer Hessians into full block-diagonal Hessian
-        full_hessian = block_diag(*[jnp.asarray(H) for H in hessian_layers.values()])
-        return jnp.array(full_hessian)
+                Lambdas.append(self.compute_eigenvalue_lambda_kfac(layer_name))
+
+        print_device_memory_stats("After Adding (E)KFAC Components to Lists")
+
+        return self.compute_hessian_or_inverse_hessian_jitted(
+            activations_eigenvectors,
+            gradients_eigenvectors,
+            Lambdas,
+            self.damping(),
+            method,
+        )
+
+    @staticmethod
+    def _get_damped_lambda(
+        Lambda: Float[Array, "I O"],
+        damping: Float[Array, ""],
+        method: Literal["normal", "inverse"],
+    ) -> Float[Array, "n_params n_params"]:
+        if method == "inverse":
+            return 1.0 / (Lambda + damping)
+        else:
+            return Lambda + damping
+
+    @staticmethod
+    def _compute_layer_hessian(eigenvectors_A, eigenvectors_G, Lambda):
+        """JIT-compiled helper to compute layer Hessian with eigenvalue corrections."""
+        return jnp.einsum(
+            "ij,j,jk->ik",
+            jnp.kron(eigenvectors_A, eigenvectors_G),
+            Lambda.flatten(),
+            jnp.kron(eigenvectors_A, eigenvectors_G).T,
+        )
+
+    @staticmethod
+    @partial(jax.jit, static_argnames=["method"])
+    def compute_hessian_or_inverse_hessian_jitted(
+        eigenvectors_activations: List[Float[Array, "I I"]],
+        eigenvectors_gradients: List[Float[Array, "O O"]],
+        Lambdas: List[Float[Array, "I O"]],
+        damping: Float[Array, ""],
+        method: Literal["normal", "inverse"],
+    ):
+        hessian_list = [
+            KFAC._compute_layer_hessian(
+                layer_eigv_activations,
+                layer_eigv_gradients,
+                KFAC._get_damped_lambda(layer_lambda, damping, method),
+            )
+            for layer_eigv_activations, layer_eigv_gradients, layer_lambda in zip(
+                eigenvectors_activations,
+                eigenvectors_gradients,
+                Lambdas,
+            )
+        ]
+
+        return jax.scipy.linalg.block_diag(*hessian_list)
 
     @override
     def compute_hvp(
@@ -214,9 +276,8 @@ class KFAC(HessianApproximation):
 
         vp_pieces = []
         offset = 0
-        params = train_or_load(self.full_config)[2]
 
-        for layer_name in params["params"].keys():
+        for layer_name in self.model_data.params["params"].keys():
             Lambda: Float[Array, "I O"] = self.kfac_data.eigenvalue_corrections[
                 layer_name
             ]
@@ -273,9 +334,6 @@ class KFAC(HessianApproximation):
         ):
             return
 
-        model, dataset, params, loss = train_or_load(self.full_config)
-        training_data, training_targets = dataset.get_train_data()
-
         # check if kfac components are computed, if so reuse
         if self.storage.check_storage() and not (
             self.kfac_config.recalc_ekfac_components
@@ -284,8 +342,13 @@ class KFAC(HessianApproximation):
             self.kfac_data, self.kfac_data_means = self.storage.load_kfac_data()
         else:
             print("Computing EKFAC components from scratch.")
+            training_data, training_targets = self.model_data.dataset.get_train_data()
             self.compute_from_scratch(
-                model, params, training_data, training_targets, loss
+                self.model_data.model,
+                self.model_data.params,
+                training_data,
+                training_targets,
+                self.model_data.loss,
             )
 
     def compute_from_scratch(
@@ -300,11 +363,15 @@ class KFAC(HessianApproximation):
         self.compute_covariances(
             model, params, training_data, training_targets, loss_fn
         )
+        print("Computing eigenvectors for each layer.")
         self.compute_eigenvectors()
+        print("Computing eigenvalue corrections for each layer.")
         self.compute_eigenvalue_corrections(
             model, params, training_data, training_targets, loss_fn
         )
+        print("Computing mean eigenvalues and corrections for damping.")
         self.compute_mean_eigenvalues_and_corrections()
+        print("Finished computing EKFAC components from scratch.")
 
     def compute_covariances(
         self,
@@ -330,6 +397,44 @@ class KFAC(HessianApproximation):
         )
         self.storage.save_covariances(self.kfac_data.covariances)
 
+    @staticmethod
+    @jax.jit
+    def compute_layer_eigenvectors(
+        A: Float[Array, "I I"], G: Float[Array, "O O"]
+    ) -> Tuple[
+        Float[Array, "I"], Float[Array, "O"], Float[Array, "I I"], Float[Array, "O O"]
+    ]:
+        """
+        Compute eigenvectors of covariance matrices A and G for a single layer.
+
+        Returns:
+            Tuple containing:
+            - Eigenvalues of A (Float[Array, "I"])
+            - Eigenvalues of G (Float[Array, "O"])
+            - Eigenvectors of A (Float[Array, "I I"])
+            - Eigenvectors of G (Float[Array, "O O"])
+        """
+        # Ensure numerical stability by using float64 for eigen decomposition
+        jax.config.update("jax_enable_x64", True)
+        A = A.astype(jnp.float64)
+        G = G.astype(jnp.float64)
+
+        eigenvals_A: Float[Array, "I"]
+        eigvecs_A: Float[Array, "I I"]
+        eigenvals_G: Float[Array, "O"]
+        eigvecs_G: Float[Array, "O O"]
+
+        eigenvals_A, eigvecs_A = jnp.linalg.eigh(A)
+        eigenvals_G, eigvecs_G = jnp.linalg.eigh(G)
+        jax.config.update("jax_enable_x64", False)
+
+        return (
+            eigenvals_A.astype(jnp.float32),
+            eigenvals_G.astype(jnp.float32),
+            eigvecs_A.astype(jnp.float32),
+            eigvecs_G.astype(jnp.float32),
+        )
+
     def compute_eigenvectors(self) -> None:
         """Compute eigenvectors of the covariance matrices A and G for each layer."""
         if not self.kfac_data.covariances:
@@ -343,32 +448,28 @@ class KFAC(HessianApproximation):
         gradient_eigvecs = {}
 
         for layer_name in self.kfac_data.covariances.activations.keys():
-            A: Float[Array, "I I"] = self.kfac_data.covariances.activations[layer_name]
-            G: Float[Array, "O O"] = self.kfac_data.covariances.gradients[layer_name]
+            (
+                activation_eigvals_layer,
+                gradient_eigvals_layer,
+                activation_eigvecs_layer,
+                gradient_eigvecs_layer,
+            ) = self.compute_layer_eigenvectors(
+                self.kfac_data.covariances.activations[layer_name],
+                self.kfac_data.covariances.gradients[layer_name],
+            )
 
-            # Ensure numerical stability by using float64 for eigen decomposition
-            A = A.astype(jnp.float64)
-            G = G.astype(jnp.float64)
+            activation_eigvals[layer_name] = activation_eigvals_layer
+            activation_eigvecs[layer_name] = activation_eigvecs_layer
+            gradient_eigvals[layer_name] = gradient_eigvals_layer
+            gradient_eigvecs[layer_name] = gradient_eigvecs_layer
 
-            eigenvals_A: Float[Array, "I"]
-            eigvecs_A: Float[Array, "I I"]
-            eigenvals_G: Float[Array, "O"]
-            eigvecs_G: Float[Array, "O O"]
-
-            eigenvals_A, eigvecs_A = jnp.linalg.eigh(A)
-            eigenvals_G, eigvecs_G = jnp.linalg.eigh(G)
-
-            activation_eigvecs[layer_name] = eigvecs_A.astype(jnp.float32)
-            gradient_eigvecs[layer_name] = eigvecs_G.astype(jnp.float32)
-
-            activation_eigvals[layer_name] = eigenvals_A.astype(jnp.float32)
-            gradient_eigvals[layer_name] = eigenvals_G.astype(jnp.float32)
-
-        self.kfac_data.eigenvectors = LayerComponents(
-            activation_eigvecs, gradient_eigvecs
-        )
         self.kfac_data.eigenvalues = LayerComponents(
-            activation_eigvals, gradient_eigvals
+            activations=activation_eigvals,
+            gradients=gradient_eigvals,
+        )
+        self.kfac_data.eigenvectors = LayerComponents(
+            activations=activation_eigvecs,
+            gradients=gradient_eigvecs,
         )
         self.storage.save_eigenvectors(self.kfac_data.eigenvectors)
         self.storage.save_eigenvalues(self.kfac_data.eigenvalues)
@@ -439,8 +540,10 @@ class KFAC(HessianApproximation):
 
         self.storage.save_mean_eigenvalues_and_corrections(self.kfac_data_means)
 
+    @staticmethod
+    @jax.jit
     def covariance(
-        self, input: Float[Array, "n_samples features"]
+        input: Float[Array, "n_samples features"],
     ) -> Float[Array, "features features"]:
         """
         Compute covariance matrix for given input.
@@ -449,7 +552,7 @@ class KFAC(HessianApproximation):
         - A = (1/N) * a^T @ a
         - G = (1/N) * g^T @ g
         """
-        return input.mT @ input
+        return input.T @ input
 
     def _process_multiple_batches_collector(
         self,
@@ -483,21 +586,25 @@ class KFAC(HessianApproximation):
                 model, params, training_data, loss_fn, rng_key=prng_key
             )
 
-        # Process all data in batches
         n_samples = training_data.shape[0]
-        effective_batch_size = (
-            self.kfac_config.build_config.collector_batch_size
-            if self.kfac_config.build_config.collector_batch_size is not None
-            else n_samples
+
+        dataloader_batch_size = self.kfac_config.build_config.collector_batch_size
+        dataloader = JAXDataLoader(
+            data=training_data,
+            targets=targets,
+            shuffle=False,
+            batch_size=dataloader_batch_size,
+            rng_key=jax.random.PRNGKey(0),
         )
 
-        for start in range(0, n_samples, effective_batch_size):
-            end = min(start + effective_batch_size, n_samples)
-            batch_data = training_data[start:end]
-            batch_targets = targets[start:end]
+        # Process batches
+        for batch_data, batch_targets in dataloader:
+            # JIT-compiled gradient computation
             _ = jax.value_and_grad(loss_fn_for_grad)(params, batch_data, batch_targets)
+
+            # Process with optimized accumulation
             self._process_single_batch_collector(
-                end - start,
+                batch_data.shape[0],
                 compute_method,
                 model.use_bias,
             )
@@ -510,9 +617,7 @@ class KFAC(HessianApproximation):
         if compute_method == "eigenvalue_correction":
             # Average eigenvalue corrections over all samples
             for layer_name in self.kfac_data.eigenvalue_corrections.keys():
-                self.kfac_data.eigenvalue_corrections[layer_name] = (
-                    self.kfac_data.eigenvalue_corrections[layer_name] / n_samples
-                )
+                self.kfac_data.eigenvalue_corrections[layer_name] /= n_samples
 
     def _process_single_batch_collector(
         self,
@@ -524,9 +629,16 @@ class KFAC(HessianApproximation):
         Process a batch of activation and gradient data. Compute and accumulate their covariances / eigenvalue corrections.
         """
         for layer_name, (a, g) in self.collector.captured_data.items():
+
+            @jax.jit
+            def add_bias_term(
+                x: Float[Array, "n_batch d_in"],
+            ) -> Float[Array, "n_batch d_in+1"]:
+                batch_size = x.shape[0]
+                return jnp.concatenate([x, jnp.ones((batch_size, 1))], axis=1)
+
             if use_bias:
-                batch_size = a.shape[0]
-                a = jnp.concatenate([a, jnp.ones((batch_size, 1))], axis=1)
+                a = add_bias_term(a)
 
             if compute_method == "covariance":
                 # Compute running covariance / eigenvalue correction by accumulation
@@ -540,10 +652,7 @@ class KFAC(HessianApproximation):
     def _accumulate_data(
         self, store: Dict, key: str, batch_covariance: Float[Array, "..."]
     ) -> None:
-        if key in store:
-            store[key] += batch_covariance
-        else:
-            store[key] = batch_covariance
+        store[key] = store.get(key, 0) + batch_covariance
 
     def _accumulate_covariances(
         self,
@@ -610,25 +719,27 @@ class KFAC(HessianApproximation):
             layer_name
         ]
 
-        # Project activations and gradients onto eigenbases
-        g_tilde: Float[Array, "n_batch d_out"] = jnp.einsum(
-            "op, np -> no", Q_G.T, gradients
+        correction: Float[Array, "d_in d_out"] = (
+            self._compute_eigenvalue_correction_batch(Q_A, Q_G, activations, gradients)
         )
-        a_tilde: Float[Array, "n_batch d_in"] = jnp.einsum(
-            "ij, nj -> ni", Q_A.T, activations
-        )
-
-        # Compute outer product and average
-        outer: Float[Array, "n_batch d_in d_out"] = jnp.einsum(
-            "ni, no -> nio", a_tilde, g_tilde
-        )
-        correction: Float[Array, "d_in d_out"] = (outer**2).sum(
-            axis=0
-        )  # (averaging is done by the calling method)
 
         self._accumulate_data(
             self.kfac_data.eigenvalue_corrections, layer_name, correction
         )
+
+    @staticmethod
+    @jax.jit
+    def _compute_eigenvalue_correction_batch(
+        Q_A: Float[Array, "I I"],
+        Q_G: Float[Array, "O O"],
+        activations: Float[Array, "n_batch I"],
+        gradients: Float[Array, "n_batch O"],
+    ) -> Float[Array, "I O"]:
+        """JIT-compiled eigenvalue correction computation."""
+        g_tilde = jnp.einsum("op, np -> no", Q_G.T, gradients)
+        a_tilde = jnp.einsum("ij, nj -> ni", Q_A.T, activations)
+        outer = jnp.einsum("ni, no -> nio", a_tilde, g_tilde)
+        return (outer**2).sum(axis=0)
 
     @staticmethod
     @partial(jax.jit, static_argnames=["method"])
@@ -689,6 +800,7 @@ class KFAC(HessianApproximation):
         Since we store the eigenvalue corrections in the shape [input_dim, output_dim],
         we can directly use them here by flattening in JAX-default row-major order without needing to transpose.
         """
+
         A_eigvecs: Float[Array, "I I"] = self.kfac_data.eigenvectors.activations[
             layer_name
         ]
@@ -699,18 +811,14 @@ class KFAC(HessianApproximation):
             layer_name
         ]
 
-        Q_kron: Float[Array, "I*O, I*O"] = jnp.kron(A_eigvecs, G_eigvecs)
-
         if method == "inverse":
             damped_corrections = 1.0 / (corrections + self.damping())
         else:
             damped_corrections = corrections + self.damping()
 
-        H_layer: Float[Array, "I*O, I*O"] = (
-            Q_kron @ jnp.diag(damped_corrections.flatten()) @ Q_kron.T
+        return self._compute_layer_hessian_jitted(
+            A_eigvecs, G_eigvecs, damped_corrections
         )
-
-        return H_layer
 
     def compute_layer_hessian_kfac_only(
         self, layer_name: str, method: Literal["inverse", "normal"] = "normal"
@@ -751,14 +859,15 @@ class KFAC(HessianApproximation):
             layer_name
         ]
 
-        Q: Float[Array, "I*O, I*O"] = jnp.kron(eigenvectors_A, eigenvectors_G)
         Lambda: Float[Array, "I O"] = self.compute_eigenvalue_lambda_kfac(layer_name)
-
         if method == "inverse":
             Lambda = 1.0 / (Lambda + self.damping())
         else:
             Lambda = Lambda + self.damping()
-        return Q @ jnp.diag(Lambda.flatten()) @ Q.T
+
+        return self._compute_layer_hessian_jitted(
+            eigenvectors_A, eigenvectors_G, Lambda
+        )
 
     def compute_eigenvalue_lambda_kfac(self, layer_name: str) -> Float[Array, "I O"]:
         """Compute eigenvalue lambda for KFAC using the following formula:
@@ -769,9 +878,7 @@ class KFAC(HessianApproximation):
             layer_name
         ]
         G_eigvals: Float[Array, "O"] = self.kfac_data.eigenvalues.gradients[layer_name]
-        Lambda_kfac: Float[Array, "I O"] = jnp.outer(A_eigvals, G_eigvals)
-
-        return Lambda_kfac
+        return jnp.outer(A_eigvals, G_eigvals)
 
     def generate_pseudo_targets(
         self,

@@ -58,8 +58,13 @@ class TestLinearRegression:
     @pytest.fixture
     def model_trained(self, regression_config):
         """Trained model for regression."""
-        model, dataset, params, _ = train_or_load(regression_config)
-        return model, dataset, params, regression_config
+        model_data = train_or_load(regression_config)
+        return (
+            model_data.model,
+            model_data.dataset,
+            model_data.params,
+            regression_config,
+        )
 
     def test_jax_vs_sklearn_regression(self, model_trained):
         """

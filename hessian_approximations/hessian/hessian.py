@@ -9,7 +9,6 @@ from jax import flatten_util
 from typing_extensions import override
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.train import train_or_load
 from models.utils.loss import loss_wrapper_flattened
 
 
@@ -57,16 +56,20 @@ class Hessian(HessianApproximation):
         Returns:
             Hessian matrix as a 2D array.
         """
-        model, dataset, params, loss_fn = train_or_load(self.full_config)
-        training_data, training_targets = dataset.get_train_data()
+        training_data, training_targets = self.model_data.dataset.get_train_data()
 
         # Important: Flattening structure for linear modules with bias is the following: b, w
         # So for output dim 2, input dim 3, the order is: b1, b2, w1
-        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+        params_flat, unravel_fn = flatten_util.ravel_pytree(self.model_data.params)
 
         def loss_wrapper(p):
             return loss_wrapper_flattened(
-                model, p, unravel_fn, loss_fn, training_data, training_targets
+                self.model_data.model,
+                p,
+                unravel_fn,
+                self.model_data.loss,
+                training_data,
+                training_targets,
             )
 
         # JIT and compute Hessian
@@ -94,18 +97,17 @@ class Hessian(HessianApproximation):
         Returns:
             HVP result as a 1D array.
         """
-        model, dataset, params, loss_fn = train_or_load(self.full_config)
-        training_data, training_targets = dataset.get_train_data()
+        training_data, training_targets = self.model_data.dataset.get_train_data()
 
         # Flatten parameters once
-        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+        params_flat, unravel_fn = flatten_util.ravel_pytree(self.model_data.params)
 
         def loss_wrapper(p):
             return loss_wrapper_flattened(
-                model,
+                self.model_data.model,
                 p,
                 unravel_fn,
-                loss_fn,
+                self.model_data.loss,
                 training_data,
                 training_targets,
             )
@@ -138,15 +140,19 @@ class Hessian(HessianApproximation):
         Returns:
             IHVP result as a 1D array.
         """
-        model, dataset, params, loss_fn = train_or_load(self.full_config)
-        training_data, training_targets = dataset.get_train_data()
+        training_data, training_targets = self.model_data.dataset.get_train_data()
 
         # Flatten parameters once
-        params_flat, unravel_fn = flatten_util.ravel_pytree(params)
+        params_flat, unravel_fn = flatten_util.ravel_pytree(self.model_data.params)
 
         def loss_wrapper(p):
             return loss_wrapper_flattened(
-                model, p, unravel_fn, loss_fn, training_data, training_targets
+                self.model_data.model,
+                p,
+                unravel_fn,
+                self.model_data.loss,
+                training_data,
+                training_targets,
             )
 
         # Compute Hessian

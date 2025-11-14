@@ -4,11 +4,9 @@ import jax
 import jax.numpy as jnp
 from typing_extensions import override
 
-from config.config import Config
 from config.hessian_approximation_config import LiSSAConfig
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.train import train_or_load
 
 
 class LiSSA(HessianApproximation):
@@ -21,25 +19,23 @@ class LiSSA(HessianApproximation):
     The IHVP is approximated as \alpha * r_J after J iterations.
     """
 
-    def __init__(self, full_config: Config):
-        super().__init__(full_config=full_config)
-        self.full_config = full_config
-
+    def __post_init__(self):
+        super().__post_init__()
         if not isinstance(self.full_config.hessian_approximation, LiSSAConfig):
             raise ValueError(
-                "LiSSA requires a LiSSAConfig in the hessian_approximation field."
+                f"LiSSA requires LiSSAConfig, got {type(self.full_config.hessian_approximation)}"
             )
         self.config: LiSSAConfig = self.full_config.hessian_approximation
 
     @override
-    def compute_hessian(self, *args, **kwargs):
+    def compute_hessian(self):
         raise NotImplementedError(
             "LiSSA approximates inverse Hessian-vector products only. "
             "Use compute_ihvp()."
         )
 
     @override
-    def compute_hvp(self, *args, **kwargs):
+    def compute_hvp(self):
         raise NotImplementedError(
             "LiSSA is designed for inverse Hessian-vector products. "
             "Use compute_ihvp() instead."
@@ -58,9 +54,8 @@ class LiSSA(HessianApproximation):
         with base case r_0 = v,
         and returns \alpha * r_J as the final approximation of (G + λI)^{-1} v.
         """
-        model, dataset, params, loss_fn = train_or_load(self.full_config)
 
-        training_data, training_targets = dataset.get_train_data()
+        training_data, training_targets = self.model_data.dataset.get_train_data()
 
         n_samples = training_data.shape[0]
         actual_batch_size = min(n_samples, self.config.batch_size)
@@ -77,11 +72,6 @@ class LiSSA(HessianApproximation):
 
             for j in range(self.config.recursion_depth):
                 rng, subkey = jax.random.split(rng)
-                batch_indices = jax.random.choice(
-                    subkey, n_samples, shape=(actual_batch_size,), replace=False
-                )
-                x_batch = training_data[batch_indices]
-                y_batch = training_targets[batch_indices]
 
                 hvp = hvp_fn(
                     vector=r,
