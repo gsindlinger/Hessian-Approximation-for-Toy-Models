@@ -3,6 +3,7 @@ from typing import Dict, List
 
 import jax.numpy as jnp
 from jax.numpy.linalg import eigh, norm
+from jaxtyping import Array, Float
 
 
 class FullMatrixMetric(Enum):
@@ -31,51 +32,53 @@ class FullMatrixMetric(Enum):
     TRACE_DISTANCE = "trace_distance"  # Difference in traces (divided by size)
     CONDITION_NUMBER_LOG_RATIO = "condition_number_log_ratio"  # Invertibility quality
 
-    def compute(self, matrix_gt: jnp.ndarray, matrix_approx: jnp.ndarray) -> float:
+    def compute(
+        self, matrix_1: Float[Array, "..."], matrix_2: Float[Array, "..."]
+    ) -> float:
         """
         Compute the metric between two matrices.
         """
         match self:
             case FullMatrixMetric.RELATIVE_FROBENIUS:
                 # ||A - B||_F / ||A||_F
-                norm_diff = norm(matrix_gt - matrix_approx, ord="fro")
-                norm_a = norm(matrix_gt, ord="fro")
+                norm_diff = norm(matrix_1 - matrix_2, ord="fro")
+                norm_a = norm(matrix_1, ord="fro")
                 return norm_diff / (norm_a + 1e-10)  # Avoid division by zero
             case FullMatrixMetric.MAX_ELEMENTWISE:
                 # max|a_ij - b_ij|
-                return jnp.max(jnp.abs(matrix_gt - matrix_approx))  # type: ignore
+                return jnp.max(jnp.abs(matrix_1 - matrix_2))  # type: ignore
             case FullMatrixMetric.SPECTRAL:
                 # ||A - B||_2
-                return float(norm(matrix_gt - matrix_approx, ord=2))
+                return float(norm(matrix_1 - matrix_2, ord=2))
             case FullMatrixMetric.RELATIVE_SPECTRAL:
                 # ||A - B||_2 / ||A||_2 (scale-invariant)
-                norm_diff = norm(matrix_gt - matrix_approx, ord=2)
-                norm_a = norm(matrix_gt, ord=2)
+                norm_diff = norm(matrix_1 - matrix_2, ord=2)
+                norm_a = norm(matrix_1, ord=2)
                 return norm_diff / (norm_a + 1e-10)  # Avoid division by zero
             case FullMatrixMetric.COSINE_SIMILARITY:
                 # tr(A @ B^T) / (||A||_F * ||B||_F)
-                inner_product = jnp.trace(matrix_gt @ matrix_approx.T)
-                norm_a = norm(matrix_gt, ord="fro")
-                norm_b = norm(matrix_approx, ord="fro")
+                inner_product = jnp.trace(matrix_1 @ matrix_2.T)
+                norm_a = norm(matrix_1, ord="fro")
+                norm_b = norm(matrix_2, ord="fro")
                 cosine = inner_product / (norm_a * norm_b + 1e-10)
                 return cosine  # 1 = perfect match, 0 = orthogonal
             case FullMatrixMetric.EIGENVALUE_MAX:
                 # max|λ_i(A) - λ_i(B)|
-                eigs_a = eigh(matrix_gt)[0]
-                eigs_b = eigh(matrix_approx)[0]
+                eigs_a = eigh(matrix_1)[0]
+                eigs_b = eigh(matrix_2)[0]
                 return float(jnp.max(jnp.abs(eigs_a - eigs_b)))
             case FullMatrixMetric.EIGENVALUES_L2_DISTANCE:
                 # Relative eigenvalue error
-                eigs_a = eigh(matrix_gt)[0]
-                eigs_b = eigh(matrix_approx)[0]
+                eigs_a = eigh(matrix_1)[0]
+                eigs_b = eigh(matrix_2)[0]
                 l2_diff = norm(eigs_a - eigs_b)
                 l2_a = norm(eigs_a)
                 return float(l2_diff / (l2_a + 1e-10))
             case FullMatrixMetric.TRACE_DISTANCE:
                 # |tr(A) - tr(B)| - sum of eigenvalues, divide by size for scale-invariance
                 return (
-                    float(jnp.abs(jnp.trace(matrix_gt) - jnp.trace(matrix_approx)))
-                    / matrix_gt.shape[0]
+                    float(jnp.abs(jnp.trace(matrix_1) - jnp.trace(matrix_2)))
+                    / matrix_1.shape[0]
                 )
             case FullMatrixMetric.CONDITION_NUMBER_LOG_RATIO:
                 # κ(A) / κ(B)
@@ -86,10 +89,7 @@ class FullMatrixMetric(Enum):
                     return max_eig / (min_eig + 1e-10)
 
                 return float(
-                    jnp.abs(
-                        jnp.log(safe_cond(matrix_gt))
-                        - jnp.log(safe_cond(matrix_approx))
-                    )
+                    jnp.abs(jnp.log(safe_cond(matrix_1)) - jnp.log(safe_cond(matrix_2)))
                 )
 
             case _:
@@ -108,7 +108,7 @@ MATRIX_METRICS = {
 
 
 def compare_matrices(
-    matrix_gt, matrix_approx, metrics: List[FullMatrixMetric] | None = None
+    matrix_1, matrix_2, metrics: List[FullMatrixMetric] | None = None
 ) -> Dict[str, float]:
     """
     Compare two matrices using specified metrics.
@@ -127,7 +127,7 @@ def compare_matrices(
     results = {}
     for metric in metrics:
         results[metric.value] = float(
-            metric.compute(matrix_gt=matrix_gt, matrix_approx=matrix_approx)
+            metric.compute(matrix_1=matrix_1, matrix_2=matrix_2)
         )
 
     return results

@@ -19,7 +19,7 @@ from config.model_config import LinearModelConfig
 from config.training_config import TrainingConfig
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC
-from metrics.metrics import METRICS, compare_matrices
+from metrics.full_matrix_metrics import MATRIX_METRICS, compare_matrices
 from models.train import train_or_load
 
 
@@ -51,9 +51,9 @@ def compare_approximation_with_true_hessian(
         _, _, params, _ = train_or_load(approx_method.full_config)
 
         results_dict[approx_name] = compare_matrices(
-            matrix_gt=true_hessian,
-            matrix_approx=approximation_matrix,
-            metrics=METRICS["all_matrix"],
+            matrix_1=true_hessian,
+            matrix_2=approximation_matrix,
+            metrics=MATRIX_METRICS["all_matrix"],
         )
 
         # add number of parameters
@@ -170,7 +170,10 @@ for dataset_name, dataset_config in dataset_configs.items():
 # folder path
 folder = "data/artifacts/results/"
 # check if folder exists, if not create it
+
+# timestamp for unique filename
+timestamp = time.strftime("%Y%m%d-%H%M%S")
 if not os.path.exists(folder):
     os.makedirs(folder)
-with open(f"{folder}/kfac_hessian_comparison_results.json", "w") as f:
+with open(f"{folder}/kfac_hessian_comparison_results_{timestamp}.json", "w") as f:
     json.dump(results_dict, f, indent=4)
