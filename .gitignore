@@ -9,6 +9,10 @@
 *.npy
 *.npz
 data/**/*.json
+data/**/*.csv
+data/**/*.tsv
+data/**/*.pdf
+data/**/*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
