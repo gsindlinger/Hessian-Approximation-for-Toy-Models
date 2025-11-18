@@ -1,4 +1,6 @@
-import jax.numpy as jnp
+import jax
+
+from data.device_handling import get_default_device
 
 
 class JAXDataLoader:
@@ -7,21 +9,28 @@ class JAXDataLoader:
     Useful when you need reproducible shuffling with PRNG keys.
     """
 
-    def __init__(self, data, targets, batch_size=32, shuffle=True, rng_key=None):
-        import jax
+    def __init__(
+        self,
+        data,
+        targets,
+        batch_size=None,
+        shuffle=True,
+        rng_key=jax.random.PRNGKey(42),
+    ):
+        self.data = data
+        self.targets = targets
 
-        self.data = jnp.array(data)
-        self.targets = jnp.array(targets)
-        self.batch_size = batch_size
         self.shuffle = shuffle
         self.n_samples = len(self.data)
-        self.n_batches = (self.n_samples + batch_size - 1) // batch_size
-        self.rng_key = rng_key if rng_key is not None else jax.random.PRNGKey(0)
+        if batch_size is None:
+            self.batch_size = JAXDataLoader.get_batch_size()
+        else:
+            self.batch_size = batch_size
+        self.n_batches = (self.n_samples + self.batch_size - 1) // self.batch_size
+        self.rng_key = rng_key
 
     def __iter__(self):
         if self.shuffle:
-            import jax
-
             # Use JAX's PRNG for reproducible shuffling
             self.rng_key, subkey = jax.random.split(self.rng_key)
             indices = jax.random.permutation(subkey, self.n_samples)
@@ -52,3 +61,12 @@ class JAXDataLoader:
     def dataset(self):
         """Property to mimic PyTorch DataLoader's dataset attribute."""
         return type("Dataset", (), {"__len__": lambda self: self.n_samples})()
+
+    @staticmethod
+    def get_batch_size(default_cpu_bs=32, gpu_bs=128) -> int:
+        """Determine batch size based on available device."""
+        device = get_default_device()
+        if device.platform == "gpu" or device.platform == "tpu":
+            return gpu_bs
+        else:
+            return default_cpu_bs

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Dict, Literal, Tuple
 
@@ -10,6 +11,7 @@ from tqdm import tqdm
 
 from config.config import Config, TrainingConfig
 from data.data import AbstractDataset, create_dataset
+from data.device_handling import get_default_device
 from models.base import ApproximationModel
 from models.linear_model import LinearModel
 from models.mlp import MLPModel
@@ -20,6 +22,16 @@ from models.utils.checkpoint_storage import (
 )
 from models.utils.loss import get_loss_fn
 from models.utils.optimizers import get_optimizer
+
+
+@dataclass
+class ModelData:
+    """Container for the model, dataset, parameters, and loss function."""
+
+    model: ApproximationModel
+    dataset: AbstractDataset
+    params: Dict
+    loss: Callable
 
 
 def create_model(config: Config, input_dim: int, output_dim: int) -> ApproximationModel:
@@ -46,17 +58,17 @@ def create_model(config: Config, input_dim: int, output_dim: int) -> Approximati
     return model_cls(**model_kwargs)
 
 
-def create_dataset_and_model(config: Config):
+def create_dataset_and_model(
+    config: Config,
+) -> Tuple[ApproximationModel, AbstractDataset]:
     dataset = create_dataset(config.dataset)
     model = create_model(
         config, input_dim=dataset.input_dim(), output_dim=dataset.output_dim()
     )
-    return dataset, model
+    return model, dataset
 
 
-def train_or_load(
-    config: Config, reload_model: bool = False
-) -> Tuple[ApproximationModel, AbstractDataset, Dict, Callable]:
+def train_or_load(config: Config, reload_model: bool = False) -> ModelData:
     """Train or load a model based on the given config.
 
     Returns:
@@ -64,7 +76,7 @@ def train_or_load(
         dataset: The dataset used for training.
         params: The model parameters.
         loss: The loss function used."""
-    dataset, model = create_dataset_and_model(config)
+    model, dataset = create_dataset_and_model(config)
     loss = get_loss_fn(config.model.loss)
     if not reload_model and check_saved_model(
         dataset_config=config.dataset,
@@ -77,14 +89,18 @@ def train_or_load(
             training_config=config.training,
         )
     else:
-        model, params = train_model(model, dataset.get_dataloaders(), config.training)
+        model, params = train_model(
+            model=model,
+            dataloader=dataset.get_dataloaders(),
+            training_config=config.training,
+        )
         save_model_checkpoint(
             params=params,
             dataset_config=config.dataset,
             model_config=config.model,
             training_config=config.training,
         )
-    return model, dataset, params, loss
+    return ModelData(model=model, dataset=dataset, params=params, loss=loss)
 
 
 def create_train_state(model, params, optimizer):
@@ -128,11 +144,8 @@ def validate_model(
     total_samples = 0
 
     for batch_data, batch_targets in dataloader:
-        batch_data = jnp.array(batch_data)
-        batch_targets = jnp.array(batch_targets)
-
         loss_value = eval_step(state, batch_data, batch_targets, loss_fn)
-        running_loss += float(loss_value) * batch_data.shape[0]
+        running_loss += loss_value * batch_data.shape[0]
         total_samples += batch_data.shape[0]
 
     val_loss = running_loss / total_samples
@@ -161,10 +174,6 @@ def train_model(
         total_samples = 0
 
         for batch_data, batch_targets in train_loader:
-            # Convert to JAX arrays
-            batch_data = jnp.array(batch_data)
-            batch_targets = jnp.array(batch_targets)
-
             state, loss_value = train_step(state, batch_data, batch_targets, loss_fn)
             running_loss += float(loss_value) * batch_data.shape[0]
             total_samples += batch_data.shape[0]
@@ -221,10 +230,11 @@ def initialize_model(model: ApproximationModel, input_shape: int, key=None):
         key = jax.random.PRNGKey(0)
 
     # Create dummy input for initialization
-    dummy_input = jnp.ones((1, input_shape))
+    device = get_default_device()
+    dummy_input = jax.device_put(jnp.ones((1, input_shape), dtype=jnp.float32), device)
     params = model.init(key, dummy_input)
 
-    return params
+    return jax.device_put(params, device)
 
 
 # Utility for batched operations with vmap

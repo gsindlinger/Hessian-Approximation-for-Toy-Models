@@ -6,11 +6,13 @@ import pickle
 from dataclasses import asdict
 from typing import Dict
 
+import jax
 from flax import serialization
 
 from config.config import Config, TrainingConfig
 from config.dataset_config import DatasetConfig
 from config.model_config import ModelConfig
+from data.device_handling import get_default_device
 
 CHECKPOINT_STR = "checkpoint"
 CONFIGS_STR = "configs"
@@ -106,6 +108,7 @@ def load_model_checkpoint(
     dataset_config: DatasetConfig,
     model_config: ModelConfig,
     training_config: TrainingConfig,
+    device: jax.Array | None = None,
 ) -> Dict:
     """Load model parameters from checkpoint. Assumes the checkpoint exists."""
     model_checkpoint_dir = generate_model_checkpoint_path(
@@ -115,11 +118,15 @@ def load_model_checkpoint(
     msgpack_path = f"{model_checkpoint_dir}/{CHECKPOINT_STR}.msgpack"
     pickle_path = f"{model_checkpoint_dir}/{CHECKPOINT_STR}.pkl"
 
+    if device is None:
+        device = get_default_device()
+
     if os.path.exists(msgpack_path):
         try:
             with open(msgpack_path, "rb") as f:
                 bytes_input = f.read()
             params = serialization.from_bytes(None, bytes_input)
+            params = jax.device_put(params, device)
             return params
         except ImportError:
             print("Flax serialization not available. Falling back to pickle.")
@@ -128,6 +135,7 @@ def load_model_checkpoint(
         try:
             with open(pickle_path, "rb") as f:
                 params = pickle.load(f)
+            params = jax.device_put(params, device)
             return params
         except Exception as e:
             print(f"Failed to load model parameters: {e}")

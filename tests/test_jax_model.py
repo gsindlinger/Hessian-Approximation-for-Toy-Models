@@ -58,8 +58,13 @@ class TestLinearRegression:
     @pytest.fixture
     def model_trained(self, regression_config):
         """Trained model for regression."""
-        model, dataset, params, _ = train_or_load(regression_config)
-        return model, dataset, params, regression_config
+        model_data = train_or_load(regression_config)
+        return (
+            model_data.model,
+            model_data.dataset,
+            model_data.params,
+            regression_config,
+        )
 
     def test_jax_vs_sklearn_regression(self, model_trained):
         """
@@ -70,7 +75,7 @@ class TestLinearRegression:
         and real-world datasets.
         """
         model, dataset, params, config = model_trained
-        x, y = dataset.get_train_data()
+        x, y = dataset.get_train_data(device=config.device)
 
         # For simple regression, use interpolated test points
         # For energy dataset, use training data directly

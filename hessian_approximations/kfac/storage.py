@@ -3,31 +3,48 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float
 
 from config.config import Config
 from config.hessian_approximation_config import KFACConfig
+from data.device_handling import get_default_device
 from hessian_approximations.kfac.data import KFACData, KFACMeanEigenvaluesAndCorrections
 from hessian_approximations.kfac.layer_components import LayerComponents
 
 
 class KFACStorage:
-    """Handles all disk I/O operations for (E)KFAC components using NumPy's npz format."""
+    """Handles all disk I/O operations for (E)KFAC components using NumPy's npz format.
+
+    Supports device handling for GPU/TPU workflows.
+    """
 
     config: Config
     base_directory: Path
+    device: Optional[jax.Array]
 
     def __init__(
         self,
         config: Config,
         base_path: str | Path = "data/artifacts/kfac_storage",
+        device: Optional[jax.Array] = None,
     ):
+        """Initialize KFACStorage.
+
+        Args:
+            config: Configuration object
+            base_path: Base directory for storage
+            device: JAX device to place loaded arrays on. If None, uses default device.
+        """
         self.config = config
         self.base_directory = self.generate_kfac_directory(base_path)
+        self.device = device if device is not None else get_default_device()
+        print("Using KFAC Storage Device:", self.device)
+
         if not self.check_component_storage():
             self.save_config()
 
@@ -141,28 +158,42 @@ class KFACStorage:
     def _save_layer_components(
         self, filename: str, components: LayerComponents
     ) -> None:
+        """Save layer components to disk, handling device transfer efficiently."""
         path = self._get_path(filename)
-        save_dict = {
-            f"{prefix}_{name}": np.asarray(arr)
-            for prefix, group in (
-                ("activations", components.activations),
-                ("gradients", components.gradients),
-            )
-            for name, arr in group.items()
-        }
+        save_dict = {}
+
+        for prefix, group in (
+            ("activations", components.activations),
+            ("gradients", components.gradients),
+        ):
+            for name, arr in group.items():
+                # Use jax.device_get for efficient device-to-host transfer
+                # This is more explicit and handles GPU/TPU correctly
+                host_arr = jax.device_get(arr)
+                save_dict[f"{prefix}_{name}"] = np.asarray(host_arr)
+
         np.savez_compressed(path, **save_dict)  # type: ignore
 
     def _load_layer_components(self, filename: str) -> LayerComponents:
+        """Load layer components from disk and place on specified device."""
         path = self._get_path(filename)
         if not path.exists():
             raise FileNotFoundError(f"No file found at {path}")
+
         data = np.load(path, allow_pickle=False)
         activations, gradients = {}, {}
+
         for key in data.files:
             prefix, name = key.split("_", 1)
-            (activations if prefix == "activations" else gradients)[name] = jnp.array(
-                data[key]
-            )
+            # Convert to JAX array and explicitly place on device
+            arr = jnp.asarray(data[key])
+            arr = jax.device_put(arr, self.device)
+
+            if prefix == "activations":
+                activations[name] = arr
+            else:
+                gradients[name] = arr
+
         return LayerComponents(activations, gradients)
 
     def save_covariances(self, covariances: LayerComponents) -> None:
@@ -187,37 +218,46 @@ class KFACStorage:
         self, corrections: Dict[str, Float[Array, "I O"]]
     ) -> None:
         path = self._get_path("eigenvalue_corrections.npz")
-        np.savez_compressed(
-            path,
-            **{name: np.asarray(arr) for name, arr in corrections.items()},  # type: ignore
-        )
+        # Use jax.device_get for each array
+        save_dict = {
+            name: np.asarray(jax.device_get(arr)) for name, arr in corrections.items()
+        }
+        np.savez_compressed(path, **save_dict)  # type: ignore
 
     def load_eigenvalue_corrections(self) -> Dict[str, Float[Array, "I O"]]:
         path = self._get_path("eigenvalue_corrections.npz")
         if not path.exists():
             raise FileNotFoundError(f"No eigenvalue correction file found at {path}")
+
         data = np.load(path, allow_pickle=False)
-        return {name: jnp.array(data[name]) for name in data.files}
+        return {name: jax.device_put(data[name], self.device) for name in data.files}
 
     def save_mean_eigenvalues_and_corrections(
         self,
         kfac_means: KFACMeanEigenvaluesAndCorrections,
     ) -> None:
-        # store as a json file
+        """Save mean eigenvalues and corrections as JSON."""
         path = self._get_path("mean_eigenvalues_and_corrections.json")
+
+        # Convert JAX arrays to Python floats, handling device transfer
+        def to_float(val):
+            if isinstance(val, (jnp.ndarray, np.ndarray)):
+                return float(jax.device_get(val))
+            return float(val)
+
         with open(path, "w") as f:
             json.dump(
                 {
                     "mean_eigenvalues": {
-                        k: float(v) for k, v in kfac_means.eigenvalues.items()
+                        k: to_float(v) for k, v in kfac_means.eigenvalues.items()
                     },
                     "mean_corrections": {
-                        k: float(v) for k, v in kfac_means.corrections.items()
+                        k: to_float(v) for k, v in kfac_means.corrections.items()
                     },
-                    "overall_mean_eigenvalue": float(
+                    "overall_mean_eigenvalue": to_float(
                         kfac_means.overall_mean_eigenvalues
                     ),
-                    "overall_mean_correction": float(
+                    "overall_mean_correction": to_float(
                         kfac_means.overall_mean_corrections
                     ),
                 },
@@ -235,28 +275,38 @@ class KFACStorage:
     ]:
         """Load mean eigenvalues and corrections from disk.
 
+        Returns:
+            Tuple containing mean_eigenvalues, mean_corrections,
+            overall_mean_eigenvalue, overall_mean_correction
+
         Raises:
             FileNotFoundError: If the file does not exist.
-
-        Returns:
-            Tuple[Dict[str, float], Dict[str, float], float, float]: mean_eigenvalues,
-            mean_corrections, overall_mean_eigenvalue, overall_mean_correction
         """
         path = self._get_path("mean_eigenvalues_and_corrections.json")
         if not path.exists():
             raise FileNotFoundError(
                 f"No mean eigenvalues and corrections file found at {path}"
             )
+
         with open(path, "r") as f:
             data = json.load(f)
+
+        # Place scalar arrays on device
         return (
-            {k: jnp.array(v) for k, v in data["mean_eigenvalues"].items()},
-            {k: jnp.array(v) for k, v in data["mean_corrections"].items()},
-            jnp.array(data["overall_mean_eigenvalue"]),
-            jnp.array(data["overall_mean_correction"]),
+            {
+                k: jax.device_put(v, self.device)
+                for k, v in data["mean_eigenvalues"].items()
+            },
+            {
+                k: jax.device_put(v, self.device)
+                for k, v in data["mean_corrections"].items()
+            },
+            jax.device_put(data["overall_mean_eigenvalue"], self.device),
+            jax.device_put(data["overall_mean_correction"], self.device),
         )
 
     def load_kfac_data(self) -> Tuple[KFACData, KFACMeanEigenvaluesAndCorrections]:
+        """Load all KFAC data from storage onto the specified device."""
         kfac_data = KFACData(
             covariances=self.load_covariances(),
             eigenvectors=self.load_eigenvectors(),
@@ -271,4 +321,5 @@ class KFACStorage:
             kfac_means.overall_mean_eigenvalues,
             kfac_means.overall_mean_corrections,
         ) = self.load_mean_eigenvalues_and_corrections()
+
         return kfac_data, kfac_means
