@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from functools import partial
+from typing import Callable, Dict, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -9,7 +10,8 @@ from jax import flatten_util
 from typing_extensions import override
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.utils.loss import loss_wrapper_flattened
+from models.train import ModelData
+from models.utils.loss import loss_wrapper_flattened, loss_wrapper_with_apply_fn
 
 
 @dataclass
@@ -56,27 +58,72 @@ class Hessian(HessianApproximation):
         Returns:
             Hessian matrix as a 2D array.
         """
-        training_data, training_targets = self.model_data.dataset.get_train_data()
+        (
+            training_data,
+            training_targets,
+            params_flat,
+            unravel_fn,
+            model_apply_fn,
+            loss_fn,
+        ) = self.get_data_and_params_for_hessian(self.model_data)
 
+        return self.compute_hessian_jitted(
+            params_flat,
+            unravel_fn,
+            training_data,
+            training_targets,
+            model_apply_fn,
+            loss_fn,
+        )
+
+    @staticmethod
+    def get_data_and_params_for_hessian(
+        model_data: ModelData,
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, Callable, Callable, Callable]:
         # Important: Flattening structure for linear modules with bias is the following: b, w
         # So for output dim 2, input dim 3, the order is: b1, b2, w1
-        params_flat, unravel_fn = flatten_util.ravel_pytree(self.model_data.params)
+        training_data, training_targets = model_data.dataset.get_train_data()
+        params_flat, unravel_fn = flatten_util.ravel_pytree(model_data.params)
+        return (
+            training_data,
+            training_targets,
+            params_flat,
+            unravel_fn,
+            model_data.model.apply,
+            model_data.loss,
+        )
+
+    @staticmethod
+    @partial(jax.jit, static_argnames=["model_apply_fn", "loss_fn", "unravel_fn"])
+    def compute_hessian_jitted(
+        params_flat: jnp.ndarray,
+        unravel_fn: Callable,
+        training_data: jnp.ndarray,
+        training_targets: jnp.ndarray,
+        model_apply_fn: Callable,
+        loss_fn: Callable,
+    ) -> Callable[[jnp.ndarray], jnp.ndarray]:
+        """
+        JIT-compiled Hessian computation.
+
+        Returns the Hessian matrix as a 2D array.
+        """
+        # Important: Flattening structure for linear modules with bias is the following: b, w
+        # So for output dim 2, input dim 3, the order is: b1, b2, w1
 
         def loss_wrapper(p):
-            return loss_wrapper_flattened(
-                self.model_data.model,
+            return loss_wrapper_with_apply_fn(
+                model_apply_fn,
                 p,
                 unravel_fn,
-                self.model_data.loss,
+                loss_fn,
                 training_data,
                 training_targets,
             )
 
-        # JIT and compute Hessian
-        hessian_fn = jax.jit(jax.hessian(loss_wrapper))
-        hessian = hessian_fn(params_flat)
-
-        return jnp.asarray(hessian)
+        # JIT and return Hessian function
+        hessian_fn = jax.hessian(loss_wrapper)
+        return hessian_fn(params_flat)
 
     @override
     def compute_hvp(
