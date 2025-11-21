@@ -22,9 +22,15 @@ from hessian_approximations.hessian_approximations import HessianApproximation
 from hessian_approximations.kfac.activation_gradient_collector import (
     ActivationGradientCollector,
 )
-from hessian_approximations.kfac.data import KFACData, KFACMeanEigenvaluesAndCorrections
+from hessian_approximations.kfac.data import (
+    KFACData,
+    KFACJITData,
+    KFACMeanEigenvaluesAndCorrections,
+)
 from hessian_approximations.kfac.layer_components import LayerComponents
 from hessian_approximations.kfac.storage import KFACStorage
+from metrics.full_matrix_metrics import FullMatrixMetric
+from models.dataclasses.hessian_jit_data import HessianJITData
 from models.train import ApproximationModel
 from models.utils.loss import get_loss_name
 from utils.utils import print_device_memory_stats
@@ -140,8 +146,8 @@ class KFAC(HessianApproximation):
             method="inverse",
         )
 
-    def l2_norm_difference(
-        self,
+    def compare_hessian(
+        self, metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS
     ) -> float:
         """
         Compute L2 norm difference between KFAC/EKFAC Hessian and a comparison matrix.
@@ -150,70 +156,49 @@ class KFAC(HessianApproximation):
             comparison_matrix_method: Callable that returns the comparison matrix. Should be a jitted method.
         """
         self.get_ekfac_components()
+
         activations_eigenvectors, gradients_eigenvectors, Lambdas = (
             self.collect_eigenvectors_and_lambda()
         )
-        (
-            training_data_th,
-            training_targets_th,
-            params_flat,
-            unravel_fn,
-            model_th_apply_fn,
-            loss_th,
-        ) = Hessian.get_data_and_params_for_hessian(self.model_data)
+        kfac_jit_data = KFACJITData(
+            activations_eigenvectors, gradients_eigenvectors, Lambdas
+        )
+        hessian_jit_data = HessianJITData.get_data_and_params_for_hessian(
+            self.model_data
+        )
 
         print_device_memory_stats("Before L2 Norm Difference Computation")
 
-        return self.l2_norm_difference_jitted(
-            activations_eigenvectors,
-            gradients_eigenvectors,
-            Lambdas,
+        return self.compare_hessians_jitted(
+            kfac_jit_data,
             self.damping(),
-            training_data_th,
-            training_targets_th,
-            params_flat,
-            unravel_fn,
-            model_th_apply_fn,
-            loss_th,
+            hessian_jit_data,
+            metric=metric.compute_fn(),
             method="normal",
         )
 
     @staticmethod
-    @partial(
-        jax.jit, static_argnames=["method", "model_apply_fn", "loss_fn", "unravel_fn"]
-    )
-    def l2_norm_difference_jitted(
-        activations_eigenvectors: List[Float[Array, "I I"]],
-        gradients_eigenvectors: List[Float[Array, "O O"]],
-        Lambdas: List[Float[Array, "I O"]],
+    @partial(jax.jit, static_argnames=["method", "metric"])
+    def compare_hessians_jitted(
+        kfac_data: KFACJITData,
         damping: Float[Array, ""],
-        training_data_th: jnp.ndarray,
-        training_targets_th: jnp.ndarray,
-        params_flat: jnp.ndarray,
-        unravel_fn: Callable,
-        model_apply_fn: Callable,
-        loss_fn: Callable,
+        hessian_data: HessianJITData,
+        metric: Callable[[jnp.ndarray, jnp.ndarray], float],
         method: Literal["normal", "inverse"] = "normal",
     ) -> float:
         """JIT-compiled helper to compute L2 norm difference."""
         kfac_hessian = KFAC.compute_hessian_or_inverse_hessian_jitted(
-            activations_eigenvectors,
-            gradients_eigenvectors,
-            Lambdas,
+            kfac_data.eigenvectors_A,
+            kfac_data.eigenvectors_G,
+            kfac_data.Lambdas,
             damping=damping,
             method=method,
         )
 
-        true_hessian = Hessian.compute_hessian_jitted(
-            params_flat,
-            unravel_fn,
-            training_data_th,
-            training_targets_th,
-            model_apply_fn,
-            loss_fn,
-        ) + damping * jnp.eye(kfac_hessian.shape[0])
-        diff = kfac_hessian - true_hessian
-        return jnp.linalg.norm(diff, "fro")
+        true_hessian = Hessian.compute_hessian_jitted(hessian_data) + damping * jnp.eye(
+            kfac_hessian.shape[0]
+        )
+        return metric(kfac_hessian, true_hessian)
 
     def compute_hessian_or_inverse_hessian(
         self, method: Literal["normal", "inverse"]

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Dict, Literal, Tuple
+from typing import Any, Dict, Literal, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -12,6 +11,7 @@ from tqdm import tqdm
 from config.config import Config, TrainingConfig
 from data.data import AbstractDataset, create_dataset
 from models.base import ApproximationModel
+from models.dataclasses.model_data import ModelData
 from models.linear_model import LinearModel
 from models.mlp import MLPModel
 from models.utils.checkpoint_storage import (
@@ -21,16 +21,6 @@ from models.utils.checkpoint_storage import (
 )
 from models.utils.loss import get_loss_fn
 from models.utils.optimizers import get_optimizer
-
-
-@dataclass
-class ModelData:
-    """Container for the model, dataset, parameters, and loss function."""
-
-    model: ApproximationModel
-    dataset: AbstractDataset
-    params: Dict
-    loss: Callable
 
 
 def create_model(config: Config, input_dim: int, output_dim: int) -> ApproximationModel:
