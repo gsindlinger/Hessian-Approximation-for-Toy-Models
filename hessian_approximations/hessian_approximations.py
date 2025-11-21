@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 import jax.numpy as jnp
 
 from config.config import Config
-from models.train import ModelData, train_or_load
+from models.dataclasses.model_data import ModelData
+from models.train import train_or_load
 
 
 @dataclass
