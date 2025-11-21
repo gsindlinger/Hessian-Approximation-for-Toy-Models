@@ -209,9 +209,8 @@ def test_compare_matrices_default_metrics():
     # should return exactly the 4 default metrics
     assert set(result.keys()) == {
         "relative_frobenius",
-        "spectral_relative",
         "cosine_similarity",
-        "eigenvalue_max",
+        "trace_distance",
     }
 
     # spot check one value
