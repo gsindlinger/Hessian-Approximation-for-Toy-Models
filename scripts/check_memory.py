@@ -203,7 +203,8 @@ def check_memory():
             # print_array_device_info(kfac_hessian, f"{kfac_string} Hessian")
             # print_device_memory_stats(f"After {kfac_string} Hessian Computation")
 
-            norm_result = kfac_model.l2_norm_difference()
+            norm_result = kfac_model.compare_hessian()
+
             results_dict[kfac_string] = {}
             results_dict[kfac_string]["l2_norm_difference"] = norm_result
 

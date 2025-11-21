@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
-from typing import Callable, Dict, Tuple
+from typing import Dict
 
 import jax
 import jax.numpy as jnp
 from jax import flatten_util
+from jaxtyping import Array, Float
 from typing_extensions import override
 
 from hessian_approximations.hessian_approximations import HessianApproximation
-from models.train import ModelData
+from models.dataclasses.hessian_jit_data import HessianJITData
 from models.utils.loss import loss_wrapper_flattened, loss_wrapper_with_apply_fn
 
 
@@ -58,51 +58,15 @@ class Hessian(HessianApproximation):
         Returns:
             Hessian matrix as a 2D array.
         """
-        (
-            training_data,
-            training_targets,
-            params_flat,
-            unravel_fn,
-            model_apply_fn,
-            loss_fn,
-        ) = self.get_data_and_params_for_hessian(self.model_data)
-
         return self.compute_hessian_jitted(
-            params_flat,
-            unravel_fn,
-            training_data,
-            training_targets,
-            model_apply_fn,
-            loss_fn,
+            HessianJITData.get_data_and_params_for_hessian(self.model_data)
         )
 
     @staticmethod
-    def get_data_and_params_for_hessian(
-        model_data: ModelData,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, Callable, Callable, Callable]:
-        # Important: Flattening structure for linear modules with bias is the following: b, w
-        # So for output dim 2, input dim 3, the order is: b1, b2, w1
-        training_data, training_targets = model_data.dataset.get_train_data()
-        params_flat, unravel_fn = flatten_util.ravel_pytree(model_data.params)
-        return (
-            training_data,
-            training_targets,
-            params_flat,
-            unravel_fn,
-            model_data.model.apply,
-            model_data.loss,
-        )
-
-    @staticmethod
-    @partial(jax.jit, static_argnames=["model_apply_fn", "loss_fn", "unravel_fn"])
+    @jax.jit
     def compute_hessian_jitted(
-        params_flat: jnp.ndarray,
-        unravel_fn: Callable,
-        training_data: jnp.ndarray,
-        training_targets: jnp.ndarray,
-        model_apply_fn: Callable,
-        loss_fn: Callable,
-    ) -> Callable[[jnp.ndarray], jnp.ndarray]:
+        data: HessianJITData,
+    ) -> Float[Array, "n_params n_params"]:
         """
         JIT-compiled Hessian computation.
 
@@ -113,23 +77,22 @@ class Hessian(HessianApproximation):
 
         def loss_wrapper(p):
             return loss_wrapper_with_apply_fn(
-                model_apply_fn,
+                data.model_apply_fn,
                 p,
-                unravel_fn,
-                loss_fn,
-                training_data,
-                training_targets,
+                data.unravel_fn,
+                data.loss_fn,
+                data.training_data,
+                data.training_targets,
             )
 
         # JIT and return Hessian function
-        hessian_fn = jax.hessian(loss_wrapper)
-        return hessian_fn(params_flat)
+        return jax.hessian(loss_wrapper)(data.params_flat)
 
     @override
     def compute_hvp(
         self,
-        vector: jnp.ndarray,
-    ) -> jnp.ndarray:
+        vector: Float[Array, "n_params"],
+    ) -> Float[Array, "n_params"]:
         """
         Compute the Hessian-vector product (HVP) using JAX's automatic differentiation.
 
@@ -171,8 +134,8 @@ class Hessian(HessianApproximation):
     @override
     def compute_ihvp(
         self,
-        vector: jnp.ndarray,
-    ) -> jnp.ndarray:
+        vector: Float[Array, "n_params"],
+    ) -> Float[Array, "n_params"]:
         """
         Compute the inverse Hessian-vector product (IHVP) using JAX's automatic differentiation.
 
