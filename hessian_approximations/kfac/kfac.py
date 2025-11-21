@@ -17,6 +17,7 @@ from config.hessian_approximation_config import (
     KFACRunConfig,
 )
 from data.jax_dataloader import JAXDataLoader
+from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.hessian_approximations import HessianApproximation
 from hessian_approximations.kfac.activation_gradient_collector import (
     ActivationGradientCollector,
@@ -139,6 +140,81 @@ class KFAC(HessianApproximation):
             method="inverse",
         )
 
+    def l2_norm_difference(
+        self,
+    ) -> float:
+        """
+        Compute L2 norm difference between KFAC/EKFAC Hessian and a comparison matrix.
+
+        Args:
+            comparison_matrix_method: Callable that returns the comparison matrix. Should be a jitted method.
+        """
+        self.get_ekfac_components()
+        activations_eigenvectors, gradients_eigenvectors, Lambdas = (
+            self.collect_eigenvectors_and_lambda()
+        )
+        (
+            training_data_th,
+            training_targets_th,
+            params_flat,
+            unravel_fn,
+            model_th_apply_fn,
+            loss_th,
+        ) = Hessian.get_data_and_params_for_hessian(self.model_data)
+
+        print_device_memory_stats("Before L2 Norm Difference Computation")
+
+        return self.l2_norm_difference_jitted(
+            activations_eigenvectors,
+            gradients_eigenvectors,
+            Lambdas,
+            self.damping(),
+            training_data_th,
+            training_targets_th,
+            params_flat,
+            unravel_fn,
+            model_th_apply_fn,
+            loss_th,
+            method="normal",
+        )
+
+    @staticmethod
+    @partial(
+        jax.jit, static_argnames=["method", "model_apply_fn", "loss_fn", "unravel_fn"]
+    )
+    def l2_norm_difference_jitted(
+        activations_eigenvectors: List[Float[Array, "I I"]],
+        gradients_eigenvectors: List[Float[Array, "O O"]],
+        Lambdas: List[Float[Array, "I O"]],
+        damping: Float[Array, ""],
+        training_data_th: jnp.ndarray,
+        training_targets_th: jnp.ndarray,
+        params_flat: jnp.ndarray,
+        unravel_fn: Callable,
+        model_apply_fn: Callable,
+        loss_fn: Callable,
+        method: Literal["normal", "inverse"] = "normal",
+    ) -> float:
+        """JIT-compiled helper to compute L2 norm difference."""
+        kfac_hessian = KFAC.compute_hessian_or_inverse_hessian_jitted(
+            activations_eigenvectors,
+            gradients_eigenvectors,
+            Lambdas,
+            damping=damping,
+            method=method,
+        )
+
+        true_hessian = Hessian.compute_hessian_jitted(
+            params_flat,
+            unravel_fn,
+            training_data_th,
+            training_targets_th,
+            model_apply_fn,
+            loss_fn,
+        ) + damping * jnp.eye(kfac_hessian.shape[0])
+        diff = kfac_hessian - true_hessian
+        return jnp.linalg.norm(diff, "fro")
+
     def compute_hessian_or_inverse_hessian(
         self, method: Literal["normal", "inverse"]
     ) -> Float[Array, "n_params n_params"]:
@@ -161,9 +237,25 @@ class KFAC(HessianApproximation):
         Kronecker-factored curvature blocks.
         """
 
-        print_device_memory_stats("Before (E)KFAC Hessian Computation")
         self.get_ekfac_components()
+        activations_eigenvectors, gradients_eigenvectors, Lambdas = (
+            self.collect_eigenvectors_and_lambda()
+        )
 
+        return self.compute_hessian_or_inverse_hessian_jitted(
+            activations_eigenvectors,
+            gradients_eigenvectors,
+            Lambdas,
+            self.damping(),
+            method,
+        )
+
+    def collect_eigenvectors_and_lambda(
+        self,
+    ) -> Tuple[
+        List[Float[Array, "I I"]], List[Float[Array, "O O"]], List[Float[Array, "I O"]]
+    ]:
+        """Collect eigenvectors and lambda values for all layers."""
         activations_eigenvectors = []
         gradients_eigenvectors = []
         Lambdas = []
@@ -180,15 +272,7 @@ class KFAC(HessianApproximation):
             else:
                 Lambdas.append(self.compute_eigenvalue_lambda_kfac(layer_name))
 
-        print_device_memory_stats("After Adding (E)KFAC Components to Lists")
-
-        return self.compute_hessian_or_inverse_hessian_jitted(
-            activations_eigenvectors,
-            gradients_eigenvectors,
-            Lambdas,
-            self.damping(),
-            method,
-        )
+        return activations_eigenvectors, gradients_eigenvectors, Lambdas
 
     @staticmethod
     def _get_damped_lambda(
@@ -202,6 +286,7 @@ class KFAC(HessianApproximation):
             return Lambda + damping
 
     @staticmethod
+    @jax.jit
     def _compute_layer_hessian(eigenvectors_A, eigenvectors_G, Lambda):
         """JIT-compiled helper to compute layer Hessian with eigenvalue corrections."""
         return jnp.einsum(
@@ -220,6 +305,30 @@ class KFAC(HessianApproximation):
         damping: Float[Array, ""],
         method: Literal["normal", "inverse"],
     ):
+        """
+        JIT-compiled method to compute layer Hessian or its inverse for KFAC or EKFAC
+        based on a layer-based lists of the required components.
+
+        Depending on the selected method:
+        - "normal" computes the standard KFAC approximation with damping:
+              H ≈ (Q_G ⊗ Q_A) diag(Λ_G ⊗ Λ_A + λ) (Q_G ⊗ Q_A)ᵀ
+        - "inverse" computes its damped inverse:
+              H⁻¹ ≈ (Q_G ⊗ Q_A) diag(1 / (Λ_G ⊗ Λ_A + λ)) (Q_G ⊗ Q_A)ᵀ
+
+        Note: The original KFAC formulation assumes weights shaped [d_out, d_in]
+        with vec(∇W) = a ⊗ ∇s (column-major). In contrast, JAX uses [d_in, d_out],
+        which yields vec(∇W') = ∇s ⊗ a due to the forward pass formulation y = xW'
+        instead of y = Wx (as in PyTorch).
+
+        Because JAX flattens arrays in row-major (C-style) order, the effective
+        vectorization swaps again, giving vec_row(∇W') = a ⊗ ∇s. This matches
+        the ordering used when comparing with the true Hessian or constructing
+        Kronecker-factored curvature blocks.
+
+        Since we store the eigenvalues and corrections in the shape [input_dim, output_dim],
+        we can directly use them here by flattening in JAX-default row-major order without needing to transpose.
+        """
+
         hessian_list = [
             KFAC._compute_layer_hessian(
                 layer_eigv_activations,
@@ -780,94 +889,6 @@ class KFAC(HessianApproximation):
         vector_product: Float[Array, "*batch_size I O"] = Q_A @ scaled @ Q_S.T
 
         return vector_product
-
-    def compute_layer_hessian_with_correction(
-        self, layer_name: str, method: Literal["inverse", "normal"] = "normal"
-    ) -> Float[Array, "I*O I*O"]:
-        """
-        Compute layer Hessian with eigenvalue corrections (EKFAC).
-
-        Note: The original KFAC formulation assumes weights shaped [d_out, d_in]
-        with vec(∇W) = a ⊗ ∇s (column-major). In contrast, JAX uses [d_in, d_out], which yields
-        vec(∇W') = ∇s ⊗ a due to the forward pass formulation y = xW'
-        instead of y = Wx (as in PyTorch).
-
-        Because JAX flattens arrays in row-major (C-style) order, the effective
-        vectorization swaps again, giving vec_row(∇W') = a ⊗ ∇s. This matches
-        the ordering used when comparing with the true Hessian or constructing
-        Kronecker-factored curvature blocks.
-
-        Since we store the eigenvalue corrections in the shape [input_dim, output_dim],
-        we can directly use them here by flattening in JAX-default row-major order without needing to transpose.
-        """
-
-        A_eigvecs: Float[Array, "I I"] = self.kfac_data.eigenvectors.activations[
-            layer_name
-        ]
-        G_eigvecs: Float[Array, "O O"] = self.kfac_data.eigenvectors.gradients[
-            layer_name
-        ]
-        corrections: Float[Array, "I O"] = self.kfac_data.eigenvalue_corrections[
-            layer_name
-        ]
-
-        if method == "inverse":
-            damped_corrections = 1.0 / (corrections + self.damping())
-        else:
-            damped_corrections = corrections + self.damping()
-
-        return self._compute_layer_hessian_jitted(
-            A_eigvecs, G_eigvecs, damped_corrections
-        )
-
-    def compute_layer_hessian_kfac_only(
-        self, layer_name: str, method: Literal["inverse", "normal"] = "normal"
-    ) -> Float[Array, "I*O I*O"]:
-        """
-        Compute layer Hessian or its inverse without eigenvalue corrections (standard KFAC).
-
-        Constructs the Hessian using the Kronecker-factored eigen-decomposition,
-        but in contrast to EKFAC using the eigenvalues of the covariances and not the
-        empirical eigenvalue corrections.
-
-        We are using the eigen-decomposition to allow for damping,
-        i.e., being able to compare KFAC and EKFAC fairly.
-
-        Depending on the selected method:
-        - "normal" computes the standard KFAC approximation with damping:
-              H ≈ (Q_G ⊗ Q_A) diag(Λ_G ⊗ Λ_A + λ) (Q_G ⊗ Q_A)ᵀ
-        - "inverse" computes its damped inverse:
-              H⁻¹ ≈ (Q_G ⊗ Q_A) diag(1 / (Λ_G ⊗ Λ_A + λ)) (Q_G ⊗ Q_A)ᵀ
-
-        Note: The original KFAC formulation assumes weights shaped [d_out, d_in]
-        with vec(∇W) = a ⊗ ∇s (column-major). In contrast, JAX uses [d_in, d_out],
-        which yields vec(∇W') = ∇s ⊗ a due to the forward pass formulation y = xW'
-        instead of y = Wx (as in PyTorch).
-
-        Because JAX flattens arrays in row-major (C-style) order, the effective
-        vectorization swaps again, giving vec_row(∇W') = a ⊗ ∇s. This matches
-        the ordering used when comparing with the true Hessian or constructing
-        Kronecker-factored curvature blocks.
-
-        Since we store the eigenvalues in the shape [input_dim, output_dim],
-        we can directly use them here by flattening in JAX-default row-major order without needing to transpose.
-        """
-        eigenvectors_A: Float[Array, "I I"] = self.kfac_data.eigenvectors.activations[
-            layer_name
-        ]
-        eigenvectors_G: Float[Array, "O O"] = self.kfac_data.eigenvectors.gradients[
-            layer_name
-        ]
-
-        Lambda: Float[Array, "I O"] = self.compute_eigenvalue_lambda_kfac(layer_name)
-        if method == "inverse":
-            Lambda = 1.0 / (Lambda + self.damping())
-        else:
-            Lambda = Lambda + self.damping()
-
-        return self._compute_layer_hessian_jitted(
-            eigenvectors_A, eigenvectors_G, Lambda
-        )
 
     def compute_eigenvalue_lambda_kfac(self, layer_name: str) -> Float[Array, "I O"]:
         """Compute eigenvalue lambda for KFAC using the following formula:

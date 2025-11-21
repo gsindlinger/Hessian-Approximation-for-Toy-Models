@@ -26,7 +26,6 @@ class HessianExactRegression(HessianApproximation):
         """
 
         training_data, training_targets = self.model_data.dataset.get_train_data()
-
         n_samples, n_features = training_data.shape
         d_out = training_targets.shape[1]
 

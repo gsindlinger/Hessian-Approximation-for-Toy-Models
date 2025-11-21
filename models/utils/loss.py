@@ -58,3 +58,16 @@ def loss_wrapper_flattened(
     params_unraveled = unravel_fn(params_flat)
     outputs = model.apply(params_unraveled, training_data)
     return loss_fn(outputs, training_targets)
+
+
+def loss_wrapper_with_apply_fn(
+    apply_fn: Callable,
+    params_flat: Any,
+    unravel_fn: Callable[[Any], Any],
+    loss_fn: Callable,
+    training_data: jnp.ndarray,
+    training_targets: jnp.ndarray,
+):
+    params_unraveled = unravel_fn(params_flat)
+    outputs = apply_fn(params_unraveled, training_data)
+    return loss_fn(outputs, training_targets)

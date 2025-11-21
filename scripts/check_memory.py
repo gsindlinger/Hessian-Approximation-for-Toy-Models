@@ -12,12 +12,9 @@ from config.hessian_approximation_config import (
 )
 from config.model_config import LinearModelConfig
 from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC
-from metrics.full_matrix_metrics import MATRIX_METRICS, compare_matrices
 from utils.utils import (
     get_total_jax_memory,
-    print_array_device_info,
     print_device_memory_stats,
 )
 
@@ -30,7 +27,7 @@ def parse_args():
         "--n_params_min",
         type=int,
         help="Minimum number of parameters for the model",
-        default=1000,
+        default=100,
     )
     parser.add_argument(
         "--n_params_max",
@@ -150,16 +147,16 @@ def check_memory():
             ],
         )
 
-        print_device_memory_stats("Before Hessian Computation")
+        # print_device_memory_stats("Before Hessian Computation")
 
-        hessian = Hessian(full_config).compute_hessian()
-        hessian_bytes = get_total_jax_memory(hessian)
+        # hessian = Hessian(full_config).compute_hessian()
+        # hessian_bytes = get_total_jax_memory(hessian)
 
-        print("\n### True Hessian Memory ###")
-        print(f"Stored array size: {hessian_bytes / (1024**2):.2f} MB")
-        print("Data Type:", hessian.dtype)
-        print_array_device_info(hessian, "Hessian")
-        print_device_memory_stats("After Hessian Computation")
+        # print("\n### True Hessian Memory ###")
+        # print(f"Stored array size: {hessian_bytes / (1024**2):.2f} MB")
+        # print("Data Type:", hessian.dtype)
+        # print_array_device_info(hessian, "Hessian")
+        # print_device_memory_stats("After Hessian Computation")
 
         kfac_config = KFACConfig(
             build_config=KFACBuildConfig(use_pseudo_targets=True),
@@ -196,26 +193,32 @@ def check_memory():
             print(f"Stored data size: {kfac_bytes / (1024**2):.2f} MB")
             print_device_memory_stats(f"After {kfac_string} Setup")
 
-            print(f"\n--- Computing {kfac_string} Hessian ---")
-            kfac_hessian = kfac_model.compute_hessian()
-            kfac_hessian_bytes = get_total_jax_memory(kfac_hessian)
+            # print(f"\n--- Computing {kfac_string} Hessian ---")
+            # kfac_hessian = kfac_model.compute_hessian()
+            # kfac_hessian_bytes = get_total_jax_memory(kfac_hessian)
 
-            print(f"\n### {kfac_string} Hessian Memory ###")
-            print(f"Stored array size: {kfac_hessian_bytes / (1024**2):.2f} MB")
-            print("Data Type:", kfac_hessian.dtype)
-            print_array_device_info(kfac_hessian, f"{kfac_string} Hessian")
-            print_device_memory_stats(f"After {kfac_string} Hessian Computation")
+            # print(f"\n### {kfac_string} Hessian Memory ###")
+            # print(f"Stored array size: {kfac_hessian_bytes / (1024**2):.2f} MB")
+            # print("Data Type:", kfac_hessian.dtype)
+            # print_array_device_info(kfac_hessian, f"{kfac_string} Hessian")
+            # print_device_memory_stats(f"After {kfac_string} Hessian Computation")
 
-            results_dict[kfac_string] = compare_matrices(
-                matrix_1=hessian + kfac_model.damping(),
-                matrix_2=kfac_hessian,
-                metrics=MATRIX_METRICS["comprehensive"],
-            )
+            norm_result = kfac_model.l2_norm_difference()
+            results_dict[kfac_string] = {}
+            results_dict[kfac_string]["l2_norm_difference"] = norm_result
+
+            # results_dict[kfac_string] = compare_matrices(
+            #     matrix_1=hessian + kfac_model.damping(),
+            #     matrix_2=kfac_hessian,
+            #     metrics=MATRIX_METRICS["comprehensive"],
+            # )
+
+            kfac_model.model_data.params
             results_dict[kfac_string]["num_params"] = (
                 kfac_model.model_data.model.get_num_params(kfac_model.model_data.params)
             )
 
-            del kfac_hessian
+            # del kfac_hessian
             del kfac_model
 
             # Force garbage collection to see memory release
