@@ -1,11 +1,10 @@
-from typing import Any, Dict, Tuple
+from typing import Any, Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax import flatten_util
-from jaxtyping import Array, Float
 
 from config.config import (
     Config,
@@ -22,6 +21,10 @@ from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC
 from models.train import ApproximationModel, get_loss_fn, train_or_load
+from utils.utils import (
+    sample_gradient_from_output_distribution,
+    sample_gradient_from_output_distribution_batched,
+)
 
 ModelTuple = Tuple[ApproximationModel, AbstractDataset, Any, Config]
 
@@ -75,57 +78,6 @@ class TestEKFAC:
 
         yield config
 
-    def _get_test_vector(
-        self,
-        ekfac_model: KFAC,
-        model: ApproximationModel,
-        params: Dict,
-        x_train: Float[Array, "... n_features"],
-        loss_fn,
-    ):
-        """Generate a single deterministic test vector."""
-        x_sample = jnp.asarray(x_train[0])
-        pseudo_target = ekfac_model.generate_pseudo_targets(
-            model=model, params=params, training_data=x_sample, loss_fn=loss_fn
-        )
-        grad = jax.grad(lambda p: loss_fn(model.apply(p, x_sample), pseudo_target))(
-            params
-        )
-        vec, _ = flatten_util.ravel_pytree(grad)
-        return vec
-
-    def _get_test_vector_batch(self, config: Config, n_vectors: int = 5):
-        """Utility: Generate batched test vectors for IHVP tests."""
-        model_data = train_or_load(config)
-        loss_fn = get_loss_fn(config.model.loss)
-        x_train, y_train = model_data.dataset.get_train_data()
-        x_train = jnp.asarray(x_train)
-
-        ekfac_model = KFAC.setup_with_run_and_build_config(
-            full_config=config,
-            run_config=KFACRunConfig(
-                use_eigenvalue_correction=True, damping_lambda=0.1
-            ),
-        )
-
-        pseudo_targets = ekfac_model.generate_pseudo_targets(
-            model=model_data.model,
-            params=model_data.params,
-            training_data=jnp.asarray(x_train[:n_vectors]),
-            loss_fn=loss_fn,
-        )
-
-        gradient_vecs = []
-        for i in range(n_vectors):
-            grad = jax.grad(
-                lambda p: loss_fn(
-                    model_data.model.apply(p, x_train[i]), pseudo_targets[i]
-                )
-            )(model_data.params)
-            gradient_vecs.append(flatten_util.ravel_pytree(grad)[0])
-
-        return jnp.stack(gradient_vecs)
-
     def _compute_full_implicit_matrices(self, model_obj: KFAC, dim: int):
         """Helper method to compute full H and H^-1 matrices
         implicitly via hvp and ihvp for each basis vector."""
@@ -133,12 +85,8 @@ class TestEKFAC:
         ihvp_full = []
         for i in range(dim):
             unit_vec = jnp.zeros(dim).at[i].set(1.0)
-            hvp = model_obj.compute_hvp(
-                vector=unit_vec,
-            )
-            ihvp = model_obj.compute_ihvp(
-                vector=unit_vec,
-            )
+            hvp = model_obj.compute_hvp(vector=unit_vec, damping=model_obj.damping())
+            ihvp = model_obj.compute_ihvp(vector=unit_vec, damping=model_obj.damping())
             hvp_full.append(hvp)
             ihvp_full.append(ihvp)
         return jnp.column_stack(hvp_full), jnp.column_stack(ihvp_full)
@@ -335,18 +283,17 @@ class TestEKFAC:
             ),
         )
 
-        test_vec = self._get_test_vector(
-            ekfac_model=ekfac_model,
+        test_vec = sample_gradient_from_output_distribution(
             model=model_data.model,
             params=model_data.params,
             x_train=x_train,
             loss_fn=loss_fn,
         )
 
-        H = ekfac_model.compute_hessian()
-        H_inv = ekfac_model.compute_inverse_hessian()
-        ihvp = ekfac_model.compute_ihvp(test_vec)
-        hvp = ekfac_model.compute_hvp(test_vec)
+        H = ekfac_model.compute_hessian(damping=ekfac_model.damping())
+        H_inv = ekfac_model.compute_inverse_hessian(damping=ekfac_model.damping())
+        ihvp = ekfac_model.compute_ihvp(test_vec, damping=ekfac_model.damping())
+        hvp = ekfac_model.compute_hvp(test_vec, damping=ekfac_model.damping())
 
         # Round-trip tests
         ihvp_round_trip = H @ ihvp
@@ -372,18 +319,17 @@ class TestEKFAC:
             ),
         )
 
-        test_vec = self._get_test_vector(
-            ekfac_model=kfac_model,
+        test_vec = sample_gradient_from_output_distribution(
             model=model_data.model,
             params=model_data.params,
             x_train=x_train,
             loss_fn=loss_fn,
         )
 
-        H = kfac_model.compute_hessian()
-        H_inv = kfac_model.compute_inverse_hessian()
-        ihvp = kfac_model.compute_ihvp(test_vec)
-        hvp = kfac_model.compute_hvp(test_vec)
+        H = kfac_model.compute_hessian(damping=kfac_model.damping())
+        H_inv = kfac_model.compute_inverse_hessian(damping=kfac_model.damping())
+        ihvp = kfac_model.compute_ihvp(test_vec, damping=kfac_model.damping())
+        hvp = kfac_model.compute_hvp(test_vec, damping=kfac_model.damping())
 
         # Round-trip tests
         ihvp_round_trip = H @ ihvp
@@ -407,8 +353,10 @@ class TestEKFAC:
         )
 
         dim = flatten_util.ravel_pytree(model_data.params)[0].shape[0]
-        H_explicit = ekfac_model.compute_hessian()
-        H_inv_explicit = ekfac_model.compute_inverse_hessian()
+        H_explicit = ekfac_model.compute_hessian(damping=ekfac_model.damping())
+        H_inv_explicit = ekfac_model.compute_inverse_hessian(
+            damping=ekfac_model.damping()
+        )
         H_implicit, H_inv_implicit = self._compute_full_implicit_matrices(
             ekfac_model, dim
         )
@@ -432,8 +380,10 @@ class TestEKFAC:
             ),
         )
 
-        H_explicit = kfac_model.compute_hessian()
-        H_inv_explicit = kfac_model.compute_inverse_hessian()
+        H_explicit = kfac_model.compute_hessian(damping=kfac_model.damping())
+        H_inv_explicit = kfac_model.compute_inverse_hessian(
+            damping=kfac_model.damping()
+        )
         H_implicit, H_inv_implicit = self._compute_full_implicit_matrices(
             kfac_model, dim
         )
@@ -447,7 +397,6 @@ class TestEKFAC:
 
     def test_ekfac_ihvp_batched_shape_and_finiteness(self, config: Config):
         """Verify batched IHVP shape and finiteness."""
-        test_vectors = self._get_test_vector_batch(config)
 
         ekfac_model = KFAC.setup_with_run_and_build_config(
             full_config=config,
@@ -455,8 +404,12 @@ class TestEKFAC:
                 use_eigenvalue_correction=True, damping_lambda=0.1
             ),
         )
-
-        ihvp_batched = ekfac_model.compute_ihvp(vector=test_vectors)
+        test_vectors = sample_gradient_from_output_distribution_batched(
+            ekfac_model.model_data
+        )
+        ihvp_batched = ekfac_model.compute_ihvp(
+            vector=test_vectors, damping=ekfac_model.damping()
+        )
 
         assert ihvp_batched.shape == test_vectors.shape, (
             f"Batched IHVP shape {ihvp_batched.shape} doesn't match input {test_vectors.shape}"
@@ -467,7 +420,6 @@ class TestEKFAC:
 
     def test_ekfac_ihvp_batched_vs_single_consistency(self, config: Config):
         """Verify batched IHVP matches single-vector IHVP (EKFAC + KFAC)."""
-        test_vectors = self._get_test_vector_batch(config)
         ekfac_model = KFAC.setup_with_run_and_build_config(
             full_config=config,
             run_config=KFACRunConfig(
@@ -481,12 +433,24 @@ class TestEKFAC:
             ),
         )
 
-        ihvp_batched_ekfac = ekfac_model.compute_ihvp(vector=test_vectors)
-        ihvp_batched_kfac = kfac_model.compute_ihvp(vector=test_vectors)
+        test_vectors = sample_gradient_from_output_distribution_batched(
+            ekfac_model.model_data
+        )
+
+        ihvp_batched_ekfac = ekfac_model.compute_ihvp(
+            vector=test_vectors, damping=ekfac_model.damping()
+        )
+        ihvp_batched_kfac = kfac_model.compute_ihvp(
+            vector=test_vectors, damping=kfac_model.damping()
+        )
 
         for i in range(test_vectors.shape[0]):
-            ihvp_single_ekfac = ekfac_model.compute_ihvp(vector=test_vectors[i])
-            ihvp_single_kfac = kfac_model.compute_ihvp(vector=test_vectors[i])
+            ihvp_single_ekfac = ekfac_model.compute_ihvp(
+                vector=test_vectors[i], damping=ekfac_model.damping()
+            )
+            ihvp_single_kfac = kfac_model.compute_ihvp(
+                vector=test_vectors[i], damping=kfac_model.damping()
+            )
 
             assert jnp.allclose(
                 ihvp_batched_ekfac[i], ihvp_single_ekfac, rtol=1e-6, atol=1e-4
@@ -497,7 +461,6 @@ class TestEKFAC:
 
     def test_ekfac_ihvp_hessian_roundtrip_batched(self, config: Config):
         """Verify H @ (H^{-1} @ V) ≈ V for batched IHVPs."""
-        test_vectors = self._get_test_vector_batch(config)
 
         ekfac_model = KFAC.setup_with_run_and_build_config(
             full_config=config,
@@ -506,8 +469,14 @@ class TestEKFAC:
             ),
         )
 
-        H = ekfac_model.compute_hessian()
-        ihvp_batched = ekfac_model.compute_ihvp(vector=test_vectors)
+        test_vectors = sample_gradient_from_output_distribution_batched(
+            ekfac_model.model_data
+        )
+
+        H = ekfac_model.compute_hessian(damping=ekfac_model.damping())
+        ihvp_batched = ekfac_model.compute_ihvp(
+            vector=test_vectors, damping=ekfac_model.damping()
+        )
         hvp_roundtrip = H @ ihvp_batched.T  # Apply H to each vector
 
         assert jnp.allclose(hvp_roundtrip.T, test_vectors, rtol=1e-2, atol=1e-5), (

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Optional
 
 import jax.numpy as jnp
+from jaxtyping import Float
 
 from config.config import Config
 from models.dataclasses.model_data import ModelData
@@ -21,12 +23,14 @@ class HessianApproximation(ABC):
         self.model_data = train_or_load(self.full_config)
 
     @abstractmethod
-    def compute_hessian(self) -> jnp.ndarray:
+    def compute_hessian(self, damping: Optional[Float] = None) -> jnp.ndarray:
         """Compute Hessian approximation."""
         pass
 
     @abstractmethod
-    def compute_hvp(self, vector: jnp.ndarray) -> jnp.ndarray:
+    def compute_hvp(
+        self, vector: jnp.ndarray, damping: Optional[Float] = None
+    ) -> jnp.ndarray:
         """Compute Hessian-vector product."""
         pass
 
@@ -34,6 +38,7 @@ class HessianApproximation(ABC):
     def compute_ihvp(
         self,
         vector: jnp.ndarray,
+        damping: Optional[Float] = None,
     ) -> jnp.ndarray:
         """Compute Inverse Hessian-vector product."""
         pass

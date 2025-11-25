@@ -16,7 +16,11 @@ from hessian_approximations.hessian.exact_hessian_regression import (
 )
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.hessian_approximations import HessianApproximation
+from metrics.vector_metrics import VectorMetric
+from models.dataclasses.model_data import ModelData
 from models.train import train_or_load
+from models.utils.loss import get_loss_fn
+from utils.utils import sample_gradient_from_output_distribution_batched
 
 
 class TestHessianApproximations:
@@ -150,3 +154,70 @@ class TestHessianApproximations:
                 f"Frobenius norm difference between {name1} and {name2} "
                 f"is too large: {diff}"
             )
+
+    def test_batched_ihvp_hessian(self, random_model_trained):
+        """
+        Test batched IHVP computation against full Hessian inversion.
+
+        Ensures that the batched IHVP method produces results consistent
+        with directly inverting the full Hessian matrix.
+        """
+        model, dataset, params, config = random_model_trained
+
+        hessian = Hessian(full_config=config)
+
+        test_vectors = sample_gradient_from_output_distribution_batched(
+            model_data=ModelData(
+                model=model,
+                dataset=dataset,
+                params=params,
+                loss=get_loss_fn(config.training.loss),
+            ),
+            n_vectors=20,
+        )
+
+        ihvp_batched = hessian.compute_ihvp(vector=test_vectors)
+
+        # compute full Hessian and invert
+        full_hessian = hessian.compute_hessian()
+        hessian_inv = jnp.linalg.inv(full_hessian)
+
+        ihvp_full = jnp.dot(hessian_inv, test_vectors.T).T
+        # compare results
+        diff = VectorMetric.RELATIVE_ERROR.compute(
+            ihvp_batched, ihvp_full, reduction="mean"
+        )
+        assert diff < 1e-5, f"Batched IHVP differs from full inversion by {diff}"
+
+    def test_batched_hvp_hessian(self, random_model_trained):
+        """
+        Test batched HVP computation against full Hessian multiplication.
+
+        Ensures that the batched HVP method produces results consistent
+        with directly multiplying the full Hessian matrix.
+        """
+        model, dataset, params, config = random_model_trained
+
+        hessian = Hessian(full_config=config)
+
+        test_vectors = sample_gradient_from_output_distribution_batched(
+            model_data=ModelData(
+                model=model,
+                dataset=dataset,
+                params=params,
+                loss=get_loss_fn(config.training.loss),
+            ),
+            n_vectors=20,
+        )
+
+        hvp_batched = hessian.compute_hvp(vectors=test_vectors)
+
+        # compute full Hessian
+        full_hessian = hessian.compute_hessian()
+
+        hvp_full = jnp.dot(full_hessian, test_vectors.T).T
+        # compare results
+        diff = VectorMetric.RELATIVE_ERROR.compute(
+            hvp_batched, hvp_full, reduction="mean"
+        )
+        assert diff < 1e-5, f"Batched HVP differs from full multiplication by {diff}"
