@@ -14,9 +14,11 @@ from config.model_config import LinearModelConfig
 from config.training_config import TrainingConfig
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC
+from metrics.vector_metrics import VectorMetric
+from models.train import train_or_load
 from utils.utils import (
-    get_total_jax_memory,
     print_device_memory_stats,
+    sample_gradient_from_output_distribution_batched,
 )
 
 
@@ -43,6 +45,13 @@ def parse_args():
         default=1,
     )
 
+    parser.add_argument(
+        "--num_vectors",
+        type=int,
+        help="Number of random vectors for IHVP computation",
+        default=10,
+    )
+
     return parser.parse_args()
 
 
@@ -52,6 +61,7 @@ def check_memory():
     reps = args.reps
     min_params = args.n_params_min
     max_params = args.n_params_max
+    num_vectors = args.num_vectors
 
     #### DEVICE DIAGNOSTICS ####
     print("\n" + "=" * 60)
@@ -147,28 +157,28 @@ def check_memory():
                 f"random_classification_linear_only_{n_samples}_{n_features}_{n_classes}"
             ],
         )
-
-        # print_device_memory_stats("Before Hessian Computation")
-
-        # hessian = Hessian(full_config).compute_hessian()
-        # hessian_bytes = get_total_jax_memory(hessian)
-
-        # print("\n### True Hessian Memory ###")
-        # print(f"Stored array size: {hessian_bytes / (1024**2):.2f} MB")
-        # print("Data Type:", hessian.dtype)
-        # print_array_device_info(hessian, "Hessian")
-        # print_device_memory_stats("After Hessian Computation")
+        model_data = train_or_load(full_config)
 
         kfac_config = KFACConfig(
             build_config=KFACBuildConfig(use_pseudo_targets=True),
-            run_config=KFACRunConfig(use_eigenvalue_correction=False),
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=False, damping_lambda=0.1
+            ),
         )
         ekfac_config = KFACConfig(
             build_config=KFACBuildConfig(use_pseudo_targets=True),
-            run_config=KFACRunConfig(use_eigenvalue_correction=True),
+            run_config=KFACRunConfig(
+                use_eigenvalue_correction=True, damping_lambda=0.1
+            ),
         )
 
         results_dict = {}
+
+        test_vectors = sample_gradient_from_output_distribution_batched(
+            model_data=model_data,
+            n_vectors=num_vectors,
+            rng_key=jax.random.PRNGKey(123),
+        )
 
         for kfac_config in [kfac_config, ekfac_config]:
             kfac_string = (
@@ -181,27 +191,54 @@ def check_memory():
             print(f"Processing: {kfac_string}")
             print(f"{'#' * 60}")
 
-            print_device_memory_stats(f"Before {kfac_string} Computation")
-
             kfac_model = KFAC.setup_with_run_and_build_config(
                 full_config=full_config,
                 build_config=kfac_config.build_config,
                 run_config=kfac_config.run_config,
             )
 
-            kfac_bytes = get_total_jax_memory(kfac_model)
-            print(f"\n### {kfac_string} Model Memory ###")
-            print(f"Stored data size: {kfac_bytes / (1024**2):.2f} MB")
             print_device_memory_stats(f"After {kfac_string} Setup")
 
             damping = kfac_model.damping()
-            comparison_matrix = Hessian(full_config).compute_hessian(damping=damping)
-            norm_result = kfac_model.compare_hessians(
-                comparison_matrix=comparison_matrix, damping=damping
+            kfac_result = kfac_model.compute_ihvp(vector=test_vectors, damping=damping)
+
+            print_device_memory_stats(f"After {kfac_string} IHVP Computation")
+
+            hessian_result = Hessian(full_config).compute_ihvp(
+                vector=test_vectors, damping=damping
             )
 
+            print_device_memory_stats("After True Hessian IHVP Computation")
+
+            # # plot the first four ihvp for both in line plots using subfigures in matplotlib
+            # import matplotlib.pyplot as plt
+
+            # fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+            # for i in range(2):
+            #     for j in range(2):
+            #         idx = i * 2 + j
+            #         axs[i, j].plot(
+            #             hessian_result[idx],
+            #             label="True Hessian IHVP",
+            #             color="blue",
+            #         )
+            #         axs[i, j].plot(
+            #             kfac_result[idx],
+            #             label=f"{kfac_string} IHVP",
+            #             color="orange",
+            #         )
+            #         axs[i, j].set_title(f"IHVP Comparison for Vector {idx + 1}")
+            #         axs[i, j].legend()
+            # plt.tight_layout()
+            # plt.show()
+
+            diff = VectorMetric.RELATIVE_ERROR.compute(
+                kfac_result, hessian_result, reduction="mean"
+            )
+            print_device_memory_stats(f"After {kfac_string} IHVP Comparison")
+
             results_dict[kfac_string] = {}
-            results_dict[kfac_string]["l2_norm_difference"] = norm_result
+            results_dict[kfac_string]["relative_error"] = diff
 
             kfac_model.model_data.params
             results_dict[kfac_string]["num_params"] = (
@@ -210,6 +247,9 @@ def check_memory():
 
             # del kfac_hessian
             del kfac_model
+            del hessian_result
+            del kfac_result
+            del diff
 
             # Force garbage collection to see memory release
             import gc

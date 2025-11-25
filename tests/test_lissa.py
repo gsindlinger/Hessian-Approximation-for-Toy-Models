@@ -103,7 +103,7 @@ class TestLiSSA:
         )
 
         ihvp_exact = hessian_method.compute_ihvp(
-            vector=v,
+            vectors=v,
         )
 
         # Compare numerically

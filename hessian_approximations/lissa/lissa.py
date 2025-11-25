@@ -74,7 +74,7 @@ class LiSSA(HessianApproximation):
                 rng, subkey = jax.random.split(rng)
 
                 hvp = hvp_fn(
-                    vector=r,
+                    vectors=r,
                 )
                 hvp = hvp + self.config.damping * r  # (G + λI)r
 

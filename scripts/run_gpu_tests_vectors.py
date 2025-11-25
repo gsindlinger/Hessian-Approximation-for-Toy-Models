@@ -184,9 +184,7 @@ def compare_hvp_ihvp(
             # Compute HVP metrics
             results_dict[vector_type][approx_name]["hvp_metrics"] = {}
             for metric in hvp_metrics:
-                metric_value = metric.compute_batched(
-                    true_hvps, approx_hvps, reduction="mean"
-                )
+                metric_value = metric.compute(true_hvps, approx_hvps, reduction="mean")
                 results_dict[vector_type][approx_name]["hvp_metrics"][metric.value] = (
                     float(metric_value)
                 )
@@ -199,11 +197,11 @@ def compare_hvp_ihvp(
                     VectorMetric.INNER_PRODUCT_RATIO,
                 ]:
                     # Use original test vectors as auxiliary vectors for inner product metrics
-                    metric_value = metric.compute_batched(
+                    metric_value = metric.compute(
                         true_ihvps, approx_ihvps, x=test_vectors, reduction="mean"
                     )
                 else:
-                    metric_value = metric.compute_batched(
+                    metric_value = metric.compute(
                         true_ihvps, approx_ihvps, reduction="mean"
                     )
                 results_dict[vector_type][approx_name]["ihvp_metrics"][metric.value] = (

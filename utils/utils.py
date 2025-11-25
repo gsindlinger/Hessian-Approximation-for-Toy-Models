@@ -1,9 +1,18 @@
 import os
 from time import time
+from typing import Dict
 
 import jax
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+from chex import PRNGKey
+from jax import flatten_util
+from jaxtyping import Array, Float
+
+from hessian_approximations.kfac.kfac import KFAC
+from models.base import ApproximationModel
+from models.dataclasses.model_data import ModelData
 
 
 def plot_training_curve(train_losses, val_losses, title="Training Curve"):
@@ -304,3 +313,58 @@ def plot_metric_results(
         bbox_inches="tight",
         pad_inches=0.1,
     )
+
+
+def sample_gradient_from_output_distribution(
+    model: ApproximationModel,
+    params: Dict,
+    x_train: Float[Array, "... n_features"],
+    loss_fn,
+    rng_key: PRNGKey | None = None,
+):
+    """Generate a single deterministic test vector."""
+    if x_train.ndim == 1:
+        x_sample = x_train
+    else:
+        x_sample = x_train[0]
+    pseudo_target = KFAC.generate_pseudo_targets(
+        model=model,
+        params=params,
+        training_data=x_sample,
+        loss_fn=loss_fn,
+        rng_key=rng_key,
+    )
+    grad = jax.jit(
+        jax.grad(lambda p: loss_fn(model.apply(p, x_sample), pseudo_target))
+    )(params)
+    vec, _ = flatten_util.ravel_pytree(grad)
+    return vec
+
+
+def sample_gradient_from_output_distribution_batched(
+    model_data: ModelData, n_vectors: int = 5, rng_key: PRNGKey | None = None
+):
+    """Utility: Generate batched test vectors for IHVP tests."""
+    loss_fn = model_data.loss
+    x_train, _ = model_data.dataset.get_train_data()
+
+    pseudo_targets = KFAC.generate_pseudo_targets(
+        model=model_data.model,
+        params=model_data.params,
+        training_data=x_train[:n_vectors],
+        loss_fn=loss_fn,
+        rng_key=rng_key,
+    )
+
+    gradient_vecs = []
+    for i in range(n_vectors):
+        grad = jax.jit(
+            jax.grad(
+                lambda p: loss_fn(
+                    model_data.model.apply(p, x_train[i]), pseudo_targets[i]
+                )
+            )
+        )(model_data.params)
+        gradient_vecs.append(flatten_util.ravel_pytree(grad)[0])
+
+    return jnp.stack(gradient_vecs)

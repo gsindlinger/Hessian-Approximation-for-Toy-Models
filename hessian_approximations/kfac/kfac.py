@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Callable, Dict, List, Literal, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -17,23 +17,19 @@ from config.hessian_approximation_config import (
     KFACRunConfig,
 )
 from data.jax_dataloader import JAXDataLoader
-from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.hessian_approximations import HessianApproximation
 from hessian_approximations.kfac.activation_gradient_collector import (
     ActivationGradientCollector,
 )
 from hessian_approximations.kfac.data import (
     KFACData,
-    KFACJITData,
     KFACMeanEigenvaluesAndCorrections,
 )
 from hessian_approximations.kfac.layer_components import LayerComponents
 from hessian_approximations.kfac.storage import KFACStorage
 from metrics.full_matrix_metrics import FullMatrixMetric
-from models.dataclasses.hessian_jit_data import HessianJITData
 from models.train import ApproximationModel
 from models.utils.loss import get_loss_name
-from utils.utils import print_device_memory_stats
 
 
 @dataclass
@@ -94,148 +90,108 @@ class KFAC(HessianApproximation):
         full_config.hessian_approximation = kfac_config
         return cls(full_config=full_config)
 
-    def damping(self) -> Float[Array, ""]:
-        """Get damping value from config.
-
-        Returns:
-        Float[Array, ""]: Damping value.
-        """
-        if not self.kfac_data_means.overall_mean_eigenvalues:
-            self.get_ekfac_components()
-
-        mode = self.kfac_config.run_config.damping_mode
-        lambda_ = self.kfac_config.run_config.damping_lambda
-        if mode == "mean_eigenvalue":
-            return lambda_ * self.kfac_data_means.overall_mean_eigenvalues
-        elif mode == "mean_corrections":
-            return lambda_ * self.kfac_data_means.overall_mean_corrections
-        else:
-            raise ValueError(
-                f"Unknown damping mode: {self.kfac_config.run_config.damping_mode}"
-            )
-
-    def get_sample_size(self) -> int:
-        """Get number of samples used in the collected data."""
-        if not self.collector.captured_data:
-            raise ValueError("No captured data. Run a forward-backward pass first.")
-
-        first_layer = next(iter(self.collector.captured_data.values()))
-        activations, _ = first_layer
-        return activations.shape[0]
-
     @override
-    def compute_hessian(self) -> Float[Array, "n_params n_params"]:
+    def compute_hessian(
+        self, damping: Optional[Float] = None
+    ) -> Float[Array, "n_params n_params"]:
         """
         Compute full Hessian approximation.
-
-        Not practical for large models but useful for testing and comparison
-        with the true Hessian.
         """
-
         return self.compute_hessian_or_inverse_hessian(
             method="normal",
+            damping=0.0 if damping is None else damping,
+        )
+
+    @override
+    def compute_hvp(
+        self,
+        vector: Float[Array, "*batch_size n_params"],
+        damping: Optional[Float] = None,
+    ) -> Float[Array, "*batch_size n_params"]:
+        """Compute Hessian-vector product."""
+        return self.compute_ihvp_or_hvp(
+            vector,
+            method="hvp",
+            damping=0.0 if damping is None else damping,
+        )
+
+    @override
+    def compute_ihvp(
+        self,
+        vector: Float[Array, "*batch_size n_params"],
+        damping: Optional[Float] = None,
+    ) -> Float[Array, "*batch_size n_params"]:
+        """
+        Compute inverse Hessian-vector product.
+        """
+        return self.compute_ihvp_or_hvp(
+            vector,
+            method="ihvp",
+            damping=0.0 if damping is None else damping,
         )
 
     def compute_inverse_hessian(
         self,
+        damping: Optional[Float] = None,
     ) -> Float[Array, "n_params n_params"]:
         """
-        Compute inverse Hessian approximation.
+        Compute full inverse Hessian.
         """
         return self.compute_hessian_or_inverse_hessian(
             method="inverse",
+            damping=0.0 if damping is None else damping,
         )
 
-    def compare_hessian(
-        self, metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS
+    def compare_hessians(
+        self,
+        comparison_matrix: Float[Array, "n_params n_params"],
+        damping: Optional[Float] = None,
+        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
     ) -> float:
         """
-        Compute L2 norm difference between KFAC/EKFAC Hessian and a comparison matrix.
-
-        Args:
-            comparison_matrix_method: Callable that returns the comparison matrix. Should be a jitted method.
+        Compare the (E)KFAC Hessian approximation to a given comparison matrix
         """
         self.get_ekfac_components()
 
         activations_eigenvectors, gradients_eigenvectors, Lambdas = (
             self.collect_eigenvectors_and_lambda()
         )
-        kfac_jit_data = KFACJITData(
-            activations_eigenvectors, gradients_eigenvectors, Lambdas
-        )
-        hessian_jit_data = HessianJITData.get_data_and_params_for_hessian(
-            self.model_data
-        )
 
-        print_device_memory_stats(
-            "After loading data for Hessian comparison, but before calling any hessian computation."
-        )
-
-        ground_truth_hessian = Hessian.compute_hessian_jitted(
-            hessian_jit_data
-        ) + self.damping() * jnp.eye(hessian_jit_data.num_params)
-
-        print_device_memory_stats(
-            "After computing ground truth Hessian, before comparing with KFAC Hessian."
-        )
-
-        result = self.compare_hessians_jitted_with_matrix_input(
-            kfac_jit_data,
-            self.damping(),
-            ground_truth_hessian,
+        return self._compare_hessians(
+            activations_eigenvectors=activations_eigenvectors,
+            gradients_eigenvectors=gradients_eigenvectors,
+            Lambdas=Lambdas,
+            damping=0.0 if damping is None else damping,
+            comparison_matrix=comparison_matrix,
             metric=metric.compute_fn(),
             method="normal",
         )
 
-        print_device_memory_stats("After comparing Hessians.")
-
-        return result
-
     @staticmethod
     @partial(jax.jit, static_argnames=["method", "metric"])
-    def compare_hessians_jitted_with_matrix_input(
-        kfac_data: KFACJITData,
+    def _compare_hessians(
+        activations_eigenvectors: List[Float[Array, "I I"]],
+        gradients_eigenvectors: List[Float[Array, "O O"]],
+        Lambdas: List[Float[Array, "I O"]],
         damping: Float[Array, ""],
-        ground_truth_hessian: Float[Array, "n_params n_params"],
+        comparison_matrix: Float[Array, "n_params n_params"],
         metric: Callable[[jnp.ndarray, jnp.ndarray], float],
         method: Literal["normal", "inverse"] = "normal",
     ) -> float:
         """JIT-compiled helper to compute L2 norm difference."""
-        kfac_hessian = KFAC.compute_hessian_or_inverse_hessian_jitted(
-            kfac_data.eigenvectors_A,
-            kfac_data.eigenvectors_G,
-            kfac_data.Lambdas,
+        kfac_hessian = KFAC._compute_hessian_or_inverse_hessian(
+            activations_eigenvectors,
+            gradients_eigenvectors,
+            Lambdas,
             damping=damping,
             method=method,
         )
 
-        return metric(kfac_hessian, ground_truth_hessian)
-
-    @staticmethod
-    @partial(jax.jit, static_argnames=["method", "metric"])
-    def compare_hessians_jitted(
-        kfac_data: KFACJITData,
-        damping: Float[Array, ""],
-        hessian_data: HessianJITData,
-        metric: Callable[[jnp.ndarray, jnp.ndarray], float],
-        method: Literal["normal", "inverse"] = "normal",
-    ) -> float:
-        """JIT-compiled helper to compute L2 norm difference."""
-        kfac_hessian = KFAC.compute_hessian_or_inverse_hessian_jitted(
-            kfac_data.eigenvectors_A,
-            kfac_data.eigenvectors_G,
-            kfac_data.Lambdas,
-            damping=damping,
-            method=method,
-        )
-
-        true_hessian = Hessian.compute_hessian_jitted(hessian_data) + damping * jnp.eye(
-            kfac_hessian.shape[0]
-        )
+        true_hessian = comparison_matrix + damping * jnp.eye(kfac_hessian.shape[0])
         return metric(kfac_hessian, true_hessian)
 
     def compute_hessian_or_inverse_hessian(
-        self, method: Literal["normal", "inverse"]
+        self, method: Literal["normal", "inverse"], damping: Float
     ) -> Float[Array, "n_params n_params"]:
         """
         Unified helper method to compute either the full Hessian or its inverse.
@@ -261,11 +217,11 @@ class KFAC(HessianApproximation):
             self.collect_eigenvectors_and_lambda()
         )
 
-        return self.compute_hessian_or_inverse_hessian_jitted(
+        return self._compute_hessian_or_inverse_hessian(
             activations_eigenvectors,
             gradients_eigenvectors,
             Lambdas,
-            self.damping(),
+            damping,
             method,
         )
 
@@ -317,7 +273,7 @@ class KFAC(HessianApproximation):
 
     @staticmethod
     @partial(jax.jit, static_argnames=["method"])
-    def compute_hessian_or_inverse_hessian_jitted(
+    def _compute_hessian_or_inverse_hessian(
         eigenvectors_activations: List[Float[Array, "I I"]],
         eigenvectors_gradients: List[Float[Array, "O O"]],
         Lambdas: List[Float[Array, "I O"]],
@@ -363,34 +319,11 @@ class KFAC(HessianApproximation):
 
         return jax.scipy.linalg.block_diag(*hessian_list)
 
-    @override
-    def compute_hvp(
-        self,
-        vector: Float[Array, "*batch_size n_params"],
-    ) -> Float[Array, "*batch_size n_params"]:
-        """Compute Hessian-vector product."""
-        return self.compute_ihvp_or_hvp(
-            vector,
-            method="hvp",
-        )
-
-    @override
-    def compute_ihvp(
-        self,
-        vector: Float[Array, "*batch_size n_params"],
-    ) -> Float[Array, "*batch_size n_params"]:
-        """
-        Compute inverse Hessian-vector product using EKFAC approximation.
-        """
-        return self.compute_ihvp_or_hvp(
-            vector,
-            method="ihvp",
-        )
-
     def compute_ihvp_or_hvp(
         self,
         vector: Float[Array, "*batch_size n_params"],
         method: Literal["ihvp", "hvp"],
+        damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Compute inverse Hessian-vector product or Hessian-vector product.
@@ -402,43 +335,99 @@ class KFAC(HessianApproximation):
         # Ensure EKFAC components are computed
         self.get_ekfac_components()
 
-        vp_pieces = []
-        offset = 0
+        # Collect all layer data upfront
+        layer_names = list(self.model_data.params["params"].keys())
 
-        for layer_name in self.model_data.params["params"].keys():
+        Q_activations_list = []
+        Q_gradients_list = []
+        Lambda_list = []
+        v_layers = []
+
+        offset = 0
+        for layer_name in layer_names:
             Lambda: Float[Array, "I O"] = self.kfac_data.eigenvalue_corrections[
                 layer_name
             ]
+
+            # If running KFAC-only, use eigenvalues of covariances instead
+            if not self.kfac_config.run_config.use_eigenvalue_correction:
+                Lambda = self.compute_eigenvalue_lambda_kfac(layer_name)
+
             input_dim, output_dim = Lambda.shape
             size = input_dim * output_dim
 
-            # Extract the corresponding part of the vector
+            # Extract and reshape vector for this layer
             v_flat: Float[Array, "*batch_size I*O"] = vector[
                 ..., offset : offset + size
             ]
-
-            # Reshape last two dimensions to [I, O] matching JAX weights shape convention (also Lambda)
             v_layer: Float[Array, "*batch_size I O"] = v_flat.reshape(
                 v_flat.shape[:-1] + (input_dim, output_dim)
             )
 
-            # If running KFAC-only, we use the eigenvalues of the covariances and not the corrections
-            if not self.kfac_config.run_config.use_eigenvalue_correction:
-                Lambda = self.compute_eigenvalue_lambda_kfac(layer_name)
-
-            vp_piece: Float[Array, "*batch_size I O"] = self.compute_ihvp_or_hvp_layer(
-                v_layer,
-                self.kfac_data.eigenvectors.activations[layer_name],
-                self.kfac_data.eigenvectors.gradients[layer_name],
-                Lambda,
-                self.damping(),
-                method=method,
+            # Collect all components
+            Q_activations_list.append(
+                self.kfac_data.eigenvectors.activations[layer_name]
             )
-            vp_pieces.append(vp_piece.reshape(vp_piece.shape[:-2] + (size,)))
+            Q_gradients_list.append(self.kfac_data.eigenvectors.gradients[layer_name])
+            Lambda_list.append(Lambda)
+            v_layers.append(v_layer)
             offset += size
 
-        # Concatenate all layer HVPS
+        # Process all layers at once with JIT
+        vp_pieces = self.compute_ihvp_or_hvp_all_layers(
+            v_layers=v_layers,
+            Q_activations=Q_activations_list,
+            Q_gradients=Q_gradients_list,
+            Lambdas=Lambda_list,
+            damping=damping,
+            method=method,
+        )
+
+        # Concatenate all layer results
         return jnp.concatenate(vp_pieces, axis=-1)
+
+    @staticmethod
+    @partial(jax.jit, static_argnames=["method"])
+    def compute_ihvp_or_hvp_all_layers(
+        v_layers: list[Float[Array, "*batch_size I O"]],
+        Q_activations: list[Float[Array, "I I"]],
+        Q_gradients: list[Float[Array, "O O"]],
+        Lambdas: list[Float[Array, "I O"]],
+        damping: Float[Array, ""],
+        method: Literal["ihvp", "hvp"],
+    ) -> list[Float[Array, "*batch_size size"]]:
+        """
+        Compute EKFAC-based (inverse) Hessian-vector product for all layers in one JIT call.
+
+        Returns a list of flattened vector products, one per layer.
+        """
+        vp_pieces = []
+
+        for v_layer, Q_A, Q_G, Lambda in zip(
+            v_layers, Q_activations, Q_gradients, Lambdas
+        ):
+            # Transform to eigenbasis
+            V_tilde: Float[Array, "*batch_size I O"] = Q_A.T @ v_layer @ Q_G
+
+            # Apply eigenvalue corrections + damping
+            Lambda_damped: Float[Array, "I O"] = Lambda + damping
+
+            if method == "ihvp":
+                scaled: Float[Array, "*batch_size I O"] = V_tilde / Lambda_damped
+            else:
+                scaled: Float[Array, "*batch_size I O"] = V_tilde * Lambda_damped
+
+            # Transform back to original basis
+            vector_product: Float[Array, "*batch_size I O"] = Q_A @ scaled @ Q_G.T
+
+            # Flatten last two dimensions: [*batch_size, I, O] -> [*batch_size, I*O]
+            # This works for both single vector (I, O) and batched (*batch, I, O)
+            batch_shape = vector_product.shape[:-2]
+            flat_size = vector_product.shape[-2] * vector_product.shape[-1]
+            vp_flat = vector_product.reshape(*batch_shape, flat_size)
+            vp_pieces.append(vp_flat)
+
+        return vp_pieces
 
     def get_ekfac_components(self) -> None:
         """
@@ -882,15 +871,7 @@ class KFAC(HessianApproximation):
         """
         Compute the EKFAC-based (inverse) Hessian-vector product for a single layer.
 
-        Depending on the selected method, this function computes either:
-            - the inverse Hessian-vector product (IHVP):
-                    (H + λI)⁻¹ v ≈ Q_A (Ṽ / (Λ + λ)) Q_S^T
-            - or the Hessian-vector product (HVP):
-                    (H + λI) v ≈ Q_A (Ṽ * (Λ + λ)) Q_S^T
-        where Ṽ = Q_A^T unvectorized_v Q_S.
 
-        Shapes follow the JAX convention with W ∈ R^{[I, O]},
-        i.e., the vector is provided as unvectorized matrix in row-major order.
         """
 
         # Transform to eigenbasis
@@ -920,8 +901,37 @@ class KFAC(HessianApproximation):
         G_eigvals: Float[Array, "O"] = self.kfac_data.eigenvalues.gradients[layer_name]
         return jnp.outer(A_eigvals, G_eigvals)
 
+    def damping(self) -> Float[Array, ""]:
+        """Get damping value from config.
+
+        Returns:
+        Float[Array, ""]: Damping value.
+        """
+        if not self.kfac_data_means.overall_mean_eigenvalues:
+            self.get_ekfac_components()
+
+        mode = self.kfac_config.run_config.damping_mode
+        lambda_ = self.kfac_config.run_config.damping_lambda
+        if mode == "mean_eigenvalue":
+            return lambda_ * self.kfac_data_means.overall_mean_eigenvalues
+        elif mode == "mean_corrections":
+            return lambda_ * self.kfac_data_means.overall_mean_corrections
+        else:
+            raise ValueError(
+                f"Unknown damping mode: {self.kfac_config.run_config.damping_mode}"
+            )
+
+    def get_sample_size(self) -> int:
+        """Get number of samples used in the collected data."""
+        if not self.collector.captured_data:
+            raise ValueError("No captured data. Run a forward-backward pass first.")
+
+        first_layer = next(iter(self.collector.captured_data.values()))
+        activations, _ = first_layer
+        return activations.shape[0]
+
+    @staticmethod
     def generate_pseudo_targets(
-        self,
         model: ApproximationModel,
         params: Dict,
         training_data: Float[Array, "n_samples features"],
@@ -939,18 +949,18 @@ class KFAC(HessianApproximation):
 
         loss_name = get_loss_name(loss_fn)
         if loss_name == "cross_entropy":
-            return self._generate_classification_pseudo_targets(
+            return KFAC._generate_classification_pseudo_targets(
                 model, params, training_data, rng_key
             )
         elif loss_name == "mse":
-            return self._generate_regression_pseudo_targets(
+            return KFAC._generate_regression_pseudo_targets(
                 model, params, training_data, rng_key
             )
         else:
             raise ValueError(f"Unsupported loss function for EKFAC: {loss_name}")
 
+    @staticmethod
     def _generate_classification_pseudo_targets(
-        self,
         model: ApproximationModel,
         params: Dict,
         training_data: Float[Array, "n_samples features"],
@@ -965,20 +975,18 @@ class KFAC(HessianApproximation):
         probs = jax.nn.softmax(logits, axis=-1)
         return jax.random.categorical(rng_key, jnp.log(probs), axis=-1)
 
+    @staticmethod
     def _generate_regression_pseudo_targets(
-        self,
         model: ApproximationModel,
         params: Dict,
         training_data: Float[Array, "n_samples features"],
         rng_key: PRNGKeyArray,
+        noise_std: float = 1.0,
     ) -> Float[Array, "n_samples"]:
         """Generate pseudo-targets by adding Gaussian noise to predictions."""
         preds = model.apply(params, training_data)
 
         if not isinstance(preds, jnp.ndarray):
             raise ValueError("Model predictions must be a jnp.ndarray for regression.")
-        noise = (
-            self.kfac_config.build_config.pseudo_target_noise_std
-            * jax.random.normal(rng_key, preds.shape)
-        )
+        noise = noise_std * jax.random.normal(rng_key, preds.shape)
         return preds + noise
