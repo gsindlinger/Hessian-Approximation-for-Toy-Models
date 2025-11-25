@@ -1,8 +1,7 @@
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict
 
 import jax.numpy as jnp
-from flax import struct
 from jaxtyping import Array, Float
 
 from hessian_approximations.kfac.layer_components import LayerComponents
@@ -46,10 +45,3 @@ class KFACMeanEigenvaluesAndCorrections:
             and self.overall_mean_eigenvalues != 0.0
             and self.overall_mean_corrections != 0.0
         )
-
-
-@struct.dataclass
-class KFACJITData:
-    eigenvectors_A: List[Float[Array, "d_in d_out"]]
-    eigenvectors_G: List[Float[Array, "d_in d_out"]]
-    Lambdas: List[Float[Array, "d_in d_out"]]

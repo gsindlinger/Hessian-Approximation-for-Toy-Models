@@ -13,19 +13,19 @@ def test_relative_error():
     v1 = jnp.array([1.0, 2.0, 3.0])
     v2 = jnp.array([1.0, 2.0, 4.0])
     expected = jnp.linalg.norm(v1 - v2) / jnp.linalg.norm(v1)
-    assert pytest.approx(VectorMetric.RELATIVE_ERROR.compute(v1, v2)) == expected
+    assert pytest.approx(VectorMetric.RELATIVE_ERROR.compute_single(v1, v2)) == expected
 
 
 def test_cosine_similarity():
     v1 = jnp.array([1.0, 0.0])
     v2 = jnp.array([1.0, 0.0])
-    assert VectorMetric.COSINE_SIMILARITY.compute(v1, v2) == pytest.approx(1.0)
+    assert VectorMetric.COSINE_SIMILARITY.compute_single(v1, v2) == pytest.approx(1.0)
 
 
 def test_inner_product_diff_requires_x():
     v1, v2 = jnp.ones(3), jnp.ones(3)
     with pytest.raises(ValueError):
-        VectorMetric.INNER_PRODUCT_DIFF.compute(v1, v2, None)
+        VectorMetric.INNER_PRODUCT_DIFF.compute_single(v1, v2, None)
 
 
 def test_inner_product_diff():
@@ -33,14 +33,19 @@ def test_inner_product_diff():
     v2 = jnp.array([2.0, 0.0])
     x = jnp.array([1.0, 1.0])
     expected = abs(jnp.dot(x, v1) - jnp.dot(x, v2))
-    assert pytest.approx(VectorMetric.INNER_PRODUCT_DIFF.compute(v1, v2, x)) == expected
+    assert (
+        pytest.approx(VectorMetric.INNER_PRODUCT_DIFF.compute_single(v1, v2, x))
+        == expected
+    )
 
 
 def test_absolute_l2_diff():
     v1 = jnp.array([1.0, 2.0])
     v2 = jnp.array([1.0, 0.0])
     expected = jnp.linalg.norm(v1 - v2)
-    assert pytest.approx(VectorMetric.ABSOLUTE_L2_DIFF.compute(v1, v2)) == expected
+    assert (
+        pytest.approx(VectorMetric.ABSOLUTE_L2_DIFF.compute_single(v1, v2)) == expected
+    )
 
 
 def test_sign_agreement():
@@ -51,7 +56,7 @@ def test_sign_agreement():
     # -/- → agree
     # 0 ~ small value → agree
     expected = 1.0
-    assert pytest.approx(VectorMetric.SIGN_AGREEMENT.compute(v1, v2)) == expected
+    assert pytest.approx(VectorMetric.SIGN_AGREEMENT.compute_single(v1, v2)) == expected
 
 
 def test_relative_energy_diff():
@@ -60,13 +65,16 @@ def test_relative_energy_diff():
     e1 = jnp.sum(v1**2)
     e2 = jnp.sum(v2**2)
     expected = abs(e1 - e2) / e1
-    assert pytest.approx(VectorMetric.RELATIVE_ENERGY_DIFF.compute(v1, v2)) == expected
+    assert (
+        pytest.approx(VectorMetric.RELATIVE_ENERGY_DIFF.compute_single(v1, v2))
+        == expected
+    )
 
 
 def test_inner_product_ratio_requires_x():
     v1, v2 = jnp.ones(3), jnp.ones(3)
     with pytest.raises(ValueError):
-        VectorMetric.INNER_PRODUCT_RATIO.compute(v1, v2, None)
+        VectorMetric.INNER_PRODUCT_RATIO.compute_single(v1, v2, None)
 
 
 def test_inner_product_ratio():
@@ -75,7 +83,8 @@ def test_inner_product_ratio():
     x = jnp.array([1.0, 1.0])
     expected = jnp.dot(x, v2) / jnp.dot(x, v1)
     assert (
-        pytest.approx(VectorMetric.INNER_PRODUCT_RATIO.compute(v1, v2, x)) == expected
+        pytest.approx(VectorMetric.INNER_PRODUCT_RATIO.compute_single(v1, v2, x))
+        == expected
     )
 
 
@@ -93,7 +102,7 @@ def test_compute_batched_mean_reduction():
         )
     )
 
-    assert metric.compute_batched(v1, v2) == pytest.approx(expected)
+    assert metric.compute(v1, v2) == pytest.approx(expected)
 
 
 def test_compute_batched_sum_reduction():
@@ -102,12 +111,12 @@ def test_compute_batched_sum_reduction():
     metric = VectorMetric.RELATIVE_ERROR
 
     vals = [
-        metric.compute(v1[0], v2[0]),
-        metric.compute(v1[1], v2[1]),
+        metric.compute_single(v1[0], v2[0]),
+        metric.compute_single(v1[1], v2[1]),
     ]
     expected = jnp.sum(jnp.array(vals))
 
-    assert metric.compute_batched(v1, v2, reduction="sum") == pytest.approx(expected)
+    assert metric.compute(v1, v2, reduction="sum") == pytest.approx(expected)
 
 
 def test_compute_batched_broadcast_x():
@@ -117,14 +126,12 @@ def test_compute_batched_broadcast_x():
     metric = VectorMetric.INNER_PRODUCT_DIFF
 
     expected_vals = [
-        metric.compute(v1[0], v2[0], x),
-        metric.compute(v1[1], v2[1], x),
+        metric.compute_single(v1[0], v2[0], x),
+        metric.compute_single(v1[1], v2[1], x),
     ]
     expected = jnp.mean(jnp.array(expected_vals))
 
-    assert metric.compute_batched(v1, v2, x=x, reduction="mean") == pytest.approx(
-        expected
-    )
+    assert metric.compute(v1, v2, x=x, reduction="mean") == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------
