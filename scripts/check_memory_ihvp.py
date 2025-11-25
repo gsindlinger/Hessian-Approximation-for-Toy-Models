@@ -12,7 +12,6 @@ from config.hessian_approximation_config import (
 )
 from config.model_config import LinearModelConfig
 from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC
 from metrics.vector_metrics import VectorMetric
 from models.train import train_or_load
@@ -200,15 +199,11 @@ def check_memory():
             print_device_memory_stats(f"After {kfac_string} Setup")
 
             damping = kfac_model.damping()
-            kfac_result = kfac_model.compute_ihvp(vector=test_vectors, damping=damping)
-
-            print_device_memory_stats(f"After {kfac_string} IHVP Computation")
-
-            hessian_result = Hessian(full_config).compute_ihvp(
-                vector=test_vectors, damping=damping
+            diff, _ = kfac_model.compute_ihvp(
+                vector=test_vectors, damping=damping, metric=VectorMetric.RELATIVE_ERROR
             )
 
-            print_device_memory_stats("After True Hessian IHVP Computation")
+            print_device_memory_stats(f"After {kfac_string} IHVP Computation")
 
             # # plot the first four ihvp for both in line plots using subfigures in matplotlib
             # import matplotlib.pyplot as plt
@@ -232,10 +227,10 @@ def check_memory():
             # plt.tight_layout()
             # plt.show()
 
-            diff = VectorMetric.RELATIVE_ERROR.compute(
-                kfac_result, hessian_result, reduction="mean"
-            )
-            print_device_memory_stats(f"After {kfac_string} IHVP Comparison")
+            # diff = VectorMetric.RELATIVE_ERROR.compute(
+            #     kfac_result, hessian_result, reduction="mean"
+            # )
+            # print_device_memory_stats(f"After {kfac_string} IHVP Comparison")
 
             results_dict[kfac_string] = {}
             results_dict[kfac_string]["relative_error"] = diff
@@ -247,8 +242,8 @@ def check_memory():
 
             # del kfac_hessian
             del kfac_model
-            del hessian_result
-            del kfac_result
+            # del hessian_result
+            # del kfac_result
             del diff
 
             # Force garbage collection to see memory release

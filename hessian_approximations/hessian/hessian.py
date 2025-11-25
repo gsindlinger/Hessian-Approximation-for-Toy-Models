@@ -59,14 +59,14 @@ class Hessian(HessianApproximation):
         Returns:
             Hessian matrix as a 2D array.
         """
-        return self.compute_hessian_jitted(
+        return self._compute_hessian(
             HessianJITData.get_data_and_params_for_hessian(self.model_data),
             damping=0.0 if damping is None else damping,
         )
 
     @staticmethod
     @jax.jit
-    def compute_hessian_jitted(
+    def _compute_hessian(
         data: HessianJITData,
         damping: Float,
     ) -> Float[Array, "n_params n_params"]:
@@ -208,7 +208,7 @@ class Hessian(HessianApproximation):
         # Flatten parameters once
         params_flat, unravel_fn = flatten_util.ravel_pytree(self.model_data.params)
 
-        return self.compute_ihvp_jitted_batched(
+        return self.compute_ihvp_batched(
             HessianJITData(
                 training_data=training_data,
                 training_targets=training_targets,
@@ -223,7 +223,7 @@ class Hessian(HessianApproximation):
 
     @staticmethod
     @jax.jit
-    def compute_ihvp_jitted_batched(
+    def compute_ihvp_batched(
         data: HessianJITData,
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
@@ -232,36 +232,5 @@ class Hessian(HessianApproximation):
         JIT-compiled Inverse Hessian-vector product (IHVP) computation.
         """
         # Vectorize over the batch dimension
-        return jax.vmap(lambda v: Hessian.compute_ihv_jitted(data, v, damping))(vectors)
-
-    @staticmethod
-    @jax.jit
-    def compute_ihv_jitted(
-        data: HessianJITData,
-        vector: Float[Array, "n_params"],
-        damping: Float,
-    ) -> Float[Array, "n_params"]:
-        """
-        JIT-compiled Inverse Hessian-vector product (IHVP) computation.
-        """
-
-        def loss_wrapper(p):
-            return loss_wrapper_with_apply_fn(
-                data.model_apply_fn,
-                p,
-                data.unravel_fn,
-                data.loss_fn,
-                data.training_data,
-                data.training_targets,
-            )
-
-        # Compute Hessian
-        hessian_fn = jax.hessian(loss_wrapper)
-        hessian = hessian_fn(data.params_flat) + damping * jnp.eye(
-            data.params_flat.shape[0]
-        )
-
-        # Solve H x = v for x
-        ihvp_result = jnp.linalg.solve(hessian, vector)
-
-        return ihvp_result
+        hessian = Hessian._compute_hessian(data, damping)
+        return jnp.linalg.solve(hessian, vectors.T).T

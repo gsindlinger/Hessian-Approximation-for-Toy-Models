@@ -17,6 +17,7 @@ from config.hessian_approximation_config import (
     KFACRunConfig,
 )
 from data.jax_dataloader import JAXDataLoader
+from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.hessian_approximations import HessianApproximation
 from hessian_approximations.kfac.activation_gradient_collector import (
     ActivationGradientCollector,
@@ -28,6 +29,8 @@ from hessian_approximations.kfac.data import (
 from hessian_approximations.kfac.layer_components import LayerComponents
 from hessian_approximations.kfac.storage import KFACStorage
 from metrics.full_matrix_metrics import FullMatrixMetric
+from metrics.vector_metrics import VectorMetric
+from models.dataclasses.hessian_jit_data import HessianJITData
 from models.train import ApproximationModel
 from models.utils.loss import get_loss_name
 
@@ -120,6 +123,7 @@ class KFAC(HessianApproximation):
         self,
         vector: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        metric: VectorMetric | None = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Compute inverse Hessian-vector product.
@@ -128,6 +132,7 @@ class KFAC(HessianApproximation):
             vector,
             method="ihvp",
             damping=0.0 if damping is None else damping,
+            metric=metric,
         )
 
     def compute_inverse_hessian(
@@ -321,10 +326,11 @@ class KFAC(HessianApproximation):
 
     def compute_ihvp_or_hvp(
         self,
-        vector: Float[Array, "*batch_size n_params"],
+        vectors: Float[Array, "*batch_size n_params"],
         method: Literal["ihvp", "hvp"],
         damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
+        metric: VectorMetric | None = None,
+    ) -> Tuple[Float, Float[Array, "*batch_size n_params"]]:
         """
         Compute inverse Hessian-vector product or Hessian-vector product.
 
@@ -357,7 +363,7 @@ class KFAC(HessianApproximation):
             size = input_dim * output_dim
 
             # Extract and reshape vector for this layer
-            v_flat: Float[Array, "*batch_size I*O"] = vector[
+            v_flat: Float[Array, "*batch_size I*O"] = vectors[
                 ..., offset : offset + size
             ]
             v_layer: Float[Array, "*batch_size I O"] = v_flat.reshape(
@@ -374,20 +380,25 @@ class KFAC(HessianApproximation):
             offset += size
 
         # Process all layers at once with JIT
-        vp_pieces = self.compute_ihvp_or_hvp_all_layers(
+        metric_value, result_vectors = self.compute_ihvp_or_hvp_all_layers(
             v_layers=v_layers,
             Q_activations=Q_activations_list,
             Q_gradients=Q_gradients_list,
             Lambdas=Lambda_list,
             damping=damping,
             method=method,
+            metric=metric,
+            v_full=vectors,
+            hessian_jit_data=HessianJITData.get_data_and_params_for_hessian(
+                self.model_data
+            ),
         )
 
         # Concatenate all layer results
-        return jnp.concatenate(vp_pieces, axis=-1)
+        return metric_value, result_vectors
 
     @staticmethod
-    @partial(jax.jit, static_argnames=["method"])
+    @partial(jax.jit, static_argnames=["method", "metric"])
     def compute_ihvp_or_hvp_all_layers(
         v_layers: list[Float[Array, "*batch_size I O"]],
         Q_activations: list[Float[Array, "I I"]],
@@ -395,7 +406,10 @@ class KFAC(HessianApproximation):
         Lambdas: list[Float[Array, "I O"]],
         damping: Float[Array, ""],
         method: Literal["ihvp", "hvp"],
-    ) -> list[Float[Array, "*batch_size size"]]:
+        metric: VectorMetric | None,
+        v_full: Float[Array, "*batch_size n_params"],
+        hessian_jit_data: Optional[HessianJITData] = None,
+    ) -> tuple[float, Float[Array, "*batch_size n_params"]]:
         """
         Compute EKFAC-based (inverse) Hessian-vector product for all layers in one JIT call.
 
@@ -427,7 +441,19 @@ class KFAC(HessianApproximation):
             vp_flat = vector_product.reshape(*batch_shape, flat_size)
             vp_pieces.append(vp_flat)
 
-        return vp_pieces
+        # compute ihvp for true hessian with damping
+        ihvp_true_hessian = Hessian.compute_ihvp_batched(
+            hessian_jit_data,
+            v_full,
+            damping,
+        )
+
+        if metric is None:
+            return jnp.nan, jnp.concatenate(vp_pieces, axis=-1)
+        else:
+            return metric.compute(
+                ihvp_true_hessian, jnp.concatenate(vp_pieces, axis=-1)
+            ), jnp.concatenate(vp_pieces, axis=-1)
 
     def get_ekfac_components(self) -> None:
         """
