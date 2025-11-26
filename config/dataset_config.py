@@ -17,7 +17,6 @@ class RandomRegressionConfig(DatasetConfig):
     n_features: int = 20
     n_targets: int = 1
     noise: float = 0.1
-    random_state: int = 42
 
 
 @dataclass
@@ -27,7 +26,6 @@ class RandomClassificationConfig(DatasetConfig):
     n_features: int = 40
     n_informative: int = 10
     n_classes: int = 10
-    random_state: int = 42
 
 
 @dataclass

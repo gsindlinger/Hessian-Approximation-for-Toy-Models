@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Tuple
+from typing import Optional, Tuple
 
+import jax
 from jax import numpy as jnp
 from jaxtyping import Array
 from sklearn.datasets import fetch_openml, make_classification, make_regression
@@ -25,7 +26,7 @@ class AbstractDataset(ABC):
     """Abstract base class for datasets in JAX."""
 
     train_test_split: float = 0.8
-    transform: Optional[Callable] = None
+    seed: int = 42
     data: Array = field(init=False)
     targets: Array = field(init=False)
     train_data: Optional[Array] = field(default=None, init=False)
@@ -86,7 +87,11 @@ class AbstractDataset(ABC):
             self.split_dataset()
 
         train_loader = JAXDataLoader(
-            self.train_data, self.train_targets, batch_size=batch_size, shuffle=shuffle
+            self.train_data,
+            self.train_targets,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            rng_key=jax.random.PRNGKey(self.seed),
         )
 
         if self.train_test_split < 1.0 and self.test_data is not None:
@@ -95,6 +100,7 @@ class AbstractDataset(ABC):
                 self.test_targets,
                 batch_size=batch_size,
                 shuffle=shuffle,
+                rng_key=jax.random.PRNGKey(self.seed),
             )
         else:
             test_loader = None
@@ -113,7 +119,7 @@ class AbstractDataset(ABC):
         return len(self.data)
 
 
-def create_dataset(config: DatasetConfig) -> AbstractDataset:
+def create_dataset(config: DatasetConfig, seed: int = 42) -> AbstractDataset:
     """Create dataset from config."""
     dataset_map = {
         RandomRegressionConfig: RandomRegressionDataset,
@@ -128,7 +134,7 @@ def create_dataset(config: DatasetConfig) -> AbstractDataset:
         raise ValueError(f"Unknown dataset: {type(config).__name__}")
 
     dataset_kwargs = vars(config).copy()
-    return dataset_cls(**dataset_kwargs)
+    return dataset_cls(seed=seed, **dataset_kwargs)
 
 
 @dataclass
@@ -137,7 +143,6 @@ class RandomRegressionDataset(AbstractDataset):
     n_features: int = field(default=10)
     n_targets: int = field(default=1)
     noise: float = field(default=0.1)
-    random_state: Optional[int] = field(default=None)
 
     def __post_init__(self):
         data, targets = make_regression(
@@ -145,7 +150,7 @@ class RandomRegressionDataset(AbstractDataset):
             n_features=self.n_features,
             n_targets=self.n_targets,
             noise=self.noise,
-            random_state=self.random_state,
+            random_state=self.seed,
         )[:2]
 
         self.data = jnp.array(data, dtype=jnp.float32)
@@ -166,7 +171,6 @@ class RandomClassificationDataset(AbstractDataset):
     n_features: int = field(default=10)
     n_informative: int = field(default=5)
     n_classes: int = field(default=2)
-    random_state: Optional[int] = field(default=42)
 
     def __post_init__(self):
         data, targets = make_classification(
@@ -174,7 +178,7 @@ class RandomClassificationDataset(AbstractDataset):
             n_features=self.n_features,
             n_informative=self.n_informative,
             n_classes=self.n_classes,
-            random_state=self.random_state,
+            random_state=self.seed,
         )[:2]
 
         self.data = jnp.array(data, dtype=jnp.float32)

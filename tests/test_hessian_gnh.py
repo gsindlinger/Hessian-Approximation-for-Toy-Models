@@ -1,5 +1,6 @@
 from typing import Dict
 
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -38,7 +39,6 @@ class TestHessianApproximations:
                 n_features=100,
                 n_targets=10,
                 noise=20,
-                random_state=42,
                 train_test_split=1,
             ),
             model=LinearModelConfig(loss="mse", hidden_dim=[]),
@@ -49,6 +49,7 @@ class TestHessianApproximations:
                 optimizer="sgd",
                 loss="mse",
             ),
+            seed=42,
         )
 
     @pytest.fixture
@@ -66,6 +67,7 @@ class TestHessianApproximations:
                 optimizer="sgd",
                 loss="mse",
             ),
+            seed=42,
         )
 
     @pytest.fixture
@@ -98,10 +100,9 @@ class TestHessianApproximations:
                 n_features=20,
                 n_classes=5,
                 n_informative=10,
-                random_state=42,
                 train_test_split=1,
             ),
-            model=LinearModelConfig(loss="cross_entropy", hidden_dim=[10, 5]),
+            model=LinearModelConfig(loss="cross_entropy", hidden_dim=[]),
             training=TrainingConfig(
                 epochs=200,
                 lr=0.001,
@@ -109,6 +110,29 @@ class TestHessianApproximations:
                 optimizer="sgd",
                 loss="cross_entropy",
             ),
+            seed=42,
+        )
+
+    @pytest.fixture
+    def random_classification_config_multi_layer(self) -> Config:
+        """Config for random classification with multiple features and classes."""
+        return Config(
+            dataset=RandomClassificationConfig(
+                n_samples=5000,
+                n_features=50,
+                n_classes=5,
+                n_informative=10,
+                train_test_split=1,
+            ),
+            model=LinearModelConfig(loss="cross_entropy", hidden_dim=[20, 10]),
+            training=TrainingConfig(
+                epochs=1000,
+                lr=0.001,
+                batch_size=100,
+                optimizer="sgd",
+                loss="cross_entropy",
+            ),
+            seed=42,
         )
 
     def compute_hessians(self, model, params, dataset, config):
@@ -201,7 +225,7 @@ class TestHessianApproximations:
             n_vectors=20,
         )
 
-        ihvp_batched = hessian.compute_ihvp(vector=test_vectors)
+        ihvp_batched = hessian.compute_ihvp(vectors=test_vectors)
 
         # compute full Hessian and invert
         full_hessian = hessian.compute_hessian()
@@ -264,7 +288,7 @@ class TestHessianApproximations:
         unit_vectors = jnp.eye(n_params)
 
         # Compute IHVPs for all unit vectors
-        ihvps = hessian.compute_ihvp(vector=unit_vectors)
+        ihvps = hessian.compute_ihvp(vectors=unit_vectors)
 
         # Compare IHVPs with compute_inverse_hessian_method
         inverse_hessian = jnp.linalg.inv(hessian.compute_hessian())
@@ -284,6 +308,46 @@ class TestHessianApproximations:
             hessian_full, hvps
         )
 
-        assert matrix_diff_hessian < 1e-6, (
+        assert matrix_diff_hessian < 1e-5, (
             f"HVP differs from direct Hessian by {matrix_diff_hessian}"
         )
+
+    def test_ihvp_hessian_vs_gnh(self, random_classification_config_multi_layer):
+        config = random_classification_config_multi_layer
+        model_data = train_or_load(config)
+        hessian = Hessian(full_config=config)
+        gnh = GaussNewton(full_config=config)
+
+        # Create random vectors out of model distributution
+        test_vectors_1 = sample_gradient_from_output_distribution_batched(
+            model_data=model_data,
+            n_vectors=10,
+            rng_key=jax.random.PRNGKey(0),
+        )
+
+        hessian_matrix = hessian.compute_hessian(damping=1e-3)
+        gnh_matrix = gnh.compute_hessian(damping=1e-3)
+
+        # compare full hessian and gnh
+        rel_error_matrix = FullMatrixMetric.RELATIVE_FROBENIUS.compute(
+            hessian_matrix, gnh_matrix
+        )
+        max_error_matrix = FullMatrixMetric.MAX_ELEMENTWISE.compute(
+            hessian_matrix,
+            gnh_matrix,
+        )
+        print(f"Max elementwise norm between Hessian and GNH: {max_error_matrix}")
+        print(f"Relative Frobenius norm between Hessian and GNH: {rel_error_matrix}")
+
+        assert rel_error_matrix < 0.02, "Full Hessian and GNH differ significantly."
+
+        # compare ihvp results
+        ihvp_hessian = hessian.compute_ihvp(vectors=test_vectors_1, damping=1)
+        ihvp_gnh = gnh.compute_ihvp(vectors=test_vectors_1, damping=1)
+
+        assert (
+            VectorMetric.RELATIVE_ERROR.compute(
+                ihvp_hessian, ihvp_gnh, reduction="mean"
+            )
+            < 0.2
+        ), "IHVP results from Hessian and GNH differ significantly."

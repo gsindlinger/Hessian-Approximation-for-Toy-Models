@@ -12,7 +12,7 @@ class FullMatrixMetric(Enum):
     # Element-wise norms
     FROBENIUS = "frobenius"  # ||A - B||_F
     RELATIVE_FROBENIUS = "relative_frobenius"  # Scale-invariant version
-    MAX_ELEMENTWISE = "max_elementwise"  # Largest absolute difference
+    MAX_ELEMENTWISE = "max_elementwise"  # Largest absolute difference (irrelevant)
 
     # Spectral properties
     SPECTRAL = "spectral"
@@ -24,13 +24,15 @@ class FullMatrixMetric(Enum):
     )
 
     # Eigenvalue-based (critical for optimization properties)
-    EIGENVALUE_MAX = "eigenvalue_max"  # Max distance between eigenvalues
+    EIGENVALUE_MAX = "eigenvalue_max"  # Max distance between eigenvalues (irrelevant)
     EIGENVALUES_L2_DISTANCE = (
-        "eigenvalues_l2_distance"  # Relative L2 distance of eigenvalues
+        "eigenvalues_l2_distance"  # Relative L2 distance of eigenvalues (irrelevant)
     )
 
     # Cheap summary statistics
-    TRACE_DISTANCE = "trace_distance"  # Difference in traces (divided by size)
+    TRACE_DISTANCE = (
+        "trace_distance"  # Difference in traces (divided by size) (semirelevant)
+    )
     CONDITION_NUMBER_LOG_RATIO = "condition_number_log_ratio"  # Invertibility quality
 
     def compute_fn(self) -> Callable:

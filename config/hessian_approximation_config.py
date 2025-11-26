@@ -34,14 +34,24 @@ class LiSSAConfig(HessianApproximationConfig):
     alpha: float = 0.05
     damping: float = 0.001
     batch_size: int = 128
-    seed: int = 42
     convergence_tol: float = 1e-6
     check_convergence_every: int = 50
 
 
 @dataclass
+class FisherInformationConfig(HessianApproximationConfig):
+    name: HessianName = field(default=HessianName.FIM, init=False)
+    fisher_type: Literal["empirical", "true"] = "true"
+
+
+@dataclass
+class GaussNewtonHessianConfig(HessianApproximationConfig):
+    name: HessianName = field(default=HessianName.GAUSS_NEWTON, init=False)
+
+
+@dataclass
 class KFACBuildConfig:
-    use_pseudo_targets: bool = False
+    use_pseudo_targets: bool = True
     pseudo_target_noise_std: float = 0.1
     collector_batch_size: int | None = None
     recalc_ekfac_components: bool = False

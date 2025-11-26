@@ -1,568 +1,332 @@
+import argparse
 import copy
-import json
-import os
 import time
+from dataclasses import asdict
 from typing import List
 
 import jax
-import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from config.config import Config
-from config.dataset_config import RandomClassificationConfig
 from config.hessian_approximation_config import (
+    FisherInformationConfig,
+    GaussNewtonHessianConfig,
     HessianApproximationConfig,
     HessianName,
     KFACBuildConfig,
     KFACConfig,
     KFACRunConfig,
 )
-from config.model_config import MLPModelConfig
-from config.training_config import TrainingConfig
+from hessian_approximations.fim.fisher_information import FisherInformation
+from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC
 from metrics.vector_metrics import VectorMetric
+from models.train import train_or_load
+from scripts.run_gpu_tests import (
+    _linear_setup,
+    _mlp_setup,
+    aggregate_results_across_seeds,
+)
+from utils.utils import (
+    get_peak_bytes_in_use,
+    plot_metric_results_with_seeds,
+    sample_gradient_from_output_distribution_batched,
+    save_results,
+    write_global_markdown_summary,
+)
 
 
-def generate_out_of_distribution_vectors(
-    n_params: int,
-    n_vectors: int,
-    rng_key: Array,
-    vector_type: str = "random_normal",
-) -> Float[Array, "n_vectors n_params"]:
-    """
-    Generate test vectors that are out of the training data distribution.
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="GPU Memory Usage Tests for Hessian Approximations"
+    )
+    parser.add_argument(
+        "--n_params_min",
+        type=int,
+        help="Minimum number of parameters for the model",
+        default=100,
+    )
+    parser.add_argument(
+        "--n_params_max",
+        type=int,
+        help="Maximum number of parameters for the model",
+        default=10000,
+    )
+    parser.add_argument(
+        "--reps",
+        type=int,
+        help="Number of repetitions between min and max parameters",
+        default=1,
+    )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        help="Number of different random seeds to average results over",
+        default=3,
+    )
 
-    Args:
-        n_params: Number of parameters
-        n_vectors: Number of test vectors to generate
-        rng_key: JAX random key
-        vector_type: Type of vectors to generate
-            - "random_normal": Standard normal vectors
-            - "random_uniform": Uniform [-1, 1] vectors
-            - "sparse": Sparse vectors (90% zeros)
-            - "structured": Structured patterns (alternating signs)
-    """
-    if vector_type == "random_normal":
-        vectors = jax.random.normal(rng_key, (n_vectors, n_params))
-    elif vector_type == "random_uniform":
-        vectors = jax.random.uniform(
-            rng_key, (n_vectors, n_params), minval=-1.0, maxval=1.0
-        )
-    elif vector_type == "sparse":
-        vectors = jax.random.normal(rng_key, (n_vectors, n_params))
-        # Make 90% of entries zero
-        mask_key = jax.random.split(rng_key)[0]
-        mask = jax.random.bernoulli(mask_key, p=0.1, shape=(n_vectors, n_params))
-        vectors = vectors * mask
-    elif vector_type == "structured":
-        # Create alternating pattern vectors
-        vectors = jnp.ones((n_vectors, n_params))
-        for i in range(n_vectors):
-            pattern = jnp.array([(-1) ** (j + i) for j in range(n_params)])
-            vectors = vectors.at[i].set(pattern)
-    else:
-        raise ValueError(f"Unknown vector_type: {vector_type}")
-
-    # Normalize vectors
-    norms = jnp.linalg.norm(vectors, axis=1, keepdims=True)
-    return vectors / (norms + 1e-10)
+    return parser.parse_args()
 
 
-def compare_hvp_ihvp(
+def compare_approximation_with_true_hessian(
     full_config: Config,
-    hessian_approxs_configs: tuple[KFACConfig, KFACConfig],
-    n_test_vectors: int = 100,
-    vector_types: List[str] | None = None,
-    rng_seed: int = 123,
+    hessian_approxs_configs: List[HessianApproximationConfig],
+    vectors_1: Float[Array, "num_vectors num_params"],
+    vectors_2: Float[Array, "num_vectors num_params"],
+    ground_truth_hessian_approach: HessianName = HessianName.HESSIAN,
 ):
-    """
-    Compare HVP and IHVP between true Hessian and approximations.
-
-    Args:
-        full_config: Configuration for the experiment
-        hessian_approxs_configs: Tuple of (KFAC, EKFAC) configurations
-        n_test_vectors: Number of test vectors per vector type
-        vector_types: List of vector types to test
-        rng_seed: Random seed for reproducibility
-    """
-    if vector_types is None:
-        vector_types = ["random_normal"]
-
     results_dict = {}
 
-    # Setup true Hessian
     config = copy.deepcopy(full_config)
-    config.hessian_approximation = HessianApproximationConfig(HessianName.HESSIAN)
-
-    print("Setting up true Hessian...")
-    true_hessian_model = Hessian(full_config=config)
-
-    # Get number of parameters
-    n_params = true_hessian_model.model_context.model.get_num_params(
-        true_hessian_model.model_context.params
+    config.hessian_approximation = HessianApproximationConfig(
+        ground_truth_hessian_approach
     )
-    print(f"Number of parameters: {n_params}")
 
-    # Initialize approximation methods
-    approximation_methods = {}
+    damping = KFAC.setup_with_run_and_build_config(
+        full_config=full_config,
+        build_config=KFACBuildConfig(use_pseudo_targets=True),
+        run_config=KFACRunConfig(use_eigenvalue_correction=False),
+    ).damping()
+
+    results_dict["damping"] = float(damping)
+
+    if ground_truth_hessian_approach == HessianName.HESSIAN:
+        true_hessian_model = Hessian(full_config=config)
+    else:
+        true_hessian_model = GaussNewton(full_config=config)
+
+    start_time_hessian = time.time()
+    true_hessian_ihvps = true_hessian_model.compute_ihvp(
+        vectors=vectors_1, damping=damping
+    )
+    end_time_hessian = time.time()
+    results_dict["true_hessian_time"] = end_time_hessian - start_time_hessian
+
     for approx_config in hessian_approxs_configs:
-        approx_name = (
-            "ekfac" if approx_config.run_config.use_eigenvalue_correction else "kfac"
-        )
-        print(f"Setting up {approx_name.upper()}...")
-        approx_method = KFAC.setup_with_run_and_build_config(
-            full_config=full_config,
-            build_config=approx_config.build_config,
-            run_config=approx_config.run_config,
-        )
-        approximation_methods[approx_name] = approx_method
-
-    # Define metrics to compute
-    hvp_metrics = [
-        VectorMetric.RELATIVE_ERROR,
-        VectorMetric.COSINE_SIMILARITY,
-        VectorMetric.ABSOLUTE_L2_DIFF,
-        VectorMetric.SIGN_AGREEMENT,
-        VectorMetric.RELATIVE_ENERGY_DIFF,
-    ]
-
-    ihvp_metrics = [
-        VectorMetric.RELATIVE_ERROR,
-        VectorMetric.COSINE_SIMILARITY,
-        VectorMetric.ABSOLUTE_L2_DIFF,
-        VectorMetric.SIGN_AGREEMENT,
-        VectorMetric.INNER_PRODUCT_DIFF,
-        VectorMetric.INNER_PRODUCT_RATIO,
-    ]
-
-    # Test each vector type
-    for vector_type in vector_types:
-        print(f"\nTesting with {vector_type} vectors...")
-        results_dict[vector_type] = {}
-
-        # Generate test vectors
-        rng_key = jax.random.PRNGKey(rng_seed)
-        test_vectors = generate_out_of_distribution_vectors(
-            n_params, n_test_vectors, rng_key, vector_type
-        )
-
-        # Compute true HVPs and IHVPs
-        print("  Computing true HVPs...")
-        start_time = time.time()
-        true_hvps = jax.vmap(true_hessian_model.compute_hvp)(test_vectors)
-        hvp_time = time.time() - start_time
-
-        print("  Computing true IHVPs...")
-        start_time = time.time()
-        true_ihvps = jax.vmap(true_hessian_model.compute_ihvp)(test_vectors)
-        ihvp_time = time.time() - start_time
-
-        results_dict[vector_type]["true_hessian"] = {
-            "hvp_time": hvp_time,
-            "ihvp_time": ihvp_time,
-        }
-
-        # Test each approximation method
-        for approx_name, approx_method in approximation_methods.items():
-            print(f"  Testing {approx_name.upper()}...")
-            results_dict[vector_type][approx_name] = {}
-
-            # Compute approximate HVPs
-            start_time = time.time()
-            approx_hvps = jax.vmap(approx_method.compute_hvp)(test_vectors)
-            approx_hvp_time = time.time() - start_time
-
-            # Compute approximate IHVPs
-            start_time = time.time()
-            approx_ihvps = jax.vmap(approx_method.compute_ihvp)(test_vectors)
-            approx_ihvp_time = time.time() - start_time
-
-            results_dict[vector_type][approx_name]["hvp_time"] = approx_hvp_time
-            results_dict[vector_type][approx_name]["ihvp_time"] = approx_ihvp_time
-
-            # Compute HVP metrics
-            results_dict[vector_type][approx_name]["hvp_metrics"] = {}
-            for metric in hvp_metrics:
-                metric_value = metric.compute(true_hvps, approx_hvps, reduction="mean")
-                results_dict[vector_type][approx_name]["hvp_metrics"][metric.value] = (
-                    float(metric_value)
-                )
-
-            # Compute IHVP metrics
-            results_dict[vector_type][approx_name]["ihvp_metrics"] = {}
-            for metric in ihvp_metrics:
-                if metric in [
-                    VectorMetric.INNER_PRODUCT_DIFF,
-                    VectorMetric.INNER_PRODUCT_RATIO,
-                ]:
-                    # Use original test vectors as auxiliary vectors for inner product metrics
-                    metric_value = metric.compute(
-                        true_ihvps, approx_ihvps, x=test_vectors, reduction="mean"
-                    )
-                else:
-                    metric_value = metric.compute(
-                        true_ihvps, approx_ihvps, reduction="mean"
-                    )
-                results_dict[vector_type][approx_name]["ihvp_metrics"][metric.value] = (
-                    float(metric_value)
-                )
-
-            print(
-                f"    HVP Relative Error: {results_dict[vector_type][approx_name]['hvp_metrics']['relative_error']:.6f}"
-            )
-            print(
-                f"    IHVP Relative Error: {results_dict[vector_type][approx_name]['ihvp_metrics']['relative_error']:.6f}"
+        if isinstance(approx_config, KFACConfig):
+            approx_name = (
+                "ekfac"
+                if approx_config.run_config.use_eigenvalue_correction
+                else "kfac"
             )
 
+            approx_method = KFAC.setup_with_run_and_build_config(
+                full_config=full_config,
+                build_config=approx_config.build_config,
+                run_config=approx_config.run_config,
+            )
+        elif isinstance(approx_config, FisherInformationConfig):
+            approx_name = "fim"
+            approx_method = FisherInformation(full_config=full_config)
+        elif isinstance(approx_config, GaussNewtonHessianConfig):
+            approx_name = "gauss_newton"
+            approx_method = GaussNewton(full_config=full_config)
+        else:
+            raise ValueError(
+                f"Unsupported Hessian approximation config type: {type(approx_config)}"
+            )
+
+        results_dict[approx_name] = {}
+
+        start_time_approx = time.time()
+
+        vector_metrics = VectorMetric.all_metrics()
+        for vector_metric in vector_metrics:
+            ihvp_approx = approx_method.compute_ihvp(vectors=vectors_1, damping=damping)
+            metric_value = vector_metric.compute(
+                v1=true_hessian_ihvps,
+                v2=ihvp_approx,
+                x=vectors_2,
+                reduction="mean",
+            )
+            results_dict[approx_name][vector_metric.value] = float(metric_value)
+
+        end_time_approx = time.time()
+        results_dict[approx_name]["time"] = end_time_approx - start_time_approx
+        results_dict[approx_name]["num_params"] = (
+            approx_method.model_context.model.get_num_params(
+                approx_method.model_context.params
+            )
+        )
     return results_dict
 
 
-#### EXPERIMENT SETUP ####
+def run_gpu_tests_vectors():
+    args = parse_args()
+    min_params = args.n_params_min
+    max_params = args.n_params_max
+    num_reps = args.reps
+    num_seeds = args.seeds
 
-# Configuration parameters
-n_samples = 2000
-random_state = 42
-num_reps = 10
-min_params = 100
-max_params = 1000
+    # Define seeds internally depending on number of repetitions
+    seeds = [554 + i * 2 for i in range(num_seeds)]
 
-target_param_sizes = jnp.linspace(
-    min_params, max_params, num=num_reps, dtype=int
-).tolist()
-n_classes_list = [10] * num_reps
-
-# Test settings
-n_test_vectors = 20
-vector_types = ["random_normal", "random_uniform", "sparse", "structured"]
-
-#### SINGLE LINEAR LAYER EXPERIMENTS ####
-
-dataset_nums = []
-for i, (target_params, n_classes) in enumerate(zip(target_param_sizes, n_classes_list)):
-    n_features = max(10, int(target_params / n_classes))
-    n_informative = min(max(2, int(0.6 * n_features)), 100)
-
-    dataset_nums.append(
-        {
-            "n_samples": n_samples,
-            "n_features": n_features,
-            "n_classes": n_classes,
-            "n_informative": n_informative,
-            "total_params": n_features * n_classes,
-        }
+    linear_setup = _linear_setup(
+        min_params=min_params,
+        max_params=max_params,
+        num_reps=num_reps,
+        layer_type="single_layer",
     )
-
-dataset_configs = {}
-training_configs = {}
-
-for dataset_num in dataset_nums:
-    n_samples = dataset_num["n_samples"]
-    n_features = dataset_num["n_features"]
-    n_classes = dataset_num["n_classes"]
-    n_informative = dataset_num["n_informative"]
-
-    dataset_configs[
-        f"random_classification_linear_only_{n_samples}_{n_features}_{n_classes}"
-    ] = RandomClassificationConfig(
-        n_samples=n_samples,
-        n_features=n_features,
-        n_classes=n_classes,
-        n_informative=n_informative,
-        random_state=42,
-        train_test_split=1,
+    linear_setup_multi_layer = _linear_setup(
+        min_params=min_params,
+        max_params=max_params,
+        num_reps=num_reps,
+        layer_type="multi_layer",
     )
+    mlp_setup = _mlp_setup(min_params, max_params, num_reps)
 
-    training_configs[
-        f"random_classification_linear_only_{n_samples}_{n_features}_{n_classes}"
-    ] = TrainingConfig(
-        epochs=100,
-        lr=0.001,
-        optimizer="sgd",
-        batch_size=100,
-        loss="cross_entropy",
-    )
-
-single_linear_collection = (dataset_configs, training_configs)
-
-#### MLP LAYER EXPERIMENTS ####
-
-
-def choose_hidden_dims(target_params: int):
-    if target_params <= 10000:
-        return [20]
-    elif target_params <= 15000:
-        return [30]
-    else:
-        return [50]
-
-
-dataset_nums_mlp = []
-for target_params, n_classes in zip(target_param_sizes, n_classes_list):
-    n_features = max(10, int(target_params / n_classes))
-    n_informative = min(max(2, int(0.6 * n_features)), 100)
-    hidden_dims = choose_hidden_dims(target_params)
-
-    total_params = n_features * hidden_dims[0]
-    for i in range(len(hidden_dims) - 1):
-        total_params += hidden_dims[i] * hidden_dims[i + 1]
-    total_params += hidden_dims[-1] * n_classes
-
-    dataset_nums_mlp.append(
-        {
-            "n_samples": n_samples,
-            "n_features": n_features,
-            "n_classes": n_classes,
-            "n_informative": n_informative,
-            "hidden_dims": hidden_dims,
-            "total_params": total_params,
-        }
-    )
-
-dataset_configs_mlp = {}
-training_configs_mlp = {}
-hidden_dims_mlp = {}
-
-for dataset_num in dataset_nums_mlp:
-    n_samples = dataset_num["n_samples"]
-    n_features = dataset_num["n_features"]
-    n_classes = dataset_num["n_classes"]
-    n_informative = dataset_num["n_informative"]
-    hidden_dims_list = dataset_num["hidden_dims"]
-
-    dataset_configs_mlp[
-        f"random_classification_mlp_{n_samples}_{n_features}_{hidden_dims_list}_{n_classes}"
-    ] = RandomClassificationConfig(
-        n_samples=n_samples,
-        n_features=n_features,
-        n_classes=n_classes,
-        n_informative=n_informative,
-        random_state=42,
-        train_test_split=1,
-    )
-
-    training_configs_mlp[
-        f"random_classification_mlp_{n_samples}_{n_features}_{hidden_dims_list}_{n_classes}"
-    ] = TrainingConfig(
-        epochs=1000,
-        lr=0.001,
-        optimizer="sgd",
-        batch_size=100,
-        loss="cross_entropy",
-    )
-
-    hidden_dims_mlp[
-        f"random_classification_mlp_{n_samples}_{n_features}_{hidden_dims_list}_{n_classes}"
-    ] = hidden_dims_list
-
-mlp_collection = (dataset_configs_mlp, training_configs_mlp, hidden_dims_mlp)
-
-#### RUN EXPERIMENTS ####
-
-for collection_name, collection in [
-    ("single_linear", single_linear_collection),
-    ("mlp", mlp_collection),
-]:
-    print(f"\n{'=' * 80}")
-    print(f"Running {collection_name.upper()} experiments")
-    print(f"{'=' * 80}\n")
-
-    dataset_configs, training_configs = collection[:2]
-    if len(collection) == 3:
-        hidden_dims = collection[2]
-    else:
-        hidden_dims = {name: [] for name in dataset_configs.keys()}
-
-    all_results = {}
-
-    for dataset_name, dataset_config in dataset_configs.items():
-        print(f"\n{'=' * 60}")
-        print(f"Dataset: {dataset_name}")
-        print(f"{'=' * 60}")
-
-        model_config = MLPModelConfig(
-            loss="cross_entropy", hidden_dim=hidden_dims[dataset_name]
-        )
-
-        full_config = Config(
-            dataset=dataset_config,
-            model=model_config,
-            training=training_configs[dataset_name],
-        )
-
-        kfac_config = KFACConfig(
-            build_config=KFACBuildConfig(),
-            run_config=KFACRunConfig(use_eigenvalue_correction=False),
-        )
-
-        ekfac_config = KFACConfig(
-            build_config=KFACBuildConfig(),
-            run_config=KFACRunConfig(use_eigenvalue_correction=True),
-        )
-
-        hessian_configs = (kfac_config, ekfac_config)
-
-        start_time = time.time()
-        results = compare_hvp_ihvp(
-            full_config=full_config,
-            hessian_approxs_configs=hessian_configs,
-            n_test_vectors=n_test_vectors,
-            vector_types=vector_types,
-        )
-        end_time = time.time()
-
-        results["total_time"] = end_time - start_time
-        all_results[dataset_name] = results
-
-        print(f"\nCompleted {dataset_name} in {end_time - start_time:.2f} seconds")
-
-    # Save results
+    # Compute for both single linear layer and MLP layer datasets
+    all_collection_results = {}
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    folder = f"data/artifacts/results/{collection_name}_hvp_ihvp/{timestamp}/"
+    for collection in [linear_setup, linear_setup_multi_layer, mlp_setup]:
+        dataset_config, training_config, model_config = collection
 
-    if not os.path.exists(folder):
-        os.makedirs(folder)
+        # Store results across all seeds
+        all_seeds_results = {}
 
-    with open(f"{folder}/hvp_ihvp_comparison_results.json", "w") as f:
-        json.dump(all_results, f, indent=4)
+        for seed in seeds:
+            print(f"\n{'=' * 60}")
+            print(f"Running with seed: {seed}")
+            print(f"{'=' * 60}\n")
 
-    print(f"\nSaved results to {folder}/hvp_ihvp_comparison_results.json")
+            results_dict = {}
 
-    # Create visualizations
-    import matplotlib.pyplot as plt
+            for dataset_name, dataset_cfg in dataset_config.items():
+                full_config = Config(
+                    dataset=dataset_cfg,
+                    model=model_config[dataset_name],
+                    training=training_config[dataset_name],
+                    seed=seed,
+                )
+                model_data = train_or_load(full_config)
+                vectors_1 = sample_gradient_from_output_distribution_batched(
+                    model_data=model_data,
+                    n_vectors=500,
+                    rng_key=jax.random.PRNGKey(7833),
+                )
 
-    plt.rcParams.update(
-        {
-            "font.size": 12,
-            "font.family": "STIXGeneral",
-            "mathtext.fontset": "stix",
-            "text.usetex": False,
-            "figure.figsize": (16, 10),
-            "axes.linewidth": 1.2,
-            "grid.linewidth": 0.5,
-            "lines.linewidth": 2,
-            "lines.markersize": 6,
+                vectors_2 = sample_gradient_from_output_distribution_batched(
+                    model_data=model_data,
+                    n_vectors=500,
+                    rng_key=jax.random.PRNGKey(10112),
+                )
+                kfac_config = KFACConfig(
+                    build_config=KFACBuildConfig(use_pseudo_targets=True),
+                    run_config=KFACRunConfig(use_eigenvalue_correction=False),
+                )
+                ekfac_config = KFACConfig(
+                    build_config=KFACBuildConfig(use_pseudo_targets=True),
+                    run_config=KFACRunConfig(use_eigenvalue_correction=True),
+                )
+
+                if collection in [linear_setup, linear_setup_multi_layer]:
+                    ground_truth_hessian_approach = HessianName.HESSIAN
+                    comparison_configs = [
+                        kfac_config,
+                        ekfac_config,
+                        FisherInformationConfig(fisher_type="true"),
+                        GaussNewtonHessianConfig(),
+                    ]
+                else:
+                    ground_truth_hessian_approach = HessianName.GAUSS_NEWTON
+                    comparison_configs = [
+                        kfac_config,
+                        ekfac_config,
+                        FisherInformationConfig(fisher_type="true"),
+                    ]
+
+                print(f"Comparing Hessians for dataset: {dataset_name}")
+
+                start_time = time.time()
+                results_dict[dataset_name] = compare_approximation_with_true_hessian(
+                    full_config=full_config,
+                    hessian_approxs_configs=comparison_configs,
+                    vectors_1=vectors_1,
+                    vectors_2=vectors_2,
+                    ground_truth_hessian_approach=ground_truth_hessian_approach,
+                )
+                end_time = time.time()
+                print(
+                    f"Time taken for dataset {dataset_name}: {end_time - start_time} seconds"
+                )
+                results_dict[dataset_name]["time_taken_overall"] = end_time - start_time
+                print(f"Completed dataset: {dataset_name}")
+                results_dict[dataset_name]["peak_memory"] = get_peak_bytes_in_use()
+                results_dict[dataset_name]["training_config"] = asdict(
+                    training_config[dataset_name]
+                )
+                results_dict[dataset_name]["model_config"] = asdict(
+                    model_config[dataset_name]
+                )
+                results_dict[dataset_name]["dataset_config"] = asdict(
+                    dataset_config[dataset_name]
+                )
+
+            all_seeds_results[seed] = results_dict
+
+        # Aggregate results across seeds
+        aggregated_results = aggregate_results_across_seeds(all_seeds_results)
+
+        # Save results
+        folder_parent = f"data/artifacts/results/ihvp/{timestamp}"
+        if collection == linear_setup:
+            folder = f"{folder_parent}/single_linear"
+        elif collection == linear_setup_multi_layer:
+            folder = f"{folder_parent}/multi_linear"
+        else:
+            folder = f"{folder_parent}/mlp"
+
+        # Save individual seed results
+        save_results(
+            all_seeds_results,
+            f"{folder}/kfac_hessian_comparison_all_seeds_{timestamp}.json",
+        )
+
+        # Save aggregated results
+        save_results(
+            aggregated_results,
+            f"{folder}/kfac_hessian_comparison_aggregated_{timestamp}.json",
+        )
+
+        # Plot with error bars
+        plot_metric_results_with_seeds(
+            results=aggregated_results,
+            filename=f"{folder}/kfac_hessian_comparison_metrics_{timestamp}",
+            metrics=[
+                VectorMetric.RELATIVE_ERROR.value,
+                VectorMetric.COSINE_SIMILARITY.value,
+                VectorMetric.INNER_PRODUCT_DIFF.value,
+            ],
+        )
+        print(
+            f"Saved results to {folder}/kfac_hessian_comparison_results_{timestamp}.json"
+        )
+
+        if collection == linear_setup:
+            collection_name = "single_linear"
+        elif collection == linear_setup_multi_layer:
+            collection_name = "multi_linear"
+        else:
+            collection_name = "mlp"
+
+        all_collection_results[collection_name] = {
+            "folder": folder,
+            "aggregated": aggregated_results,
+            "all_seeds": all_seeds_results,
         }
+
+    write_global_markdown_summary(
+        all_collections_results=all_collection_results,
+        timestamp=timestamp,
+        title="Comparison of IHVPs",
+        folder=folder_parent,
+        overview_metric=VectorMetric.RELATIVE_ERROR.value,
     )
 
-    # Plot for each vector type
-    for vector_type in vector_types:
-        fig, axes = plt.subplots(2, 3, figsize=(16, 10))
-        fig.suptitle(
-            f"HVP and IHVP Comparison: {vector_type.replace('_', ' ').title()} Vectors",
-            fontsize=16,
-            y=0.995,
-        )
+    print("Saved data to:")
+    print(f"{folder_parent}")
 
-        colors = {"kfac": "#1f77b4", "ekfac": "#ff7f0e"}
-        markers = {"kfac": "o", "ekfac": "s"}
 
-        # Metrics to plot
-        hvp_metrics_to_plot = [
-            "relative_error",
-            "cosine_similarity",
-            "absolute_l2_diff",
-        ]
-        ihvp_metrics_to_plot = [
-            "relative_error",
-            "cosine_similarity",
-            "inner_product_diff",
-        ]
-
-        # Plot HVP metrics
-        for idx, metric in enumerate(hvp_metrics_to_plot):
-            ax = axes[0, idx]
-
-            for approx_method in ["kfac", "ekfac"]:
-                x = []
-                y = []
-                for dataset_name in all_results.keys():
-                    if vector_type in all_results[dataset_name]:
-                        # Extract parameter count from dataset name or results
-                        param_size = int(dataset_name.split("_")[-3]) * int(
-                            dataset_name.split("_")[-1]
-                        )
-                        metric_value = all_results[dataset_name][vector_type][
-                            approx_method
-                        ]["hvp_metrics"][metric]
-                        x.append(param_size)
-                        y.append(metric_value)
-
-                if x:  # Only plot if we have data
-                    x, y = zip(*sorted(zip(x, y)))
-                    label = approx_method.upper()
-                    ax.plot(
-                        x,
-                        y,
-                        marker=markers[approx_method],
-                        label=label,
-                        color=colors[approx_method],
-                        linewidth=2,
-                        markersize=6,
-                    )
-
-            metric_title = metric.replace("_", " ").title()
-            ax.set_title(f"HVP: {metric_title}", fontsize=12, pad=10)
-            ax.set_xlabel("Number of Parameters", fontsize=11)
-            ax.grid(True, alpha=0.3, linestyle="--")
-            ax.set_axisbelow(True)
-
-            if idx == 0:
-                ax.legend(loc="best", fontsize=10)
-
-        # Plot IHVP metrics
-        for idx, metric in enumerate(ihvp_metrics_to_plot):
-            ax = axes[1, idx]
-
-            for approx_method in ["kfac", "ekfac"]:
-                x = []
-                y = []
-                for dataset_name in all_results.keys():
-                    if vector_type in all_results[dataset_name]:
-                        param_size = int(dataset_name.split("_")[-3]) * int(
-                            dataset_name.split("_")[-1]
-                        )
-                        metric_value = all_results[dataset_name][vector_type][
-                            approx_method
-                        ]["ihvp_metrics"][metric]
-                        x.append(param_size)
-                        y.append(metric_value)
-
-                if x:  # Only plot if we have data
-                    x, y = zip(*sorted(zip(x, y)))
-                    label = approx_method.upper()
-                    ax.plot(
-                        x,
-                        y,
-                        marker=markers[approx_method],
-                        label=label,
-                        color=colors[approx_method],
-                        linewidth=2,
-                        markersize=6,
-                    )
-
-            metric_title = metric.replace("_", " ").title()
-            ax.set_title(f"IHVP: {metric_title}", fontsize=12, pad=10)
-            ax.set_xlabel("Number of Parameters", fontsize=11)
-            ax.grid(True, alpha=0.3, linestyle="--")
-            ax.set_axisbelow(True)
-
-            if idx == 0:
-                ax.legend(loc="best", fontsize=10)
-
-        plt.tight_layout()
-
-        # Save plots
-        plt.savefig(
-            f"{folder}/hvp_ihvp_comparison_{vector_type}_{timestamp}.pdf",
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.savefig(
-            f"{folder}/hvp_ihvp_comparison_{vector_type}_{timestamp}.png",
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.close()
-
-    print(f"Saved plots to {folder}")
+if __name__ == "__main__":
+    run_gpu_tests_vectors()
