@@ -40,6 +40,12 @@ class LiSSAConfig(HessianApproximationConfig):
 
 
 @dataclass
+class FisherInformationConfig(HessianApproximationConfig):
+    name: HessianName = field(default=HessianName.FIM, init=False)
+    fisher_type: Literal["empiric", "true"] = "true"
+
+
+@dataclass
 class KFACBuildConfig:
     use_pseudo_targets: bool = False
     pseudo_target_noise_std: float = 0.1
