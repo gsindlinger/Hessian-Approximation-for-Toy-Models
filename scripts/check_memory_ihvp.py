@@ -90,7 +90,7 @@ def check_memory():
     target_param_sizes = jnp.linspace(
         min_params, max_params, num=num_reps, dtype=int
     ).tolist()
-    n_classes_list = [10] * num_reps  # keep n_classes constant for simplicity
+    n_classes_list = [2] * num_reps  # keep n_classes constant for simplicity
 
     dataset_nums = []
 
@@ -98,7 +98,7 @@ def check_memory():
         zip(target_param_sizes, n_classes_list)
     ):
         # derive n_features
-        n_features = max(10, int(target_params / n_classes))
+        n_features = 10
 
         # scale informative features proportionally to n_features (min 2, max 100)
         n_informative = min(max(2, int(0.6 * n_features)), 100)
@@ -134,7 +134,7 @@ def check_memory():
         training_configs[
             f"random_classification_linear_only_{n_samples}_{n_features}_{n_classes}"
         ] = TrainingConfig(
-            epochs=100,
+            epochs=1000,
             lr=0.001,
             optimizer="sgd",
             batch_size=100,
@@ -145,7 +145,7 @@ def check_memory():
 
         linear_model_config = LinearModelConfig(
             loss="cross_entropy",
-            hidden_dim=[],  # no hidden layers
+            hidden_dim=[5],  # no hidden layers
         )
 
         full_config = Config(
@@ -180,6 +180,12 @@ def check_memory():
             rng_key=jax.random.PRNGKey(123),
         )
 
+        test_vectors_2 = sample_gradient_from_output_distribution_batched(
+            model_data=model_data,
+            n_vectors=num_vectors,
+            rng_key=jax.random.PRNGKey(456),
+        )
+
         for kfac_config in [kfac_config, ekfac_config]:
             kfac_string = (
                 "K-FAC"
@@ -208,7 +214,22 @@ def check_memory():
                 vector=test_vectors, damping=damping
             )
 
-            print_device_memory_stats("After True Hessian IHVP Computation")
+            # hessian = Hessian(full_config).compute_hessian(damping=damping)
+            # kfac_hessian = kfac_model.compute_hessian(damping=damping)
+
+            # # plot hessian and kfac_hessian next to each other as heatmaps using matplotlib
+            # import matplotlib.pyplot as plt
+
+            # fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+            # im1 = axs[0].imshow(hessian, cmap="viridis")
+            # axs[0].set_title("True Hessian")
+            # fig.colorbar(im1, ax=axs[0])
+            # im2 = axs[1].imshow(kfac_hessian, cmap="viridis")
+            # axs[1].set_title(f"{kfac_string} Hessian")
+            # fig.colorbar(im2, ax=axs[1])
+            # plt.show()
+
+            # print_device_memory_stats("After True Hessian IHVP Computation")
 
             # # plot the first four ihvp for both in line plots using subfigures in matplotlib
             # import matplotlib.pyplot as plt
@@ -232,24 +253,30 @@ def check_memory():
             # plt.tight_layout()
             # plt.show()
 
-            diff = VectorMetric.RELATIVE_ERROR.compute(
-                kfac_result, hessian_result, reduction="mean"
+            diff_1 = VectorMetric.RELATIVE_ERROR.compute(
+                hessian_result, kfac_result, reduction="mean"
+            )
+            diff_2 = VectorMetric.INNER_PRODUCT_DIFF.compute(
+                hessian_result, kfac_result, x=test_vectors_2, reduction="mean"
             )
             print_device_memory_stats(f"After {kfac_string} IHVP Comparison")
 
             results_dict[kfac_string] = {}
-            results_dict[kfac_string]["relative_error"] = diff
+            results_dict[kfac_string]["relative_error"] = diff_1
+            results_dict[kfac_string]["inner_product_diff"] = diff_2
 
-            kfac_model.model_data.params
+            kfac_model.model_context.params
             results_dict[kfac_string]["num_params"] = (
-                kfac_model.model_data.model.get_num_params(kfac_model.model_data.params)
+                kfac_model.model_context.model.get_num_params(
+                    kfac_model.model_context.params
+                )
             )
 
             # del kfac_hessian
             del kfac_model
             del hessian_result
             del kfac_result
-            del diff
+            del diff_1
 
             # Force garbage collection to see memory release
             import gc

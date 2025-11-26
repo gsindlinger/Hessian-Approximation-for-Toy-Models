@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jaxtyping import Float
 
 from config.config import Config
-from models.dataclasses.model_data import ModelData
+from models.dataclasses.model_context import ModelContext
 from models.train import train_or_load
 
 
@@ -17,10 +17,10 @@ class HessianApproximation(ABC):
     """Abstract base class for Hessian approximations."""
 
     full_config: Config
-    model_data: ModelData = field(init=False)
+    model_context: ModelContext = field(init=False)
 
     def __post_init__(self):
-        self.model_data = train_or_load(self.full_config)
+        self.model_context = train_or_load(self.full_config)
 
     @abstractmethod
     def compute_hessian(self, damping: Optional[Float] = None) -> jnp.ndarray:

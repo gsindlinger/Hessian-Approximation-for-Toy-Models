@@ -6,7 +6,7 @@ from models.base import ApproximationModel
 
 
 @dataclass
-class ModelData:
+class ModelContext:
     """Container for the model, dataset, parameters, and loss function."""
 
     model: ApproximationModel

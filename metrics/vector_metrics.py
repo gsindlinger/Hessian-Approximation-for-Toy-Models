@@ -17,11 +17,8 @@ class VectorMetric(Enum):
     RELATIVE_ENERGY_DIFF = "relative_energy_diff"  # |‖v_1‖² - ‖v_2‖²| / ‖v_1‖²
     INNER_PRODUCT_RATIO = "inner_product_ratio"  # ⟨x, v_2⟩ / ⟨x, v_1⟩
 
-    # ----------------------------------------------------------
-    #           JIT-FRIENDLY PURE JAX METRIC FUNCTIONS
-    # ----------------------------------------------------------
     def compute_fn(self) -> Callable:
-        """Return a jittable pure function with signature fn(v1, v2, x)."""
+        """Return to the corresponding enum belonging metric as function / callable."""
 
         # ------------------------------------------------------
         # Metric definitions (all pure JAX)
@@ -39,6 +36,8 @@ class VectorMetric(Enum):
 
         # |⟨x, v_1⟩ - ⟨x, v_2⟩|
         def inner_product_diff(v1, v2, x):
+            if x is None:
+                raise ValueError("inner_product_diff requires auxiliary vector x")
             ip1 = jnp.dot(x, v1)
             ip2 = jnp.dot(x, v2)
             return jnp.abs(ip1 - ip2)
@@ -62,6 +61,8 @@ class VectorMetric(Enum):
 
         # ⟨x, v_2⟩ / ⟨x, v_1⟩
         def inner_product_ratio(v1, v2, x):
+            if x is None:
+                raise ValueError("inner_product_ratio requires auxiliary vector x")
             ip1 = jnp.dot(x, v1)
             ip2 = jnp.dot(x, v2)
             return (ip2 + 1e-10) / (ip1 + 1e-10)
@@ -82,7 +83,7 @@ class VectorMetric(Enum):
         return jax.jit(table[self])
 
     # ----------------------------------------------------------
-    #           Single-sample evaluation (external to JIT)
+    #           Single-sample evaluation
     # ----------------------------------------------------------
     def compute_single(
         self,
@@ -94,19 +95,20 @@ class VectorMetric(Enum):
         return fn(v1, v2, x)
 
     # ----------------------------------------------------------
-    #             Batched evaluation using vmap
+    #             Batched evaluation
     # ----------------------------------------------------------
+
     def compute(
         self,
-        v1: Float[Array, "..."],
-        v2: Float[Array, "..."],
-        x: Optional[Float[Array, "..."]] = None,
+        v1: Float[Array, "*batch_size n_params"],
+        v2: Float[Array, "*batch_size n_params"],
+        x: Optional[Float[Array, "*batch_size n_params"]] = None,
         reduction: str = "mean",
     ) -> Float:
         """
         Compute metric across a batch of vector pairs.
 
-        v1, v2: shape (batch, dim) or (dim,)
+        v1, v2: shape (batch, dim) or (dim,) - <em>v1: ground truth</em> and <em>v2: approximation</em>
         x: optional auxiliary vector(s) (same batching rules as v1/v2)
         reduction: "mean" or "sum"
         """
@@ -115,13 +117,17 @@ class VectorMetric(Enum):
         if v1.ndim == 1:
             return self.compute_single(v1, v2, x)
 
-        # Broadcast x across batch if needed
-        if x is not None and x.ndim == 1:
-            x = jnp.broadcast_to(x, v1.shape)
+        # Determine in_axes for x based on its dimensionality
+        if x is None:
+            x_axis = None
+        elif x.ndim == 1:
+            x_axis = None  # broadcast single x to all batch elements
+        else:
+            x_axis = 0  # x is already batched
 
         fn = self.compute_fn()
 
-        batched_fn = jax.vmap(fn, in_axes=(0, 0, 0 if x is not None else None))
+        batched_fn = jax.vmap(fn, in_axes=(0, 0, x_axis))
         values = batched_fn(v1, v2, x)
 
         if reduction == "mean":

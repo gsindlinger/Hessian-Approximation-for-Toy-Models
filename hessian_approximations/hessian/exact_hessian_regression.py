@@ -25,11 +25,11 @@ class HessianExactRegression(HessianApproximation):
         Compute the Hessian of a linear regression model w.r.t. its parameters.
         """
 
-        training_data, training_targets = self.model_data.dataset.get_train_data()
+        training_data, training_targets = self.model_context.dataset.get_train_data()
         n_samples, n_features = training_data.shape
         d_out = training_targets.shape[1]
 
-        if self.model_data.model.use_bias:
+        if self.model_context.model.use_bias:
             ones = jnp.ones((n_samples, 1))
             X_augmented = jnp.concatenate([ones, training_data], axis=1)
             block_size = n_features + 1
@@ -56,7 +56,7 @@ class HessianExactRegression(HessianApproximation):
         #           or [w_0_0, w_0_1, ..., w_1_0, w_1_1, ...]
         perm_indices = []
 
-        if self.model_data.model.use_bias:
+        if self.model_context.model.use_bias:
             # First, add all bias indices (first element of each block)
             for out_dim in range(d_out):
                 perm_indices.append(out_dim * block_size)
@@ -64,7 +64,7 @@ class HessianExactRegression(HessianApproximation):
         # Then, add all weight indices for each feature
         for feat_idx in range(n_features):
             for out_dim in range(d_out):
-                offset = 1 if self.model_data.model.use_bias else 0
+                offset = 1 if self.model_context.model.use_bias else 0
                 perm_indices.append(out_dim * block_size + offset + feat_idx)
 
         perm_indices = jnp.array(perm_indices)

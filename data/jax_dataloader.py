@@ -1,7 +1,5 @@
 import jax
 
-from data.device_handling import get_default_device
-
 
 class JAXDataLoader:
     """
@@ -65,7 +63,7 @@ class JAXDataLoader:
     @staticmethod
     def get_batch_size(default_cpu_bs=32, gpu_bs=128) -> int:
         """Determine batch size based on available device."""
-        device = get_default_device()
+        device = jax.devices()[0]
         if device.platform == "gpu" or device.platform == "tpu":
             return gpu_bs
         else:

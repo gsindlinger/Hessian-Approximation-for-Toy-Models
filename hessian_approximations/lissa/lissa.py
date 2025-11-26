@@ -55,7 +55,7 @@ class LiSSA(HessianApproximation):
         and returns \alpha * r_J as the final approximation of (G + λI)^{-1} v.
         """
 
-        training_data, training_targets = self.model_data.dataset.get_train_data()
+        training_data, training_targets = self.model_context.dataset.get_train_data()
 
         n_samples = training_data.shape[0]
         actual_batch_size = min(n_samples, self.config.batch_size)

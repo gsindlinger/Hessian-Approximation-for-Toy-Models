@@ -10,7 +10,7 @@ from models.base import ApproximationModel
 
 @partial(jax.jit, static_argnames=("reduction",))
 def mse_loss(pred, target, reduction="mean"):
-    """MSE loss (JIT compiled)."""
+    """MSE loss"""
     if reduction == "mean":
         return jnp.mean((pred - target) ** 2)
     else:
@@ -19,7 +19,7 @@ def mse_loss(pred, target, reduction="mean"):
 
 @partial(jax.jit, static_argnames=("reduction",))
 def cross_entropy_loss(pred, target, reduction="mean"):
-    """Cross entropy loss (JIT compiled)."""
+    """Cross entropy loss"""
     if reduction == "mean":
         return optax.softmax_cross_entropy_with_integer_labels(pred, target).mean()
     else:
