@@ -99,8 +99,8 @@ def compare_hvp_ihvp(
     true_hessian_model = Hessian(full_config=config)
 
     # Get number of parameters
-    n_params = true_hessian_model.model_data.model.get_num_params(
-        true_hessian_model.model_data.params
+    n_params = true_hessian_model.model_context.model.get_num_params(
+        true_hessian_model.model_context.params
     )
     print(f"Number of parameters: {n_params}")
 

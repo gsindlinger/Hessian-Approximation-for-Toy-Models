@@ -11,7 +11,7 @@ from tqdm import tqdm
 from config.config import Config, TrainingConfig
 from data.data import AbstractDataset, create_dataset
 from models.base import ApproximationModel
-from models.dataclasses.model_data import ModelData
+from models.dataclasses.model_context import ModelContext
 from models.linear_model import LinearModel
 from models.mlp import MLPModel
 from models.utils.checkpoint_storage import (
@@ -57,7 +57,7 @@ def create_dataset_and_model(
     return model, dataset
 
 
-def train_or_load(config: Config, reload_model: bool = False) -> ModelData:
+def train_or_load(config: Config, reload_model: bool = False) -> ModelContext:
     """Train or load a model based on the given config.
 
     Returns:
@@ -89,7 +89,7 @@ def train_or_load(config: Config, reload_model: bool = False) -> ModelData:
             model_config=config.model,
             training_config=config.training,
         )
-    return ModelData(model=model, dataset=dataset, params=params, loss=loss)
+    return ModelContext(model=model, dataset=dataset, params=params, loss=loss)
 
 
 def create_train_state(model, params, optimizer):
@@ -103,7 +103,7 @@ def create_train_state(model, params, optimizer):
 
 @partial(jax.jit, static_argnums=(3,))
 def train_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn):
-    """Single training step (fully JIT compiled)."""
+    """Single training step"""
 
     def loss_fn_wrapper(params):
         outputs = state.apply_fn(params, batch_data)
@@ -117,7 +117,7 @@ def train_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn
 
 @partial(jax.jit, static_argnums=(3,))
 def eval_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn):
-    """Single evaluation step (fully JIT compiled)."""
+    """Single evaluation step"""
     outputs = state.apply_fn(state.params, batch_data)
     loss_value = loss_fn(outputs, batch_targets)
     return loss_value
@@ -180,19 +180,16 @@ def train_model(
 
 @jax.jit
 def predict_jit(apply_fn, params, x):
-    """JIT compiled prediction."""
     return apply_fn(params, x)
 
 
 def predict(model: ApproximationModel, params: Dict, x):
-    """Make predictions."""
     x = jnp.array(x)
     return predict_jit(model.apply, params, x)
 
 
 @jax.jit
 def evaluate_jit(apply_fn, params, data, targets, loss_fn):
-    """JIT compiled evaluation."""
     outputs = apply_fn(params, data)
     return loss_fn(outputs, targets)
 

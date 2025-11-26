@@ -124,7 +124,7 @@ def check_memory():
         training_configs[
             f"random_classification_linear_only_{n_samples}_{n_features}_{n_classes}"
         ] = TrainingConfig(
-            epochs=100,
+            epochs=1000,
             lr=0.001,
             optimizer="sgd",
             batch_size=100,
@@ -135,7 +135,7 @@ def check_memory():
 
         linear_model_config = LinearModelConfig(
             loss="cross_entropy",
-            hidden_dim=[],  # no hidden layers
+            hidden_dim=[10, 3],  # no hidden layers
         )
 
         full_config = Config(
@@ -199,13 +199,44 @@ def check_memory():
             norm_result = kfac_model.compare_hessians(
                 comparison_matrix=comparison_matrix, damping=damping
             )
+            kfac_hessian = kfac_model.compute_hessian(damping=damping)
+
+            # plot eigenvalues for visual comparison
+            import matplotlib.pyplot as plt
+
+            eigs_comp = jnp.linalg.eigvalsh(comparison_matrix)
+            eigs_kfac = jnp.linalg.eigvalsh(kfac_hessian)
+            plt.figure(figsize=(10, 6))
+            plt.plot(
+                eigs_comp,
+                label="True Hessian Eigenvalues",
+                marker="o",
+                linestyle="None",
+                markersize=4,
+            )
+            plt.plot(
+                eigs_kfac,
+                label=f"{kfac_string} Eigenvalues",
+                marker="x",
+                linestyle="None",
+                markersize=4,
+            )
+            plt.yscale("log")
+            plt.xlabel("Index")
+            plt.ylabel("Eigenvalue (log scale)")
+            plt.title(f"Eigenvalue Comparison: True Hessian vs {kfac_string}")
+            plt.legend()
+            plt.grid(True)
+            plt.show()
 
             results_dict[kfac_string] = {}
             results_dict[kfac_string]["l2_norm_difference"] = norm_result
 
-            kfac_model.model_data.params
+            kfac_model.model_context.params
             results_dict[kfac_string]["num_params"] = (
-                kfac_model.model_data.model.get_num_params(kfac_model.model_data.params)
+                kfac_model.model_context.model.get_num_params(
+                    kfac_model.model_context.params
+                )
             )
 
             # del kfac_hessian

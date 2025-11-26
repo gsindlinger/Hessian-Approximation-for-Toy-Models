@@ -10,14 +10,17 @@ from config.config import (
     TrainingConfig,
     UCIDatasetConfig,
 )
+from config.dataset_config import RandomClassificationConfig
 from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
 from hessian_approximations.hessian.exact_hessian_regression import (
     HessianExactRegression,
 )
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.hessian_approximations import HessianApproximation
+from metrics.full_matrix_metrics import FullMatrixMetric
 from metrics.vector_metrics import VectorMetric
-from models.dataclasses.model_data import ModelData
+from models.dataclasses.hessian_compute_context import HessianComputeContext
+from models.dataclasses.model_context import ModelContext
 from models.train import train_or_load
 from models.utils.loss import get_loss_fn
 from utils.utils import sample_gradient_from_output_distribution_batched
@@ -84,6 +87,28 @@ class TestHessianApproximations:
             model_data.dataset,
             model_data.params,
             energy_regression_config,
+        )
+
+    @pytest.fixture
+    def random_classification_config(self) -> Config:
+        """Config for random classification with multiple features and classes."""
+        return Config(
+            dataset=RandomClassificationConfig(
+                n_samples=1000,
+                n_features=20,
+                n_classes=5,
+                n_informative=10,
+                random_state=42,
+                train_test_split=1,
+            ),
+            model=LinearModelConfig(loss="cross_entropy", hidden_dim=[10, 5]),
+            training=TrainingConfig(
+                epochs=200,
+                lr=0.001,
+                batch_size=100,
+                optimizer="sgd",
+                loss="cross_entropy",
+            ),
         )
 
     def compute_hessians(self, model, params, dataset, config):
@@ -167,7 +192,7 @@ class TestHessianApproximations:
         hessian = Hessian(full_config=config)
 
         test_vectors = sample_gradient_from_output_distribution_batched(
-            model_data=ModelData(
+            model_data=ModelContext(
                 model=model,
                 dataset=dataset,
                 params=params,
@@ -201,7 +226,7 @@ class TestHessianApproximations:
         hessian = Hessian(full_config=config)
 
         test_vectors = sample_gradient_from_output_distribution_batched(
-            model_data=ModelData(
+            model_data=ModelContext(
                 model=model,
                 dataset=dataset,
                 params=params,
@@ -221,3 +246,44 @@ class TestHessianApproximations:
             hvp_batched, hvp_full, reduction="mean"
         )
         assert diff < 1e-5, f"Batched HVP differs from full multiplication by {diff}"
+
+    def test_hessian_ihvp_hvp_round_trip_hessian(
+        self, random_classification_config: Config
+    ):
+        """Compute IHPV and HVP with unit vectors and check round-trip accuracy."""
+
+        config = random_classification_config
+        model_data = train_or_load(config)
+        hessian = Hessian(full_config=config)
+
+        n_params = HessianComputeContext.get_data_and_params_for_hessian(
+            model_data=model_data
+        ).num_params
+
+        # Create unit vectors along each parameter axis
+        unit_vectors = jnp.eye(n_params)
+
+        # Compute IHVPs for all unit vectors
+        ihvps = hessian.compute_ihvp(vector=unit_vectors)
+
+        # Compare IHVPs with compute_inverse_hessian_method
+        inverse_hessian = jnp.linalg.inv(hessian.compute_hessian())
+
+        matrix_diff = FullMatrixMetric.MAX_ELEMENTWISE.compute(inverse_hessian, ihvps.T)
+        assert matrix_diff < 1e-6, (
+            f"IHVP differs from direct inverse Hessian by {matrix_diff}"
+        )
+
+        # Compute HVPs for all unit vectors
+        hvps = hessian.compute_hvp(vectors=unit_vectors)
+
+        # Compute HVPs of the IHVP results
+        hessian_full = hessian.compute_hessian()
+
+        matrix_diff_hessian = FullMatrixMetric.MAX_ELEMENTWISE.compute(
+            hessian_full, hvps
+        )
+
+        assert matrix_diff_hessian < 1e-6, (
+            f"HVP differs from direct Hessian by {matrix_diff_hessian}"
+        )

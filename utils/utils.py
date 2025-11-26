@@ -1,3 +1,4 @@
+import json
 import os
 from time import time
 from typing import Dict
@@ -12,7 +13,7 @@ from jaxtyping import Array, Float
 
 from hessian_approximations.kfac.kfac import KFAC
 from models.base import ApproximationModel
-from models.dataclasses.model_data import ModelData
+from models.dataclasses.model_context import ModelContext
 
 
 def plot_training_curve(train_losses, val_losses, title="Training Curve"):
@@ -162,10 +163,6 @@ def print_array_device_info(array, name="Array"):
 
 def save_results(results: dict, filename: str):
     """Save results dictionary to a JSON file."""
-    import json
-
-    # check if directory exists
-    import os
 
     dir_name = os.path.dirname(filename)
     if dir_name and not os.path.exists(dir_name):
@@ -342,7 +339,7 @@ def sample_gradient_from_output_distribution(
 
 
 def sample_gradient_from_output_distribution_batched(
-    model_data: ModelData, n_vectors: int = 5, rng_key: PRNGKey | None = None
+    model_data: ModelContext, n_vectors: int = 5, rng_key: PRNGKey | None = None
 ):
     """Utility: Generate batched test vectors for IHVP tests."""
     loss_fn = model_data.loss

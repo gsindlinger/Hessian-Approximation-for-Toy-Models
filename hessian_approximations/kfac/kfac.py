@@ -178,7 +178,7 @@ class KFAC(HessianApproximation):
         metric: Callable[[jnp.ndarray, jnp.ndarray], float],
         method: Literal["normal", "inverse"] = "normal",
     ) -> float:
-        """JIT-compiled helper to compute L2 norm difference."""
+        """Compare (E)KFAC Hessian or its inverse to a given comparison matrix and prespecified metric."""
         kfac_hessian = KFAC._compute_hessian_or_inverse_hessian(
             activations_eigenvectors,
             gradients_eigenvectors,
@@ -235,7 +235,7 @@ class KFAC(HessianApproximation):
         gradients_eigenvectors = []
         Lambdas = []
 
-        for layer_name in self.model_data.params["params"].keys():
+        for layer_name in self.model_context.params["params"].keys():
             activations_eigenvectors.append(
                 self.kfac_data.eigenvectors.activations[layer_name]
             )
@@ -263,7 +263,7 @@ class KFAC(HessianApproximation):
     @staticmethod
     @jax.jit
     def _compute_layer_hessian(eigenvectors_A, eigenvectors_G, Lambda):
-        """JIT-compiled helper to compute layer Hessian with eigenvalue corrections."""
+        """Compute single layer hessian by list of eigenvectors and eigenvalues / corrections."""
         return jnp.einsum(
             "ij,j,jk->ik",
             jnp.kron(eigenvectors_A, eigenvectors_G),
@@ -281,7 +281,7 @@ class KFAC(HessianApproximation):
         method: Literal["normal", "inverse"],
     ):
         """
-        JIT-compiled method to compute layer Hessian or its inverse for KFAC or EKFAC
+        Compute layer Hessian or its inverse for KFAC or EKFAC
         based on a layer-based lists of the required components.
 
         Depending on the selected method:
@@ -336,7 +336,7 @@ class KFAC(HessianApproximation):
         self.get_ekfac_components()
 
         # Collect all layer data upfront
-        layer_names = list(self.model_data.params["params"].keys())
+        layer_names = list(self.model_context.params["params"].keys())
 
         Q_activations_list = []
         Q_gradients_list = []
@@ -345,14 +345,14 @@ class KFAC(HessianApproximation):
 
         offset = 0
         for layer_name in layer_names:
-            Lambda: Float[Array, "I O"] = self.kfac_data.eigenvalue_corrections[
-                layer_name
-            ]
-
-            # If running KFAC-only, use eigenvalues of covariances instead
-            if not self.kfac_config.run_config.use_eigenvalue_correction:
-                Lambda = self.compute_eigenvalue_lambda_kfac(layer_name)
-
+            if self.kfac_config.run_config.use_eigenvalue_correction:
+                Lambda: Float[Array, "I O"] = self.kfac_data.eigenvalue_corrections[
+                    layer_name
+                ]
+            else:
+                Lambda: Float[Array, "I O"] = self.compute_eigenvalue_lambda_kfac(
+                    layer_name
+                )
             input_dim, output_dim = Lambda.shape
             size = input_dim * output_dim
 
@@ -373,7 +373,7 @@ class KFAC(HessianApproximation):
             v_layers.append(v_layer)
             offset += size
 
-        # Process all layers at once with JIT
+        # Process all layers at once
         vp_pieces = self.compute_ihvp_or_hvp_all_layers(
             v_layers=v_layers,
             Q_activations=Q_activations_list,
@@ -395,10 +395,9 @@ class KFAC(HessianApproximation):
         Lambdas: list[Float[Array, "I O"]],
         damping: Float[Array, ""],
         method: Literal["ihvp", "hvp"],
-    ) -> list[Float[Array, "*batch_size size"]]:
+    ) -> list[Float[Array, "*batch_size num_params"]]:
         """
-        Compute EKFAC-based (inverse) Hessian-vector product for all layers in one JIT call.
-
+        Compute EKFAC-based (inverse) Hessian-vector product for all layers in one call.
         Returns a list of flattened vector products, one per layer.
         """
         vp_pieces = []
@@ -444,6 +443,8 @@ class KFAC(HessianApproximation):
         """
 
         # If the components are already there we don't need to recompute them
+        # Note: There is a custom bool implementation in KFACData and KFACDataMeans
+        # that checks for the presence of all required components.
         if (
             self.kfac_data
             and self.kfac_data_means
@@ -459,13 +460,15 @@ class KFAC(HessianApproximation):
             self.kfac_data, self.kfac_data_means = self.storage.load_kfac_data()
         else:
             print("Computing EKFAC components from scratch.")
-            training_data, training_targets = self.model_data.dataset.get_train_data()
+            training_data, training_targets = (
+                self.model_context.dataset.get_train_data()
+            )
             self.compute_from_scratch(
-                self.model_data.model,
-                self.model_data.params,
+                self.model_context.model,
+                self.model_context.params,
                 training_data,
                 training_targets,
-                self.model_data.loss,
+                self.model_context.loss,
             )
 
     def compute_from_scratch(
@@ -852,7 +855,7 @@ class KFAC(HessianApproximation):
         activations: Float[Array, "n_batch I"],
         gradients: Float[Array, "n_batch O"],
     ) -> Float[Array, "I O"]:
-        """JIT-compiled eigenvalue correction computation."""
+        """Eigenvalue correction computation."""
         g_tilde = jnp.einsum("op, np -> no", Q_G.T, gradients)
         a_tilde = jnp.einsum("ij, nj -> ni", Q_A.T, activations)
         outer = jnp.einsum("ni, no -> nio", a_tilde, g_tilde)
@@ -870,8 +873,6 @@ class KFAC(HessianApproximation):
     ) -> Float[Array, "*batch_size I O"]:
         """
         Compute the EKFAC-based (inverse) Hessian-vector product for a single layer.
-
-
         """
 
         # Transform to eigenbasis

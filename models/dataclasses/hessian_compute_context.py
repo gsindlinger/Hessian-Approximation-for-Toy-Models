@@ -6,11 +6,11 @@ import flax.struct as struct
 from jax import flatten_util
 from jaxtyping import Array, Float
 
-from models.dataclasses.model_data import ModelData
+from models.dataclasses.model_context import ModelContext
 
 
 @struct.dataclass
-class HessianJITData:
+class HessianComputeContext:
     """Container for the model, dataset, parameters, and loss function."""
 
     training_data: Float[Array, "..."]
@@ -22,13 +22,13 @@ class HessianJITData:
 
     @staticmethod
     def get_data_and_params_for_hessian(
-        model_data: ModelData,
-    ) -> HessianJITData:
+        model_data: ModelContext,
+    ) -> HessianComputeContext:
         # Important: Flattening structure for linear modules with bias is the following: b, w
         # So for output dim 2, input dim 3, the order is: b1, b2, w1
         training_data, training_targets = model_data.dataset.get_train_data()
         params_flat, unravel_fn = flatten_util.ravel_pytree(model_data.params)
-        return HessianJITData(
+        return HessianComputeContext(
             training_data=training_data,
             training_targets=training_targets,
             params_flat=params_flat,

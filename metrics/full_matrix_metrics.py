@@ -33,12 +33,8 @@ class FullMatrixMetric(Enum):
     TRACE_DISTANCE = "trace_distance"  # Difference in traces (divided by size)
     CONDITION_NUMBER_LOG_RATIO = "condition_number_log_ratio"  # Invertibility quality
 
-    # ----------------------------------------------------------
-    #      NEW JITTABLE VERSION WITH PURE JAX FUNCTIONS
-    # ----------------------------------------------------------
-
     def compute_fn(self) -> Callable:
-        """Return a jittable pure function for this metric."""
+        """Return function / metric for the corresponding metric."""
 
         # ------------------------------------------------------
         # Element-wise norms
@@ -138,7 +134,6 @@ class FullMatrixMetric(Enum):
 
         return jax.jit(table[self])
 
-    # Convenience wrapper, still works, but outside JIT
     def compute(
         self, matrix_1: Float[Array, "..."], matrix_2: Float[Array, "..."]
     ) -> Float:
@@ -173,7 +168,7 @@ def compare_matrices(
     results = {}
 
     for metric in metrics:
-        fn = metric.compute_fn()  # JIT-friendly dispatch
+        fn = metric.compute_fn()
         value = fn(matrix_1, matrix_2)
         results[metric.value] = float(value)
 

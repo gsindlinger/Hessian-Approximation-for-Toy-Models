@@ -52,7 +52,6 @@ def compare_approximation_with_true_hessian(
 
         approximation_matrix = approx_method.compute_hessian()
         end_time_approx = time.time()
-        end_time_approx = time.time()
         approximation_matrices[approx_name] = approximation_matrix
 
         results_dict[approx_name] = compare_matrices(
@@ -62,8 +61,8 @@ def compare_approximation_with_true_hessian(
         )
         results_dict[approx_name]["time"] = end_time_approx - start_time_approx
         results_dict[approx_name]["num_params"] = (
-            approx_method.model_data.model.get_num_params(
-                approx_method.model_data.params
+            approx_method.model_context.model.get_num_params(
+                approx_method.model_context.params
             )
         )
 
@@ -270,20 +269,6 @@ target_param_sizes = jnp.linspace(
     min_params, max_params, num=num_reps, dtype=int
 ).tolist()
 n_classes_list = [10] * num_reps  # keep n_classes constant for simplicity
-
-
-def choose_hidden_dims(target_params: int):
-    """
-    Choose hidden layer sizes dynamically so that total params ≈ target_params.
-    Formula for params: n_features*h1 + h1*h2 + ... + hL*n_classes
-    """
-    # simple heuristic: one or two hidden layers that fit target budget
-    if target_params <= 10000:
-        return [20]
-    elif target_params <= 15000:
-        return [30]
-    else:
-        return [50]
 
 
 dataset_nums = []

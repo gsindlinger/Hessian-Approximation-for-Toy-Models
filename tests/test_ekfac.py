@@ -405,7 +405,7 @@ class TestEKFAC:
             ),
         )
         test_vectors = sample_gradient_from_output_distribution_batched(
-            ekfac_model.model_data
+            ekfac_model.model_context
         )
         ihvp_batched = ekfac_model.compute_ihvp(
             vector=test_vectors, damping=ekfac_model.damping()
@@ -434,7 +434,7 @@ class TestEKFAC:
         )
 
         test_vectors = sample_gradient_from_output_distribution_batched(
-            ekfac_model.model_data
+            ekfac_model.model_context
         )
 
         ihvp_batched_ekfac = ekfac_model.compute_ihvp(
@@ -470,7 +470,7 @@ class TestEKFAC:
         )
 
         test_vectors = sample_gradient_from_output_distribution_batched(
-            ekfac_model.model_data
+            ekfac_model.model_context
         )
 
         H = ekfac_model.compute_hessian(damping=ekfac_model.damping())

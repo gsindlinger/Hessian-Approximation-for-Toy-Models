@@ -36,20 +36,20 @@ class GaussNewton(HessianApproximation):
         """
         Compute the Generalized Gauss-Newton approximation of the Hessian.
         """
-        training_data, training_targets = self.model_data.dataset.get_train_data()
+        training_data, training_targets = self.model_context.dataset.get_train_data()
 
-        if get_loss_name(self.model_data.loss) == "cross_entropy":
+        if get_loss_name(self.model_context.loss) == "cross_entropy":
             return self._compute_crossentropy_gnh(
-                self.model_data.model,
-                self.model_data.params,
+                self.model_context.model,
+                self.model_context.params,
                 training_data,
                 training_targets,
             )
         else:
             # Default to MSE/regression
             return self._compute_mse_gnh(
-                self.model_data.model,
-                self.model_data.params,
+                self.model_context.model,
+                self.model_context.params,
                 training_data,
                 training_targets,
             )
@@ -73,20 +73,20 @@ class GaussNewton(HessianApproximation):
         Returns:
             GNVP result as a 1D array.
         """
-        training_data, training_targets = self.model_data.dataset.get_train_data()
+        training_data, training_targets = self.model_context.dataset.get_train_data()
 
-        if get_loss_name(self.model_data.loss) == "cross_entropy":
+        if get_loss_name(self.model_context.loss) == "cross_entropy":
             return self._compute_crossentropy_gnvp(
-                self.model_data.model,
-                self.model_data.params,
+                self.model_context.model,
+                self.model_context.params,
                 training_data,
                 training_targets,
                 vector,
             )
         else:
             return self._compute_mse_gnvp(
-                self.model_data.model,
-                self.model_data.params,
+                self.model_context.model,
+                self.model_context.params,
                 training_data,
                 training_targets,
                 vector,
