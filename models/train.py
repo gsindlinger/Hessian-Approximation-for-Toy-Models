@@ -38,7 +38,9 @@ def create_model(config: Config, input_dim: int, output_dim: int) -> Approximati
     model_kwargs = vars(config.model).copy()
     model_kwargs.pop("name", None)
     model_kwargs.pop("loss", None)
-    model_kwargs.update({"input_dim": input_dim, "output_dim": output_dim})
+    model_kwargs.update(
+        {"input_dim": input_dim, "output_dim": output_dim, "seed": config.seed}
+    )
 
     assert issubclass(model_cls, ApproximationModel), (
         "Model must inherit from ApproximationModel"
@@ -50,7 +52,7 @@ def create_model(config: Config, input_dim: int, output_dim: int) -> Approximati
 def create_dataset_and_model(
     config: Config,
 ) -> Tuple[ApproximationModel, AbstractDataset]:
-    dataset = create_dataset(config.dataset)
+    dataset = create_dataset(config.dataset, seed=config.seed)
     model = create_model(
         config, input_dim=dataset.input_dim(), output_dim=dataset.output_dim()
     )
@@ -71,11 +73,13 @@ def train_or_load(config: Config, reload_model: bool = False) -> ModelContext:
         dataset_config=config.dataset,
         model_config=config.model,
         training_config=config.training,
+        seed=config.seed,
     ):
         params = load_model_checkpoint(
             dataset_config=config.dataset,
             model_config=config.model,
             training_config=config.training,
+            seed=config.seed,
         )
     else:
         model, params = train_model(
@@ -88,6 +92,7 @@ def train_or_load(config: Config, reload_model: bool = False) -> ModelContext:
             dataset_config=config.dataset,
             model_config=config.model,
             training_config=config.training,
+            seed=config.seed,
         )
     return ModelContext(model=model, dataset=dataset, params=params, loss=loss)
 
@@ -154,7 +159,7 @@ def train_model(
 
     # Create training state
     params = initialize_model(
-        model, input_shape=model.input_dim, key=jax.random.PRNGKey(0)
+        model, input_shape=model.input_dim, key=jax.random.PRNGKey(model.seed)
     )
     state = create_train_state(model, params, optimizer)
 
@@ -213,7 +218,7 @@ def evaluate(
 def initialize_model(model: ApproximationModel, input_shape: int, key=None):
     """Initialize model parameters."""
     if key is None:
-        key = jax.random.PRNGKey(0)
+        key = jax.random.PRNGKey(model.seed)
 
     # Create dummy input for initialization
     dummy_input = jnp.ones((1, input_shape), dtype=jnp.float32)

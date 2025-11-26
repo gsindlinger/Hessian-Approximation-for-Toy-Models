@@ -19,7 +19,6 @@ def run_simple_run():
             n_features=50,
             n_informative=15,
             n_classes=10,
-            random_state=42,
             train_test_split=1,
         ),
         model=LinearModelConfig(loss="cross_entropy", hidden_dim=[10]),
@@ -74,13 +73,13 @@ def run_simple_run():
     )
 
     kfac_ihvp = kfac_model.compute_ihvp(
-        vector=test_vectors_1, damping=kfac_model.damping()
+        vectors=test_vectors_1, damping=kfac_model.damping()
     )
     ekfac_ihvp = ekfac_model.compute_ihvp(
-        vector=test_vectors_1, damping=kfac_model.damping()
+        vectors=test_vectors_1, damping=kfac_model.damping()
     )
     true_ihvp = Hessian(full_config=config).compute_ihvp(
-        vector=test_vectors_1, damping=kfac_model.damping()
+        vectors=test_vectors_1, damping=kfac_model.damping()
     )
 
     metric_ihvp = VectorMetric.RELATIVE_ERROR

@@ -118,7 +118,6 @@ def check_memory():
             n_features=n_features,
             n_classes=n_classes,
             n_informative=n_informative,
-            random_state=42,
             train_test_split=1,
         )
         training_configs[

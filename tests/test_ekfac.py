@@ -42,7 +42,6 @@ class TestEKFAC:
                     n_features=10,
                     n_informative=5,
                     n_classes=2,
-                    random_state=42,
                     train_test_split=1,
                 ),
                 model=LinearModelConfig(loss="cross_entropy", hidden_dim=[]),
@@ -54,6 +53,7 @@ class TestEKFAC:
                     loss="cross_entropy",
                     save_checkpoint=True,
                 ),
+                seed=123,
             )
         elif request.param == "multi_layer":
             config = Config(
@@ -62,7 +62,6 @@ class TestEKFAC:
                     n_features=10,
                     n_informative=5,
                     n_classes=2,
-                    random_state=42,
                     train_test_split=1,
                 ),
                 model=LinearModelConfig(loss="cross_entropy", hidden_dim=[5]),
@@ -74,6 +73,7 @@ class TestEKFAC:
                     loss="cross_entropy",
                     save_checkpoint=True,
                 ),
+                seed=123,
             )
 
         yield config
@@ -85,8 +85,8 @@ class TestEKFAC:
         ihvp_full = []
         for i in range(dim):
             unit_vec = jnp.zeros(dim).at[i].set(1.0)
-            hvp = model_obj.compute_hvp(vector=unit_vec, damping=model_obj.damping())
-            ihvp = model_obj.compute_ihvp(vector=unit_vec, damping=model_obj.damping())
+            hvp = model_obj.compute_hvp(vectors=unit_vec, damping=model_obj.damping())
+            ihvp = model_obj.compute_ihvp(vectors=unit_vec, damping=model_obj.damping())
             hvp_full.append(hvp)
             ihvp_full.append(ihvp)
         return jnp.column_stack(hvp_full), jnp.column_stack(ihvp_full)
@@ -129,6 +129,7 @@ class TestEKFAC:
         # Collect EKFAC statistics
         # Need to reload data, otherwise collector data is empty
         ekfac_build_config = KFACBuildConfig(
+            use_pseudo_targets=False,
             recalc_ekfac_components=True,
             collector_batch_size=model_data.dataset.get_train_data()[0].shape[0],
         )
@@ -220,7 +221,9 @@ class TestEKFAC:
 
         ekfac_batched_config = KFACBuildConfig(
             collector_batch_size=100,  # Smaller batches
+            use_pseudo_targets=False,
         )
+
         ekfac_batched_model = KFAC.setup_with_run_and_build_config(
             full_config=config,
             run_config=ekfac_run_config,
@@ -408,7 +411,7 @@ class TestEKFAC:
             ekfac_model.model_context
         )
         ihvp_batched = ekfac_model.compute_ihvp(
-            vector=test_vectors, damping=ekfac_model.damping()
+            vectors=test_vectors, damping=ekfac_model.damping()
         )
 
         assert ihvp_batched.shape == test_vectors.shape, (
@@ -438,18 +441,18 @@ class TestEKFAC:
         )
 
         ihvp_batched_ekfac = ekfac_model.compute_ihvp(
-            vector=test_vectors, damping=ekfac_model.damping()
+            vectors=test_vectors, damping=ekfac_model.damping()
         )
         ihvp_batched_kfac = kfac_model.compute_ihvp(
-            vector=test_vectors, damping=kfac_model.damping()
+            vectors=test_vectors, damping=kfac_model.damping()
         )
 
         for i in range(test_vectors.shape[0]):
             ihvp_single_ekfac = ekfac_model.compute_ihvp(
-                vector=test_vectors[i], damping=ekfac_model.damping()
+                vectors=test_vectors[i], damping=ekfac_model.damping()
             )
             ihvp_single_kfac = kfac_model.compute_ihvp(
-                vector=test_vectors[i], damping=kfac_model.damping()
+                vectors=test_vectors[i], damping=kfac_model.damping()
             )
 
             assert jnp.allclose(
@@ -475,7 +478,7 @@ class TestEKFAC:
 
         H = ekfac_model.compute_hessian(damping=ekfac_model.damping())
         ihvp_batched = ekfac_model.compute_ihvp(
-            vector=test_vectors, damping=ekfac_model.damping()
+            vectors=test_vectors, damping=ekfac_model.damping()
         )
         hvp_roundtrip = H @ ihvp_batched.T  # Apply H to each vector
 

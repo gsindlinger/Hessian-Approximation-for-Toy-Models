@@ -10,6 +10,7 @@ class ApproximationModel(nn.Module):
     input_dim: int
     output_dim: int
     use_bias: bool = False
+    seed: int = 42
 
     @staticmethod
     def get_activation(act_str: str):

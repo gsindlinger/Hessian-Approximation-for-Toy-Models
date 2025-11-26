@@ -15,8 +15,6 @@ from config.hessian_approximation_config import HessianApproximationConfig, Hess
 from config.model_config import LinearModelConfig, MLPModelConfig, ModelConfig
 from config.training_config import TrainingConfig
 
-# jax.config.update("jax_enable_x64", True)
-
 
 @dataclass
 class Config:
@@ -27,6 +25,7 @@ class Config:
     training: TrainingConfig
     hessian_approximation: HessianApproximationConfig | None = None
     device: Literal["auto", "cpu", "gpu", "tpu"] = "auto"
+    seed: int = 42
 
     @staticmethod
     def parse_args() -> Config:
@@ -78,6 +77,7 @@ class Config:
         dataset_config: DatasetConfig,
         model_config: ModelConfig,
         training_config: TrainingConfig,
+        seed: int,
         hessian_approx_config: HessianApproximationConfig | None = None,
         length: int = 10,
     ) -> str:
@@ -93,10 +93,12 @@ class Config:
         if hessian_approx_config is not None:
             hessian_json = json.dumps(hessian_approx_config.to_dict(), sort_keys=True)
             # Combine all JSON strings including Hessian config
-            combined = dataset_json + model_json + training_json + hessian_json
+            combined = (
+                dataset_json + model_json + training_json + hessian_json + str(seed)
+            )
         else:
             # Combine all JSON strings
-            combined = dataset_json + model_json + training_json
+            combined = dataset_json + model_json + training_json + str(seed)
 
         # Generate SHA256 hash
         hash_object = hashlib.sha256(combined.encode())
@@ -115,7 +117,6 @@ CONFIGS: Dict[str, Config] = {
             n_features=20,
             n_targets=1,
             noise=20,
-            random_state=42,
         ),
         model=LinearModelConfig(loss="mse", hidden_dim=[]),
         training=TrainingConfig(
@@ -133,7 +134,6 @@ CONFIGS: Dict[str, Config] = {
             n_features=1,
             n_targets=1,
             noise=30,
-            random_state=42,
             train_test_split=1,
         ),
         model=LinearModelConfig(loss="mse"),
@@ -151,7 +151,6 @@ CONFIGS: Dict[str, Config] = {
             n_features=10,
             n_informative=5,
             n_classes=2,
-            random_state=42,
             train_test_split=1,
         ),
         model=LinearModelConfig(loss="cross_entropy", hidden_dim=[]),
@@ -169,7 +168,6 @@ CONFIGS: Dict[str, Config] = {
             n_features=200,
             n_informative=50,
             n_classes=10,
-            random_state=42,
             train_test_split=1,
         ),
         model=MLPModelConfig(loss="cross_entropy", hidden_dim=[100]),

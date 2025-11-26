@@ -37,7 +37,7 @@ class HessianApproximation(ABC):
     @abstractmethod
     def compute_ihvp(
         self,
-        vector: jnp.ndarray,
+        vectors: jnp.ndarray,
         damping: Optional[Float] = None,
     ) -> jnp.ndarray:
         """Compute Inverse Hessian-vector product."""

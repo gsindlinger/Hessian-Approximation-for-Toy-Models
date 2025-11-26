@@ -128,7 +128,6 @@ def check_memory():
             n_features=n_features,
             n_classes=n_classes,
             n_informative=n_informative,
-            random_state=42,
             train_test_split=1,
         )
         training_configs[
@@ -206,7 +205,7 @@ def check_memory():
             print_device_memory_stats(f"After {kfac_string} Setup")
 
             damping = kfac_model.damping()
-            kfac_result = kfac_model.compute_ihvp(vector=test_vectors, damping=damping)
+            kfac_result = kfac_model.compute_ihvp(vectors=test_vectors, damping=damping)
 
             print_device_memory_stats(f"After {kfac_string} IHVP Computation")
 
