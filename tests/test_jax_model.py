@@ -28,7 +28,6 @@ class TestLinearRegression:
                     n_features=1,
                     n_targets=1,
                     noise=10,
-                    random_state=42,
                     train_test_split=1,
                 ),
                 model=ModelConfig(name="linear", loss="mse"),

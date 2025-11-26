@@ -59,13 +59,13 @@ class VectorMetric(Enum):
             e2 = jnp.sum(v2**2)
             return jnp.abs(e1 - e2) / (e1 + 1e-10)
 
-        # ⟨x, v_2⟩ / ⟨x, v_1⟩
+        # |⟨x, v_2⟩ / ⟨x, v_1⟩|
         def inner_product_ratio(v1, v2, x):
             if x is None:
                 raise ValueError("inner_product_ratio requires auxiliary vector x")
             ip1 = jnp.dot(x, v1)
             ip2 = jnp.dot(x, v2)
-            return (ip2 + 1e-10) / (ip1 + 1e-10)
+            return jnp.abs((ip2 + 1e-10) / (ip1 + 1e-10))
 
         # ------------------------------------------------------
         # Dispatch table (Enum → pure JAX function)
@@ -136,3 +136,8 @@ class VectorMetric(Enum):
             return jnp.sum(values)
         else:
             raise ValueError(f"Unknown reduction: {reduction}")
+
+    @staticmethod
+    def all_metrics() -> list["VectorMetric"]:
+        """Return a list of all available vector metrics."""
+        return list(VectorMetric)

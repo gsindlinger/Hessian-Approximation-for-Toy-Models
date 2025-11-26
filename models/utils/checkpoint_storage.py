@@ -21,12 +21,17 @@ def save_model_checkpoint(
     dataset_config: DatasetConfig,
     model_config: ModelConfig,
     training_config: TrainingConfig,
+    seed: int,
     base_path: str = "data/artifacts/model_checkpoints",
 ) -> None:
     """Save model parameters using orbax for better compatibility."""
 
     model_checkpoint_dir = generate_model_checkpoint_path(
-        dataset_config, model_config, training_config, base_path
+        dataset_config=dataset_config,
+        model_config=model_config,
+        training_config=training_config,
+        seed=seed,
+        base_path=base_path,
     )
 
     # write model parameters and joined configs (one single json)
@@ -60,12 +65,16 @@ def generate_model_checkpoint_path(
     dataset_config: DatasetConfig,
     model_config: ModelConfig,
     training_config: TrainingConfig,
+    seed: int,
     base_path: str = "data/artifacts/model_checkpoints",
 ) -> str:
     dataset_name = dataset_config.name
     model_name = model_config.name
     hashed_model_dataset_training = Config.model_training_dataset_hash(
-        dataset_config, model_config, training_config
+        dataset_config=dataset_config,
+        model_config=model_config,
+        seed=seed,
+        training_config=training_config,
     )
 
     model_checkpoint_dir = os.path.join(
@@ -79,10 +88,14 @@ def check_saved_model(
     dataset_config: DatasetConfig,
     model_config: ModelConfig,
     training_config: TrainingConfig,
+    seed: int,
 ) -> bool:
     """Check if a saved model exists and matches the given configs."""
     model_checkpoint_dir = generate_model_checkpoint_path(
-        dataset_config, model_config, training_config
+        dataset_config=dataset_config,
+        model_config=model_config,
+        training_config=training_config,
+        seed=seed,
     )
 
     # Check for both msgpack and pickle files
@@ -106,10 +119,14 @@ def load_model_checkpoint(
     dataset_config: DatasetConfig,
     model_config: ModelConfig,
     training_config: TrainingConfig,
+    seed: int,
 ) -> Dict:
     """Load model parameters from checkpoint. Assumes the checkpoint exists."""
     model_checkpoint_dir = generate_model_checkpoint_path(
-        dataset_config, model_config, training_config
+        dataset_config=dataset_config,
+        model_config=model_config,
+        training_config=training_config,
+        seed=seed,
     )
 
     msgpack_path = f"{model_checkpoint_dir}/{CHECKPOINT_STR}.msgpack"

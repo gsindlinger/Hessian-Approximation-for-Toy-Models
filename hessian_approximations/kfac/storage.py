@@ -47,6 +47,7 @@ class KFACStorage:
         model_config = self.config.model
         training_config = self.config.training
         kfac_config = self.config.hessian_approximation
+        seed = self.config.seed
 
         assert isinstance(kfac_config, KFACConfig), (
             "KFACConfig expected for KFACStorage"
@@ -57,7 +58,11 @@ class KFACStorage:
         model_name = model_config.name
         use_pseudo_targets = kfac_config.build_config.use_pseudo_targets
         hashed_model_dataset_training = Config.model_training_dataset_hash(
-            dataset_config, model_config, training_config, kfac_config
+            dataset_config=dataset_config,
+            model_config=model_config,
+            training_config=training_config,
+            seed=seed,
+            hessian_approx_config=kfac_config,
         )
 
         model_checkpoint_dir = Path(
@@ -66,6 +71,7 @@ class KFACStorage:
             model_name
             + "_"
             + f"psT_{'Y' if use_pseudo_targets else 'N'}_"
+            + f"seed_{seed}_"
             + hashed_model_dataset_training,
         )
         model_checkpoint_dir.mkdir(parents=True, exist_ok=True)

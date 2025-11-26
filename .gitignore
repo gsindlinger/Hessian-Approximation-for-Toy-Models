@@ -13,6 +13,7 @@ data/**/*.csv
 data/**/*.tsv
 data/**/*.pdf
 data/**/*.png
+data/**/*.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -45,7 +45,6 @@ class TestKFACStorage:
                 n_features=5,
                 n_informative=3,
                 n_classes=2,
-                random_state=42,
                 train_test_split=1.0,
             ),
             model=LinearModelConfig(loss="cross_entropy", hidden_dim=[5]),

@@ -30,7 +30,6 @@ class TestLiSSA:
                 n_features=5,
                 n_informative=3,
                 n_classes=2,
-                random_state=42,
                 train_test_split=1.0,
             ),
             model=LinearModelConfig(loss="cross_entropy", hidden_dim=[5]),
@@ -53,7 +52,6 @@ class TestLiSSA:
                 n_features=100,
                 n_targets=10,
                 noise=0.1,
-                random_state=42,
                 train_test_split=1,
             ),
             model=LinearModelConfig(loss="mse", hidden_dim=[]),
@@ -81,7 +79,6 @@ class TestLiSSA:
             alpha=0.01,
             damping=0.001,
             batch_size=128,
-            seed=42,
             convergence_tol=1e-3,
         )
         config = copy.deepcopy(config)
@@ -103,7 +100,7 @@ class TestLiSSA:
         )
 
         ihvp_exact = hessian_method.compute_ihvp(
-            vector=v,
+            vectors=v,
         )
 
         # Compare numerically
@@ -134,7 +131,6 @@ class TestLiSSA:
                 alpha=0.01,
                 damping=0.001,
                 batch_size=128,
-                seed=seed,
                 convergence_tol=1e-3,
             )
             config.hessian_approximation = lissa_config

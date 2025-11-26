@@ -14,7 +14,7 @@ from config.hessian_approximation_config import (
     KFACBuildConfig,
     KFACRunConfig,
 )
-from config.model_config import LinearModelConfig
+from config.model_config import LinearModelConfig, MLPModelConfig
 from config.training_config import TrainingConfig
 from data.data import AbstractDataset
 from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
@@ -42,7 +42,6 @@ class TestEKFAC:
                     n_features=10,
                     n_informative=5,
                     n_classes=2,
-                    random_state=42,
                     train_test_split=1,
                 ),
                 model=LinearModelConfig(loss="cross_entropy", hidden_dim=[]),
@@ -54,6 +53,7 @@ class TestEKFAC:
                     loss="cross_entropy",
                     save_checkpoint=True,
                 ),
+                seed=123,
             )
         elif request.param == "multi_layer":
             config = Config(
@@ -62,7 +62,6 @@ class TestEKFAC:
                     n_features=10,
                     n_informative=5,
                     n_classes=2,
-                    random_state=42,
                     train_test_split=1,
                 ),
                 model=LinearModelConfig(loss="cross_entropy", hidden_dim=[5]),
@@ -74,6 +73,7 @@ class TestEKFAC:
                     loss="cross_entropy",
                     save_checkpoint=True,
                 ),
+                seed=123,
             )
 
         yield config
@@ -85,8 +85,8 @@ class TestEKFAC:
         ihvp_full = []
         for i in range(dim):
             unit_vec = jnp.zeros(dim).at[i].set(1.0)
-            hvp = model_obj.compute_hvp(vector=unit_vec, damping=model_obj.damping())
-            ihvp = model_obj.compute_ihvp(vector=unit_vec, damping=model_obj.damping())
+            hvp = model_obj.compute_hvp(vectors=unit_vec, damping=model_obj.damping())
+            ihvp = model_obj.compute_ihvp(vectors=unit_vec, damping=model_obj.damping())
             hvp_full.append(hvp)
             ihvp_full.append(ihvp)
         return jnp.column_stack(hvp_full), jnp.column_stack(ihvp_full)
@@ -129,6 +129,7 @@ class TestEKFAC:
         # Collect EKFAC statistics
         # Need to reload data, otherwise collector data is empty
         ekfac_build_config = KFACBuildConfig(
+            use_pseudo_targets=False,
             recalc_ekfac_components=True,
             collector_batch_size=model_data.dataset.get_train_data()[0].shape[0],
         )
@@ -201,6 +202,78 @@ class TestEKFAC:
             "Hessian, GNH, and KFAC Hessians should have the same shape."
         )
 
+    def test_ekfac_kfac_gnh(self):
+        """Test that E-KFAC Hessian is close to KFAC Hessian without eigenvalue correction."""
+        config = Config(
+            dataset=RandomClassificationConfig(
+                n_samples=5000,
+                n_features=50,
+                n_informative=5,
+                n_classes=2,
+                train_test_split=1,
+            ),
+            model=MLPModelConfig(loss="cross_entropy", hidden_dim=[20, 10]),
+            training=TrainingConfig(
+                epochs=100,
+                batch_size=100,
+                lr=0.001,
+                optimizer="sgd",
+                loss="cross_entropy",
+                save_checkpoint=True,
+            ),
+            seed=123,
+        )
+        ekfac_config = KFACRunConfig(
+            use_eigenvalue_correction=True,
+        )
+        ekfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config, run_config=ekfac_config
+        )
+        ekfac_hessian = ekfac_model.compute_hessian()
+
+        kfac_config = KFACRunConfig(
+            use_eigenvalue_correction=False,
+        )
+        kfac_model = KFAC.setup_with_run_and_build_config(
+            full_config=config, run_config=kfac_config
+        )
+        kfac_hessian = kfac_model.compute_hessian()
+
+        gnh = GaussNewton(full_config=config).compute_hessian()
+
+        # plot 20 largest eigenvalues of each method for visual comparison
+        ekfac_eigenvalues = jnp.linalg.eigvalsh(ekfac_hessian)
+        kfac_eigenvalues = jnp.linalg.eigvalsh(kfac_hessian)
+        gnh_eigenvalues = jnp.linalg.eigvalsh(gnh)
+
+        print("Top 20 E-KFAC eigenvalues:", ekfac_eigenvalues[-20:])
+        print("Top 20 KFAC eigenvalues:", kfac_eigenvalues[-20:])
+        print("Top 20 GNH eigenvalues:", gnh_eigenvalues[-20:])
+
+        # plot them
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(sorted(ekfac_eigenvalues)[-20:], label="E-KFAC", marker="o")
+        plt.plot(sorted(kfac_eigenvalues)[-20:], label="KFAC", marker="x")
+        plt.plot(sorted(gnh_eigenvalues)[-20:], label="GNH", marker="s")
+        plt.xlabel("Index of Largest Eigenvalues")
+        plt.ylabel("Eigenvalue")
+        plt.title("Top 20 Eigenvalues Comparison")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+        # compute and print differences
+        print(
+            "E-KFAC vs GNH Hessian difference:",
+            jnp.linalg.norm(ekfac_hessian - gnh),
+        )
+        print(
+            "KFAC vs GNH Hessian difference:",
+            jnp.linalg.norm(kfac_hessian - gnh),
+        )
+
     def test_ekfac_batched_processing_is_close_to_full_data(self, config: Config):
         """Test that E-KFAC with batch processing yields the same result as without batching on a single run."""
 
@@ -220,7 +293,9 @@ class TestEKFAC:
 
         ekfac_batched_config = KFACBuildConfig(
             collector_batch_size=100,  # Smaller batches
+            use_pseudo_targets=False,
         )
+
         ekfac_batched_model = KFAC.setup_with_run_and_build_config(
             full_config=config,
             run_config=ekfac_run_config,
@@ -408,7 +483,7 @@ class TestEKFAC:
             ekfac_model.model_context
         )
         ihvp_batched = ekfac_model.compute_ihvp(
-            vector=test_vectors, damping=ekfac_model.damping()
+            vectors=test_vectors, damping=ekfac_model.damping()
         )
 
         assert ihvp_batched.shape == test_vectors.shape, (
@@ -438,18 +513,18 @@ class TestEKFAC:
         )
 
         ihvp_batched_ekfac = ekfac_model.compute_ihvp(
-            vector=test_vectors, damping=ekfac_model.damping()
+            vectors=test_vectors, damping=ekfac_model.damping()
         )
         ihvp_batched_kfac = kfac_model.compute_ihvp(
-            vector=test_vectors, damping=kfac_model.damping()
+            vectors=test_vectors, damping=kfac_model.damping()
         )
 
         for i in range(test_vectors.shape[0]):
             ihvp_single_ekfac = ekfac_model.compute_ihvp(
-                vector=test_vectors[i], damping=ekfac_model.damping()
+                vectors=test_vectors[i], damping=ekfac_model.damping()
             )
             ihvp_single_kfac = kfac_model.compute_ihvp(
-                vector=test_vectors[i], damping=kfac_model.damping()
+                vectors=test_vectors[i], damping=kfac_model.damping()
             )
 
             assert jnp.allclose(
@@ -475,7 +550,7 @@ class TestEKFAC:
 
         H = ekfac_model.compute_hessian(damping=ekfac_model.damping())
         ihvp_batched = ekfac_model.compute_ihvp(
-            vector=test_vectors, damping=ekfac_model.damping()
+            vectors=test_vectors, damping=ekfac_model.damping()
         )
         hvp_roundtrip = H @ ihvp_batched.T  # Apply H to each vector
 

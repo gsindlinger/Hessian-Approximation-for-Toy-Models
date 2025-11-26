@@ -77,9 +77,10 @@ class KFAC(HessianApproximation):
         if not full_config.hessian_approximation:
             full_config.hessian_approximation = KFACConfig()
         elif not isinstance(full_config.hessian_approximation, KFACConfig):
-            raise ValueError(
-                "KFAC Hessian approximation requires KFACConfig in the config."
+            print(
+                "Warning: Overriding existing Hessian approximation config with KFACConfig."
             )
+            full_config.hessian_approximation = KFACConfig()
 
         kfac_config = full_config.hessian_approximation
 
@@ -105,12 +106,12 @@ class KFAC(HessianApproximation):
     @override
     def compute_hvp(
         self,
-        vector: Float[Array, "*batch_size n_params"],
+        vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """Compute Hessian-vector product."""
         return self.compute_ihvp_or_hvp(
-            vector,
+            vectors,
             method="hvp",
             damping=0.0 if damping is None else damping,
         )
@@ -118,14 +119,14 @@ class KFAC(HessianApproximation):
     @override
     def compute_ihvp(
         self,
-        vector: Float[Array, "*batch_size n_params"],
+        vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Compute inverse Hessian-vector product.
         """
         return self.compute_ihvp_or_hvp(
-            vector,
+            vectors,
             method="ihvp",
             damping=0.0 if damping is None else damping,
         )
@@ -188,7 +189,7 @@ class KFAC(HessianApproximation):
         )
 
         true_hessian = comparison_matrix + damping * jnp.eye(kfac_hessian.shape[0])
-        return metric(kfac_hessian, true_hessian)
+        return metric(true_hessian, kfac_hessian)
 
     def compute_hessian_or_inverse_hessian(
         self, method: Literal["normal", "inverse"], damping: Float
@@ -699,9 +700,9 @@ class KFAC(HessianApproximation):
         # Ensure different RNG keys for covariance and eigenvalue correction computations
         if self.kfac_config.build_config.use_pseudo_targets:
             if compute_method == "covariance":
-                prng_key = jax.random.PRNGKey(42)
+                prng_key = jax.random.PRNGKey(self.full_config.seed)
             else:
-                prng_key = jax.random.PRNGKey(43)
+                prng_key = jax.random.PRNGKey(self.full_config.seed + 2)
             targets = self.generate_pseudo_targets(
                 model, params, training_data, loss_fn, rng_key=prng_key
             )
@@ -714,7 +715,7 @@ class KFAC(HessianApproximation):
             targets=targets,
             shuffle=False,
             batch_size=dataloader_batch_size,
-            rng_key=jax.random.PRNGKey(0),
+            rng_key=jax.random.PRNGKey(self.full_config.seed),
         )
 
         # Process batches

@@ -60,7 +60,7 @@ class LiSSA(HessianApproximation):
         n_samples = training_data.shape[0]
         actual_batch_size = min(n_samples, self.config.batch_size)
 
-        rng = jax.random.PRNGKey(self.config.seed)
+        rng = jax.random.PRNGKey(self.full_config.seed)
         estimates = []
 
         # reuse true hessian approach for HVP on mini-batch

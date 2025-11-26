@@ -59,29 +59,36 @@ class Hessian(HessianApproximation):
     @staticmethod
     @jax.jit
     def _compute_hessian(
-        data: HessianComputeContext,
+        compute_data: HessianComputeContext,
         damping: Float,
     ) -> Float[Array, "n_params n_params"]:
-        """
-        JIT-compiled Hessian computation.
-        Returns the Hessian matrix as a 2D array.
-        """
-        # Important: Flattening structure for linear modules with bias is the following: b, w
-        # So for output dim 2, input dim 3, the order is: b1, b2, w1
+        def loss_single(p, x, y):
+            params_unflat = compute_data.unravel_fn(p)
+            preds = compute_data.model_apply_fn(params_unflat, x[None, ...])
+            return compute_data.loss_fn(preds.squeeze(0), y)
 
-        def loss_wrapper(p):
-            return loss_wrapper_with_apply_fn(
-                data.model_apply_fn,
-                p,
-                data.unravel_fn,
-                data.loss_fn,
-                data.training_data,
-                data.training_targets,
-            )
+        # This computes the per-sample Hessian: ∂²L_i/∂θ²
+        @jax.jit
+        def compute_sample_hessian(p_flat, x, y):
+            return jax.hessian(lambda p: loss_single(p, x, y))(p_flat)
 
-        return jax.hessian(loss_wrapper)(data.params_flat) + damping * jnp.eye(
-            data.num_params
-        )
+        def scan_body(carry, xy):
+            p_flat, H = carry
+            x_i, y_i = xy
+            H_i = compute_sample_hessian(p_flat, x_i, y_i)
+            return (p_flat, H + H_i), None
+
+        p_flat = compute_data.params_flat
+        X = compute_data.training_data
+        Y = compute_data.training_targets
+
+        H0 = jnp.zeros((p_flat.size, p_flat.size))
+
+        (_, H_full), _ = jax.lax.scan(scan_body, init=(p_flat, H0), xs=(X, Y))
+
+        H_full = H_full / X.shape[0]
+
+        return H_full + damping * jnp.eye(H_full.shape[0])
 
     @override
     def compute_hvp(
@@ -163,7 +170,7 @@ class Hessian(HessianApproximation):
     @override
     def compute_ihvp(
         self,
-        vector: Float[Array, "*batch_size n_params"],
+        vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
     ) -> Float[Array, "n_params"]:
         """
@@ -171,7 +178,7 @@ class Hessian(HessianApproximation):
         """
         return self.compute_ihvp_batched(
             HessianComputeContext.get_data_and_params_for_hessian(self.model_context),
-            vector,
+            vectors,
             damping=0.0 if damping is None else damping,
         )
 
