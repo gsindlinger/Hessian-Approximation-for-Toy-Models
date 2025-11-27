@@ -1,8 +1,8 @@
 import jax.numpy as jnp
 import pytest
 
-from metrics.full_matrix_metrics import FullMatrixMetric, compare_matrices
-from metrics.vector_metrics import VectorMetric
+from src.metrics.full_matrix_metrics import FullMatrixMetric, compare_matrices
+from src.metrics.vector_metrics import VectorMetric
 
 # ---------------------------------------------------------------------------
 # VectorMetric Tests

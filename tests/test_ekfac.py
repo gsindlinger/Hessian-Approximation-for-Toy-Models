@@ -6,22 +6,22 @@ import numpy as np
 import pytest
 from jax import flatten_util
 
-from config.config import (
+from src.config.config import (
     Config,
 )
-from config.dataset_config import RandomClassificationConfig
-from config.hessian_approximation_config import (
+from src.config.dataset_config import RandomClassificationConfig
+from src.config.hessian_approximation_config import (
     KFACBuildConfig,
     KFACRunConfig,
 )
-from config.model_config import LinearModelConfig
-from config.training_config import TrainingConfig
-from data.data import AbstractDataset
-from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
-from models.train import ApproximationModel, get_loss_fn, train_or_load
-from utils.utils import (
+from src.config.model_config import LinearModelConfig
+from src.config.training_config import TrainingConfig
+from src.data.data import AbstractDataset
+from src.hessian_approximations.gauss_newton.gauss_newton import GaussNewton
+from src.hessian_approximations.hessian.hessian import Hessian
+from src.hessian_approximations.kfac.kfac_service import KFAC
+from src.models.train import ApproximationModel, get_loss_fn, train_or_load
+from src.utils.utils import (
     sample_gradient_from_output_distribution,
     sample_gradient_from_output_distribution_batched,
 )
@@ -85,8 +85,8 @@ class TestEKFAC:
         ihvp_full = []
         for i in range(dim):
             unit_vec = jnp.zeros(dim).at[i].set(1.0)
-            hvp = model_obj.compute_hvp(vector=unit_vec, damping=model_obj.damping())
-            ihvp = model_obj.compute_ihvp(vector=unit_vec, damping=model_obj.damping())
+            hvp = model_obj.compute_hvp(vectors=unit_vec, damping=model_obj.damping())
+            ihvp = model_obj.compute_ihvp(vectors=unit_vec, damping=model_obj.damping())
             hvp_full.append(hvp)
             ihvp_full.append(ihvp)
         return jnp.column_stack(hvp_full), jnp.column_stack(ihvp_full)
@@ -135,14 +135,14 @@ class TestEKFAC:
         ekfac_approx = KFAC.setup_with_run_and_build_config(
             full_config=config, build_config=ekfac_build_config
         )
-        ekfac_approx.get_ekfac_components()
+        ekfac_approx.provider.get_ekfac_components()
 
         # Compare each layer’s gradients
         for key in ground_truth_grads["params"].keys():
             gt_grad = ground_truth_grads["params"][key]["kernel"]
 
-            a = ekfac_approx.collector.captured_data[key][0]
-            g = ekfac_approx.collector.captured_data[key][1]
+            a = ekfac_approx.provider.collector.captured_data[key][0]
+            g = ekfac_approx.provider.collector.captured_data[key][1]
 
             # ∇_{W_l} ≈ a^T g
             ag = jnp.einsum("ni,no->io", a, g)
@@ -236,19 +236,19 @@ class TestEKFAC:
         for layer_name, (
             activations_cov,
             gradients_cov,
-        ) in ekfac_full_data_model.kfac_data.covariances.items():
+        ) in ekfac_full_data_model.provider.data.covariances.items():
             batched_activations_cov = (
-                ekfac_batched_model.kfac_data.covariances.activations[layer_name]
+                ekfac_batched_model.provider.data.covariances.activations[layer_name]
             )
-            batched_gradients_cov = ekfac_batched_model.kfac_data.covariances.gradients[
-                layer_name
-            ]
+            batched_gradients_cov = (
+                ekfac_batched_model.provider.data.covariances.gradients[layer_name]
+            )
 
             eigenvalue_corrections = (
-                ekfac_full_data_model.kfac_data.eigenvalue_corrections[layer_name]
+                ekfac_full_data_model.provider.data.eigenvalue_corrections[layer_name]
             )
             eigenvalue_corrections_batched = (
-                ekfac_batched_model.kfac_data.eigenvalue_corrections[layer_name]
+                ekfac_batched_model.provider.data.eigenvalue_corrections[layer_name]
             )
 
             assert np.allclose(
@@ -408,7 +408,7 @@ class TestEKFAC:
             ekfac_model.model_context
         )
         ihvp_batched = ekfac_model.compute_ihvp(
-            vector=test_vectors, damping=ekfac_model.damping()
+            vectors=test_vectors, damping=ekfac_model.damping()
         )
 
         assert ihvp_batched.shape == test_vectors.shape, (
@@ -438,18 +438,18 @@ class TestEKFAC:
         )
 
         ihvp_batched_ekfac = ekfac_model.compute_ihvp(
-            vector=test_vectors, damping=ekfac_model.damping()
+            vectors=test_vectors, damping=ekfac_model.damping()
         )
         ihvp_batched_kfac = kfac_model.compute_ihvp(
-            vector=test_vectors, damping=kfac_model.damping()
+            vectors=test_vectors, damping=kfac_model.damping()
         )
 
         for i in range(test_vectors.shape[0]):
             ihvp_single_ekfac = ekfac_model.compute_ihvp(
-                vector=test_vectors[i], damping=ekfac_model.damping()
+                vectors=test_vectors[i], damping=ekfac_model.damping()
             )
             ihvp_single_kfac = kfac_model.compute_ihvp(
-                vector=test_vectors[i], damping=kfac_model.damping()
+                vectors=test_vectors[i], damping=kfac_model.damping()
             )
 
             assert jnp.allclose(
@@ -475,7 +475,7 @@ class TestEKFAC:
 
         H = ekfac_model.compute_hessian(damping=ekfac_model.damping())
         ihvp_batched = ekfac_model.compute_ihvp(
-            vector=test_vectors, damping=ekfac_model.damping()
+            vectors=test_vectors, damping=ekfac_model.damping()
         )
         hvp_roundtrip = H @ ihvp_batched.T  # Apply H to each vector
 

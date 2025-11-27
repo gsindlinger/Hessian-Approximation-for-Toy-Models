@@ -4,7 +4,7 @@ import pytest
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 
-from config.config import (
+from src.config.config import (
     Config,
     LinearModelConfig,
     ModelConfig,
@@ -12,7 +12,7 @@ from config.config import (
     TrainingConfig,
     UCIDatasetConfig,
 )
-from models.train import train_or_load
+from src.models.train import train_or_load
 
 
 class TestLinearRegression:

@@ -3,20 +3,20 @@ import argparse
 import jax
 from jax import numpy as jnp
 
-from config.config import Config
-from config.dataset_config import RandomClassificationConfig
-from config.hessian_approximation_config import (
+from src.config.config import Config
+from src.config.dataset_config import RandomClassificationConfig
+from src.config.hessian_approximation_config import (
     KFACBuildConfig,
     KFACConfig,
     KFACRunConfig,
 )
-from config.model_config import LinearModelConfig
-from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
-from utils.utils import (
+from src.config.model_config import LinearModelConfig
+from src.config.training_config import TrainingConfig
+from src.hessian_approximations.hessian.hessian import Hessian
+from src.hessian_approximations.kfac.kfac_service import KFAC
+from src.utils.utils import (
+    get_device_memory_stats,
     get_total_jax_memory,
-    print_device_memory_stats,
 )
 
 
@@ -63,7 +63,7 @@ def check_memory():
     print("=" * 60 + "\n")
 
     # Print initial memory state
-    print_device_memory_stats("Initial State")
+    print(get_device_memory_stats("Initial State"))
 
     #### SINGLE LINEAR LAYER ####
 
@@ -148,7 +148,7 @@ def check_memory():
             ],
         )
 
-        # print_device_memory_stats("Before Hessian Computation")
+        # print(get_device_memory_stats("Before Hessian Computation")
 
         # hessian = Hessian(full_config).compute_hessian()
         # hessian_bytes = get_total_jax_memory(hessian)
@@ -157,7 +157,7 @@ def check_memory():
         # print(f"Stored array size: {hessian_bytes / (1024**2):.2f} MB")
         # print("Data Type:", hessian.dtype)
         # print_array_device_info(hessian, "Hessian")
-        # print_device_memory_stats("After Hessian Computation")
+        # print(get_device_memory_stats("After Hessian Computation")
 
         kfac_config = KFACConfig(
             build_config=KFACBuildConfig(use_pseudo_targets=True),
@@ -181,7 +181,7 @@ def check_memory():
             print(f"Processing: {kfac_string}")
             print(f"{'#' * 60}")
 
-            print_device_memory_stats(f"Before {kfac_string} Computation")
+            print(get_device_memory_stats(f"Before {kfac_string} Computation"))
 
             kfac_model = KFAC.setup_with_run_and_build_config(
                 full_config=full_config,
@@ -192,7 +192,7 @@ def check_memory():
             kfac_bytes = get_total_jax_memory(kfac_model)
             print(f"\n### {kfac_string} Model Memory ###")
             print(f"Stored data size: {kfac_bytes / (1024**2):.2f} MB")
-            print_device_memory_stats(f"After {kfac_string} Setup")
+            print(get_device_memory_stats(f"After {kfac_string} Setup"))
 
             damping = kfac_model.damping()
             comparison_matrix = Hessian(full_config).compute_hessian(damping=damping)
@@ -246,7 +246,9 @@ def check_memory():
             import gc
 
             gc.collect()
-            print_device_memory_stats(f"After Deleting {kfac_string} Model & Hessian")
+            print(
+                get_device_memory_stats(f"After Deleting {kfac_string} Model & Hessian")
+            )
 
         print("\n" + "=" * 60)
         print("COMPARISON RESULTS")
@@ -257,7 +259,7 @@ def check_memory():
                 print(f"  {metric_name}: {value}")
             print()
 
-        print_device_memory_stats("Final State")
+        print(get_device_memory_stats("Final State"))
 
 
 if __name__ == "__main__":

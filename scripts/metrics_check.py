@@ -1,7 +1,9 @@
+import gc
+
 import jax
 import jax.numpy as jnp
 
-from utils.utils import print_device_memory_stats
+from src.utils.utils import get_device_memory_stats
 
 device = jax.devices()[0]
 
@@ -30,13 +32,12 @@ def l2_diff_without_jit(A, B, C):
 
 
 result = l2_diff(A, B, C)
-print_device_memory_stats("After JITed l2_diff")
+print(get_device_memory_stats("After JITed l2_diff"))
 
 del result
-import gc
 
 gc.collect()
 
-print_device_memory_stats("After garbage collection")
+print(get_device_memory_stats("After garbage collection"))
 result = l2_diff_without_jit(A, B, C)
-print_device_memory_stats("After non-JITed l2_diff")
+print(get_device_memory_stats("After non-JITed l2_diff"))
