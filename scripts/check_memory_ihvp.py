@@ -3,21 +3,21 @@ import argparse
 import jax
 from jax import numpy as jnp
 
-from config.config import Config
-from config.dataset_config import RandomClassificationConfig
-from config.hessian_approximation_config import (
+from src.config.config import Config
+from src.config.dataset_config import RandomClassificationConfig
+from src.config.hessian_approximation_config import (
     KFACBuildConfig,
     KFACConfig,
     KFACRunConfig,
 )
-from config.model_config import LinearModelConfig
-from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
-from metrics.vector_metrics import VectorMetric
-from models.train import train_or_load
-from utils.utils import (
-    print_device_memory_stats,
+from src.config.model_config import LinearModelConfig
+from src.config.training_config import TrainingConfig
+from src.hessian_approximations.hessian.hessian import Hessian
+from src.hessian_approximations.kfac.kfac_service import KFAC
+from src.metrics.vector_metrics import VectorMetric
+from src.models.train import train_or_load
+from src.utils.utils import (
+    get_device_memory_stats,
     sample_gradient_from_output_distribution_batched,
 )
 
@@ -73,7 +73,7 @@ def check_memory():
     print("=" * 60 + "\n")
 
     # Print initial memory state
-    print_device_memory_stats("Initial State")
+    print(get_device_memory_stats("Initial State"))
 
     #### SINGLE LINEAR LAYER ####
 
@@ -203,15 +203,15 @@ def check_memory():
                 run_config=kfac_config.run_config,
             )
 
-            print_device_memory_stats(f"After {kfac_string} Setup")
+            print(get_device_memory_stats(f"After {kfac_string} Setup"))
 
             damping = kfac_model.damping()
-            kfac_result = kfac_model.compute_ihvp(vector=test_vectors, damping=damping)
+            kfac_result = kfac_model.compute_ihvp(vectors=test_vectors, damping=damping)
 
-            print_device_memory_stats(f"After {kfac_string} IHVP Computation")
+            print(get_device_memory_stats(f"After {kfac_string} IHVP Computation"))
 
             hessian_result = Hessian(full_config).compute_ihvp(
-                vector=test_vectors, damping=damping
+                vectors=test_vectors, damping=damping
             )
 
             # hessian = Hessian(full_config).compute_hessian(damping=damping)
@@ -229,7 +229,7 @@ def check_memory():
             # fig.colorbar(im2, ax=axs[1])
             # plt.show()
 
-            # print_device_memory_stats("After True Hessian IHVP Computation")
+            # print(get_device_memory_stats("After True Hessian IHVP Computation")
 
             # # plot the first four ihvp for both in line plots using subfigures in matplotlib
             # import matplotlib.pyplot as plt
@@ -259,7 +259,7 @@ def check_memory():
             diff_2 = VectorMetric.INNER_PRODUCT_DIFF.compute(
                 hessian_result, kfac_result, x=test_vectors_2, reduction="mean"
             )
-            print_device_memory_stats(f"After {kfac_string} IHVP Comparison")
+            print(get_device_memory_stats(f"After {kfac_string} IHVP Comparison"))
 
             results_dict[kfac_string] = {}
             results_dict[kfac_string]["relative_error"] = diff_1
@@ -282,7 +282,9 @@ def check_memory():
             import gc
 
             gc.collect()
-            print_device_memory_stats(f"After Deleting {kfac_string} Model & Hessian")
+            print(
+                get_device_memory_stats(f"After Deleting {kfac_string} Model & Hessian")
+            )
 
         print("\n" + "=" * 60)
         print("COMPARISON RESULTS")
@@ -293,7 +295,7 @@ def check_memory():
                 print(f"  {metric_name}: {value}")
             print()
 
-        print_device_memory_stats("Final State")
+        print(get_device_memory_stats("Final State"))
 
 
 if __name__ == "__main__":

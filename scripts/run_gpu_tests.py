@@ -3,21 +3,21 @@ import time
 
 from jax import numpy as jnp
 
-from config.config import Config
-from config.dataset_config import RandomClassificationConfig
-from config.hessian_approximation_config import (
+from src.config.config import Config
+from src.config.dataset_config import RandomClassificationConfig
+from src.config.hessian_approximation_config import (
     HessianApproximationConfig,
     HessianName,
     KFACBuildConfig,
     KFACConfig,
     KFACRunConfig,
 )
-from config.model_config import MLPModelConfig
-from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
-from metrics.full_matrix_metrics import MATRIX_METRICS, compare_matrices
-from utils.utils import plot_metric_results, save_results
+from src.config.model_config import MLPModelConfig
+from src.config.training_config import TrainingConfig
+from src.hessian_approximations.hessian.hessian import Hessian
+from src.hessian_approximations.kfac.kfac_service import KFAC
+from src.metrics.full_matrix_metrics import MATRIX_METRICS, compare_matrices
+from src.utils.utils import plot_metric_results, save_results
 
 
 def compare_approximation_with_true_hessian(
@@ -395,9 +395,9 @@ for collection in [single_linear_collection, mlp_collection]:
     # folder path
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     if collection == single_linear_collection:
-        folder = f"data/artifacts/results/single_linear/{timestamp}/"
+        folder = f"data/results/single_linear/{timestamp}/"
     else:
-        folder = f"data/artifacts/results/mlp/{timestamp}/"
+        folder = f"data/results/mlp/{timestamp}/"
     save_results(
         results_dict, f"{folder}/kfac_hessian_comparison_results_{timestamp}.json"
     )

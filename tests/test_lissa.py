@@ -5,14 +5,17 @@ import jax.numpy as jnp
 import pytest
 from jax import flatten_util
 
-from config.config import Config
-from config.dataset_config import RandomClassificationConfig, RandomRegressionConfig
-from config.hessian_approximation_config import LiSSAConfig
-from config.model_config import LinearModelConfig
-from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.lissa.lissa import LiSSA
-from models.train import train_or_load
+from src.config.config import Config
+from src.config.dataset_config import (
+    RandomClassificationConfig,
+    RandomRegressionConfig,
+)
+from src.config.hessian_approximation_config import LiSSAConfig
+from src.config.model_config import LinearModelConfig
+from src.config.training_config import TrainingConfig
+from src.hessian_approximations.hessian.hessian import Hessian
+from src.hessian_approximations.lissa.lissa import LiSSA
+from src.models.train import train_or_load
 
 
 class TestLiSSA:
@@ -99,11 +102,11 @@ class TestLiSSA:
 
         # Compute IHVPs
         ihvp_lissa = lissa_method.compute_ihvp(
-            vector=v,
+            vectors=v,
         )
 
         ihvp_exact = hessian_method.compute_ihvp(
-            vector=v,
+            vectors=v,
         )
 
         # Compare numerically
@@ -140,7 +143,7 @@ class TestLiSSA:
             config.hessian_approximation = lissa_config
             lissa = LiSSA(full_config=config)
             ihvp = lissa.compute_ihvp(
-                vector=v,
+                vectors=v,
             )
             results.append(ihvp)
 

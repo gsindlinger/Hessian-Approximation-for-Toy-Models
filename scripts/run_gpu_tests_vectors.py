@@ -8,20 +8,20 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from config.config import Config
-from config.dataset_config import RandomClassificationConfig
-from config.hessian_approximation_config import (
+from src.config.config import Config
+from src.config.dataset_config import RandomClassificationConfig
+from src.config.hessian_approximation_config import (
     HessianApproximationConfig,
     HessianName,
     KFACBuildConfig,
     KFACConfig,
     KFACRunConfig,
 )
-from config.model_config import MLPModelConfig
-from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
-from metrics.vector_metrics import VectorMetric
+from src.config.model_config import MLPModelConfig
+from src.config.training_config import TrainingConfig
+from src.hessian_approximations.hessian.hessian import Hessian
+from src.hessian_approximations.kfac.kfac_service import KFAC
+from src.metrics.vector_metrics import VectorMetric
 
 
 def generate_out_of_distribution_vectors(
@@ -418,7 +418,7 @@ for collection_name, collection in [
 
     # Save results
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    folder = f"data/artifacts/results/{collection_name}_hvp_ihvp/{timestamp}/"
+    folder = f"data/results/{collection_name}_hvp_ihvp/{timestamp}/"
 
     if not os.path.exists(folder):
         os.makedirs(folder)

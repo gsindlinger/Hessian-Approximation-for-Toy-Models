@@ -1,13 +1,17 @@
-from config.config import Config
-from config.dataset_config import RandomClassificationConfig
-from config.hessian_approximation_config import KFACBuildConfig, KFACRunConfig
-from config.model_config import LinearModelConfig
-from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
-from metrics.full_matrix_metrics import FullMatrixMetric
-from metrics.vector_metrics import VectorMetric
-from utils.utils import sample_gradient_from_output_distribution_batched
+from src.config.config import Config
+from src.config.dataset_config import RandomClassificationConfig
+from src.config.hessian_approximation_config import KFACBuildConfig, KFACRunConfig
+from src.config.model_config import LinearModelConfig
+from src.config.training_config import TrainingConfig
+from src.hessian_approximations.hessian.hessian import Hessian
+from src.hessian_approximations.kfac.kfac_service import KFAC
+from src.metrics.full_matrix_metrics import FullMatrixMetric
+from src.metrics.vector_metrics import VectorMetric
+from src.utils import logging
+from src.utils.utils import sample_gradient_from_output_distribution_batched
+
+logger = logging.get_stream_logger()
+logger.info("Starting simple_run script...")
 
 
 def run_simple_run():
@@ -74,13 +78,13 @@ def run_simple_run():
     )
 
     kfac_ihvp = kfac_model.compute_ihvp(
-        vector=test_vectors_1, damping=kfac_model.damping()
+        vectors=test_vectors_1, damping=kfac_model.damping()
     )
     ekfac_ihvp = ekfac_model.compute_ihvp(
-        vector=test_vectors_1, damping=kfac_model.damping()
+        vectors=test_vectors_1, damping=kfac_model.damping()
     )
     true_ihvp = Hessian(full_config=config).compute_ihvp(
-        vector=test_vectors_1, damping=kfac_model.damping()
+        vectors=test_vectors_1, damping=kfac_model.damping()
     )
 
     metric_ihvp = VectorMetric.RELATIVE_ERROR

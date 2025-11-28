@@ -3,27 +3,27 @@ from typing import Dict
 import jax.numpy as jnp
 import pytest
 
-from config.config import (
+from src.config.config import (
     Config,
     LinearModelConfig,
     RandomRegressionConfig,
     TrainingConfig,
     UCIDatasetConfig,
 )
-from config.dataset_config import RandomClassificationConfig
-from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-from hessian_approximations.hessian.exact_hessian_regression import (
+from src.config.dataset_config import RandomClassificationConfig
+from src.hessian_approximations.gauss_newton.gauss_newton import GaussNewton
+from src.hessian_approximations.hessian.exact_hessian_regression import (
     HessianExactRegression,
 )
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.hessian_approximations import HessianApproximation
-from metrics.full_matrix_metrics import FullMatrixMetric
-from metrics.vector_metrics import VectorMetric
-from models.dataclasses.hessian_compute_context import HessianComputeContext
-from models.dataclasses.model_context import ModelContext
-from models.train import train_or_load
-from models.utils.loss import get_loss_fn
-from utils.utils import sample_gradient_from_output_distribution_batched
+from src.hessian_approximations.hessian.hessian import Hessian
+from src.hessian_approximations.hessian_approximations import HessianApproximation
+from src.metrics.full_matrix_metrics import FullMatrixMetric
+from src.metrics.vector_metrics import VectorMetric
+from src.models.dataclasses.hessian_compute_context import HessianComputeContext
+from src.models.dataclasses.model_context import ModelContext
+from src.models.train import train_or_load
+from src.models.utils.loss import get_loss_fn
+from src.utils.utils import sample_gradient_from_output_distribution_batched
 
 
 class TestHessianApproximations:
@@ -201,7 +201,7 @@ class TestHessianApproximations:
             n_vectors=20,
         )
 
-        ihvp_batched = hessian.compute_ihvp(vector=test_vectors)
+        ihvp_batched = hessian.compute_ihvp(vectors=test_vectors)
 
         # compute full Hessian and invert
         full_hessian = hessian.compute_hessian()
@@ -264,7 +264,7 @@ class TestHessianApproximations:
         unit_vectors = jnp.eye(n_params)
 
         # Compute IHVPs for all unit vectors
-        ihvps = hessian.compute_ihvp(vector=unit_vectors)
+        ihvps = hessian.compute_ihvp(vectors=unit_vectors)
 
         # Compare IHVPs with compute_inverse_hessian_method
         inverse_hessian = jnp.linalg.inv(hessian.compute_hessian())
