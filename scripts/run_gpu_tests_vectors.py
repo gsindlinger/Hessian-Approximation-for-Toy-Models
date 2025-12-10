@@ -5,8 +5,6 @@ from dataclasses import asdict
 from typing import List
 
 import jax
-from jaxtyping import Array, Float
-
 from config.config import Config
 from config.hessian_approximation_config import (
     FisherInformationConfig,
@@ -17,23 +15,25 @@ from config.hessian_approximation_config import (
     KFACConfig,
     KFACRunConfig,
 )
-from hessian_approximations.fim.fisher_information import FisherInformation
-from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
+from jaxtyping import Array, Float
 from metrics.vector_metrics import VectorMetric
 from models.train import train_or_load
-from scripts.run_gpu_tests import (
-    _linear_setup,
-    _mlp_setup,
-    aggregate_results_across_seeds,
-)
-from utils.utils import (
+
+from deleuze.utils.utils import (
     get_peak_bytes_in_use,
     plot_metric_results_with_seeds,
     sample_gradient_from_output_distribution_batched,
     save_results,
     write_global_markdown_summary,
+)
+from hessian_approximations.fim.fisher_information import FisherInformation
+from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
+from hessian_approximations.hessian.hessian import Hessian
+from hessian_approximations.kfac.kfac import KFAC
+from scripts.run_gpu_tests import (
+    _linear_setup,
+    _mlp_setup,
+    aggregate_results_across_seeds,
 )
 
 

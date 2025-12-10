@@ -1,8 +1,6 @@
 import argparse
 
 import jax
-from jax import numpy as jnp
-
 from config.config import Config
 from config.dataset_config import RandomClassificationConfig
 from config.hessian_approximation_config import (
@@ -12,12 +10,14 @@ from config.hessian_approximation_config import (
 )
 from config.model_config import LinearModelConfig
 from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
-from utils.utils import (
+from jax import numpy as jnp
+
+from deleuze.utils.utils import (
     get_total_jax_memory,
     print_device_memory_stats,
 )
+from hessian_approximations.hessian.hessian import Hessian
+from hessian_approximations.kfac.kfac import KFAC
 
 
 def parse_args():

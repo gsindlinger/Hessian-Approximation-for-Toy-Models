@@ -3,7 +3,6 @@ from typing import Dict
 import jax
 import jax.numpy as jnp
 import pytest
-
 from config.config import (
     Config,
     LinearModelConfig,
@@ -12,19 +11,20 @@ from config.config import (
     UCIDatasetConfig,
 )
 from config.dataset_config import RandomClassificationConfig
-from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-from hessian_approximations.hessian.exact_hessian_regression import (
-    HessianExactRegression,
-)
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.hessian_approximations import HessianApproximation
 from metrics.full_matrix_metrics import FullMatrixMetric
 from metrics.vector_metrics import VectorMetric
 from models.dataclasses.hessian_compute_context import HessianComputeContext
 from models.dataclasses.model_context import ModelContext
 from models.train import train_or_load
 from models.utils.loss import get_loss_fn
-from utils.utils import sample_gradient_from_output_distribution_batched
+
+from deleuze.utils.utils import sample_gradient_from_output_distribution_batched
+from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
+from hessian_approximations.hessian.exact_hessian_regression import (
+    HessianExactRegression,
+)
+from hessian_approximations.hessian.hessian import Hessian
+from hessian_approximations.hessian_approximations import HessianApproximation
 
 
 class TestHessianApproximations:

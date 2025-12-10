@@ -4,8 +4,6 @@ import time
 from typing import List, Literal
 
 import numpy as np
-from jax import numpy as jnp
-
 from config.config import Config
 from config.dataset_config import RandomClassificationConfig
 from config.hessian_approximation_config import (
@@ -19,18 +17,20 @@ from config.hessian_approximation_config import (
 )
 from config.model_config import LinearModelConfig, MLPModelConfig
 from config.training_config import TrainingConfig
-from hessian_approximations.fim.fisher_information import FisherInformation
-from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
+from jax import numpy as jnp
 from metrics.full_matrix_metrics import FullMatrixMetric
-from utils.utils import (
+
+from deleuze.utils.utils import (
     get_peak_bytes_in_use,
     plot_metric_results_with_seeds,
     print_device_memory_stats,
     save_results,
     write_global_markdown_summary,
 )
+from hessian_approximations.fim.fisher_information import FisherInformation
+from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
+from hessian_approximations.hessian.hessian import Hessian
+from hessian_approximations.kfac.kfac import KFAC
 
 
 def parse_args():
