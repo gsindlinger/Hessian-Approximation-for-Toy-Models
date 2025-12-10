@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 
-from utils.utils import print_device_memory_stats
+from deleuze.utils.utils import print_device_memory_stats
 
 device = jax.devices()[0]
 

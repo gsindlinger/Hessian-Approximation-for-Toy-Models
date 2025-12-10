@@ -4,8 +4,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax import flatten_util
-
 from config.config import (
     Config,
 )
@@ -17,14 +15,16 @@ from config.hessian_approximation_config import (
 from config.model_config import LinearModelConfig
 from config.training_config import TrainingConfig
 from data.data import AbstractDataset
-from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
+from jax import flatten_util
 from models.train import ApproximationModel, get_loss_fn, train_or_load
-from utils.utils import (
+
+from deleuze.utils.utils import (
     sample_gradient_from_output_distribution,
     sample_gradient_from_output_distribution_batched,
 )
+from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
+from hessian_approximations.hessian.hessian import Hessian
+from hessian_approximations.kfac.kfac import KFAC
 
 ModelTuple = Tuple[ApproximationModel, AbstractDataset, Any, Config]
 

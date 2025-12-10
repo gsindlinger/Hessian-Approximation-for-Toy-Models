@@ -3,11 +3,12 @@ from config.dataset_config import RandomClassificationConfig
 from config.hessian_approximation_config import KFACBuildConfig, KFACRunConfig
 from config.model_config import LinearModelConfig
 from config.training_config import TrainingConfig
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.kfac.kfac import KFAC
 from metrics.full_matrix_metrics import FullMatrixMetric
 from metrics.vector_metrics import VectorMetric
-from utils.utils import sample_gradient_from_output_distribution_batched
+
+from deleuze.utils.utils import sample_gradient_from_output_distribution_batched
+from hessian_approximations.hessian.hessian import Hessian
+from hessian_approximations.kfac.kfac import KFAC
 
 
 def run_simple_run():
