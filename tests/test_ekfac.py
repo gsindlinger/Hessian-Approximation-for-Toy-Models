@@ -4,8 +4,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax import flatten_util
-
 from config.config import (
     Config,
 )
@@ -20,8 +18,10 @@ from data.data import AbstractDataset
 from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
 from hessian_approximations.hessian.hessian import Hessian
 from hessian_approximations.kfac.kfac import KFAC
+from jax import flatten_util
 from models.train import ApproximationModel, get_loss_fn, train_or_load
-from utils.utils import (
+
+from src.utils.utils import (
     sample_gradient_from_output_distribution,
     sample_gradient_from_output_distribution_batched,
 )

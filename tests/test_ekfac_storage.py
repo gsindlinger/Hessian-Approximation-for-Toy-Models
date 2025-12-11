@@ -6,7 +6,6 @@ from typing import Any, Generator, Tuple
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
 from config.config import Config
 from config.dataset_config import RandomClassificationConfig
 from config.hessian_approximation_config import KFACConfig
