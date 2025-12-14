@@ -2,10 +2,13 @@ from typing import Callable, Dict
 
 import jax
 import jax.numpy as jnp
+from chex import PRNGKey
 from flax import linen as nn
+from jax import flatten_util
 from jaxtyping import Array, Float, Int
 
 from src.utils.loss import get_loss_name
+from src.utils.models.approximation_model import ApproximationModel
 
 
 def generate_pseudo_targets(
@@ -60,3 +63,50 @@ def _generate_regression_pseudo_targets(
         raise ValueError("Model predictions must be a jnp.ndarray for regression.")
     noise = noise_std * jax.random.normal(rng_key, preds.shape)
     return preds + noise
+
+
+def sample_gradients(
+    model: ApproximationModel,
+    params: Dict,
+    inputs: Float[Array, "N features"],
+    targets: Float[Array, "N n_targets"],
+    loss_fn: Callable,
+    n_vectors: int = 1,
+    rng_key: PRNGKey | None = None,
+):
+    # assert that inputs and targets have a batch dimension and matching sizes
+    assert inputs.shape[0] == targets.shape[0], (
+        "Inputs and targets must have the same number of samples."
+    )
+    # assert that inputs and targets size is larger than n_vectors
+    assert inputs.shape[0] >= n_vectors, (
+        "Number of input samples must be at least n_vectors."
+    )
+
+    if rng_key is None:
+        rng_key = jax.random.PRNGKey(0)
+
+    num_train = inputs.shape[0]
+    rng_key, subkey = jax.random.split(rng_key)
+    idx = jax.random.choice(subkey, num_train, (n_vectors,), replace=False)
+
+    sample_inputs = inputs[idx]
+
+    pseudo_targets = generate_pseudo_targets(
+        model=model,
+        params=params,
+        inputs=sample_inputs,
+        loss_fn=loss_fn,
+        rng_key=rng_key,
+    )
+
+    def grad_and_flatten(params, inputs, pseudo_targets):
+        grad = jax.grad(lambda p: loss_fn(model.apply(p, inputs), pseudo_targets))(
+            params
+        )
+        flat, _ = flatten_util.ravel_pytree(grad)
+        return flat
+
+    # Vectorize the fused operation with vmap and JIT
+    batched_grad_fn = jax.jit(jax.vmap(grad_and_flatten, in_axes=(None, 0, 0)))
+    return batched_grad_fn(params, sample_inputs, pseudo_targets)

@@ -35,7 +35,7 @@ class FIMComputer(HessianEstimator):
         damping = 0.0 if damping is None else damping
         return self._compute_fim(self.compute_context, damping)
 
-    def compare_hessian_estimates(
+    def compare_full_hessian_estimates(
         self,
         comparison_matrix: Float[Array, "n_params n_params"],
         damping: Optional[Float] = None,

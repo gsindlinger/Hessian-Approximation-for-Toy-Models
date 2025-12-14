@@ -81,7 +81,7 @@ class EKFACComputer(HessianEstimator):
             damping=0.0 if damping is None else damping,
         )
 
-    def compute_inverse_hessian_estimate(
+    def estimate_inverse_hessian(
         self,
         damping: Optional[Float] = None,
     ) -> Float[Array, "n_params n_params"]:

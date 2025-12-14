@@ -22,7 +22,7 @@ import numpy as np
 from jaxtyping import Array, Float
 
 from src.config import Config
-from src.hessians.utils.data import ApproximationData, EKFACData, FIMData
+from src.hessians.utils.data import ApproximationData, EKFACData
 from src.utils.data.jax_dataloader import JAXDataLoader
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,6 @@ class ApproximatorBase(ABC):
         """Returns a mapping from subclass names to their corresponding data class types."""
         mapping = {
             "EKFACApproximator": EKFACData,
-            "FIMApproximator": FIMData,
         }
 
         data_type = mapping.get(cls.__name__)
@@ -279,29 +278,6 @@ class ApproximatorBase(ABC):
         return accumulator
 
     @staticmethod
-    def compute_covariances(
-        activations: Dict[str, Float[Array, "N I"]],
-        gradients: Dict[str, Float[Array, "N O"]],
-    ) -> Tuple[Dict[str, Float[Array, "I I"]], Dict[str, Float[Array, "O O"]]]:
-        """
-        Compute covariance matrices for activations and gradients for each layer.
-        """
-        activation_covariances = ApproximatorBase.batched_collector_processing(
-            layer_keys=activations.keys(),
-            num_samples=list(activations.values())[0].shape[0],
-            compute_fn=ApproximatorBase._compute_covariance,
-            data={"activations": activations},
-        )
-
-        gradient_covariances = ApproximatorBase.batched_collector_processing(
-            layer_keys=gradients.keys(),
-            num_samples=list(gradients.values())[0].shape[0],
-            compute_fn=ApproximatorBase._compute_covariance,
-            data={"gradients": gradients},
-        )
-        return activation_covariances, gradient_covariances
-
-    @staticmethod
     def compute_eigenvalue_corrections(
         activations: Dict[str, Float[Array, "N I"]],
         gradients: Dict[str, Float[Array, "N O"]],
@@ -324,13 +300,6 @@ class ApproximatorBase(ABC):
                 "Q_G": gradient_eigenvectors,
             },
         )
-
-    @staticmethod
-    def _compute_covariance(**x: Dict[str, Float[Array, "N D"]]) -> Float[Array, "D D"]:
-        """Compute covariance matrix of x.
-        Expects x as a dict with a single key, e.g. 'activations' or 'gradients'."""
-        x_item = next(iter(x.values()))
-        return jnp.einsum("ni,nj->ij", x_item, x_item)
 
     @staticmethod
     @jax.jit
