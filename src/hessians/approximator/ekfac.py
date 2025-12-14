@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from typing import Dict, Tuple
 
 import jax.numpy as jnp
 from jaxtyping import Array, Float
@@ -21,7 +22,7 @@ class EKFACApproximator(ApproximatorBase):
     i.e., activation and gradient eigenvectors, eigenvalues & eigenvalue corrections.
     """
 
-    collected_data_path_snd: str
+    collected_data_path_second: str
     """Path to second set of previously collected data"""
 
     def _build(
@@ -29,12 +30,15 @@ class EKFACApproximator(ApproximatorBase):
     ):
         """Method to build the required components to compute"""
         # Load first activations and gradients from path
-        if self.collected_data_path is None or self.collected_data_path_snd is None:
+        if self.collected_data_path is None or self.collected_data_path_second is None:
             raise ValueError(
                 "Both collected_data_path and collected_data_path_snd must be provided to load EK-FAC data."
             )
 
         logger.info("Loading activations and gradients for EK-FAC approximation.")
+        # Note: We approximate the FIM using MCMC and by collecting gradients
+        # and activations from two independent runs we try to reduce bias.
+        # This is therefore the data from the first run which is used to compute the eigenvectors.
         activations, gradients = CollectorActivationsGradients.load(
             directory=self.collected_data_path
         )
@@ -56,8 +60,10 @@ class EKFACApproximator(ApproximatorBase):
         logger.info(
             "Loading second activations and gradients for EK-FAC approximation."
         )
+        # Note: For the eigenvalue corrections we have a different estimate which we want to obtain,
+        # so we use data from a second independent run.
         activations, gradients = CollectorActivationsGradients.load(
-            directory=self.collected_data_path_snd
+            directory=self.collected_data_path_second
         )
         eigenvalue_corrections = self.compute_eigenvalue_corrections(
             activations,
@@ -107,3 +113,33 @@ class EKFACApproximator(ApproximatorBase):
             mean_corrections=mean_corrections,
             mean_corrections_aggregated=mean_corrections_aggregated,
         )
+
+    @staticmethod
+    def compute_covariances(
+        activations: Dict[str, Float[Array, "N I"]],
+        gradients: Dict[str, Float[Array, "N O"]],
+    ) -> Tuple[Dict[str, Float[Array, "I I"]], Dict[str, Float[Array, "O O"]]]:
+        """
+        Compute covariance matrices for activations and gradients for each layer.
+        """
+        activation_covariances = ApproximatorBase.batched_collector_processing(
+            layer_keys=activations.keys(),
+            num_samples=list(activations.values())[0].shape[0],
+            compute_fn=EKFACApproximator._compute_covariance,
+            data={"activations": activations},
+        )
+
+        gradient_covariances = ApproximatorBase.batched_collector_processing(
+            layer_keys=gradients.keys(),
+            num_samples=list(gradients.values())[0].shape[0],
+            compute_fn=EKFACApproximator._compute_covariance,
+            data={"gradients": gradients},
+        )
+        return activation_covariances, gradient_covariances
+
+    @staticmethod
+    def _compute_covariance(**x: Dict[str, Float[Array, "N D"]]) -> Float[Array, "D D"]:
+        """Compute covariance matrix of x.
+        Expects x as a dict with a single key, e.g. 'activations' or 'gradients'."""
+        x_item = next(iter(x.values()))
+        return jnp.einsum("ni,nj->ij", x_item, x_item)

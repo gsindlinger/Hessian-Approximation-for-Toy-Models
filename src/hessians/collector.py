@@ -30,6 +30,7 @@ class CollectorBase(ABC):
         inputs: jnp.ndarray,
         targets: jnp.ndarray,
         loss_fn: Callable,
+        batch_size: Optional[int] = None,
         save_directory: Optional[str] = None,
     ) -> Any:
         """
@@ -57,7 +58,9 @@ class CollectorBase(ABC):
             # Use sum reduction to avoid prematurely averaging gradients
             return loss_fn(predictions, targets, reduction="sum")
 
-        dataloader_batch_size = JAXDataLoader.get_batch_size()
+        dataloader_batch_size = (
+            JAXDataLoader.get_batch_size() if batch_size is None else batch_size
+        )
         dataloader = JAXDataLoader(
             inputs=inputs,
             targets=targets,

@@ -12,7 +12,6 @@ class FullMatrixMetric(Enum):
     # Element-wise norms
     FROBENIUS = "frobenius"  # ||A - B||_F
     RELATIVE_FROBENIUS = "relative_frobenius"  # Scale-invariant version
-    MAX_ELEMENTWISE = "max_elementwise"  # Largest absolute difference (irrelevant)
 
     # Spectral properties
     SPECTRAL = "spectral"
@@ -21,12 +20,6 @@ class FullMatrixMetric(Enum):
     # Structural similarity
     COSINE_SIMILARITY = (
         "cosine_similarity"  # tr(A @ B.T) / (||A||_F * ||B||_F), scale-invariant
-    )
-
-    # Eigenvalue-based (critical for optimization properties)
-    EIGENVALUE_MAX = "eigenvalue_max"  # Max distance between eigenvalues (irrelevant)
-    EIGENVALUES_L2_DISTANCE = (
-        "eigenvalues_l2_distance"  # Relative L2 distance of eigenvalues (irrelevant)
     )
 
     # Cheap summary statistics
@@ -51,10 +44,6 @@ class FullMatrixMetric(Enum):
             norm_diff = jnp.linalg.norm(A - B, ord="fro")
             norm_a = jnp.linalg.norm(A, ord="fro")
             return norm_diff / (norm_a + 1e-10)  # Avoid division by zero
-
-        def max_elementwise(A, B):
-            # max |a_ij - b_ij|
-            return jnp.max(jnp.abs(A - B))
 
         # ------------------------------------------------------
         # Spectral norms
@@ -83,24 +72,6 @@ class FullMatrixMetric(Enum):
             return cosine  # 1 = perfect match, 0 = orthogonal
 
         # ------------------------------------------------------
-        # Eigenvalue-based metrics
-        # ------------------------------------------------------
-
-        def eigenvalue_max(A, B):
-            # max |λ_i(A) - λ_i(B)|
-            eigs_a = jnp.linalg.eigh(A)[0]
-            eigs_b = jnp.linalg.eigh(B)[0]
-            return jnp.max(jnp.abs(eigs_a - eigs_b))
-
-        def eigenvalues_l2(A, B):
-            # L2(λ(A) - λ(B)) / L2(λ(A))   (relative eigenvalue error)
-            eigs_a = jnp.linalg.eigh(A)[0]
-            eigs_b = jnp.linalg.eigh(B)[0]
-            l2_diff = jnp.linalg.norm(eigs_a - eigs_b)
-            l2_a = jnp.linalg.norm(eigs_a)
-            return l2_diff / (l2_a + 1e-10)
-
-        # ------------------------------------------------------
         # Cheap summary statistics
         # ------------------------------------------------------
 
@@ -124,12 +95,9 @@ class FullMatrixMetric(Enum):
         table = {
             FullMatrixMetric.FROBENIUS: frobenius,
             FullMatrixMetric.RELATIVE_FROBENIUS: relative_frobenius,
-            FullMatrixMetric.MAX_ELEMENTWISE: max_elementwise,
             FullMatrixMetric.SPECTRAL: spectral,
             FullMatrixMetric.RELATIVE_SPECTRAL: relative_spectral,
             FullMatrixMetric.COSINE_SIMILARITY: cosine_similarity,
-            FullMatrixMetric.EIGENVALUE_MAX: eigenvalue_max,
-            FullMatrixMetric.EIGENVALUES_L2_DISTANCE: eigenvalues_l2,
             FullMatrixMetric.TRACE_DISTANCE: trace_distance,
             FullMatrixMetric.CONDITION_NUMBER_LOG_RATIO: condition_number_log_ratio,
         }

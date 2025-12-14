@@ -41,7 +41,7 @@ class GNHComputer(HessianEstimator):
         damping = damping if damping is not None else 0.0
         return self._compute_gnh(self.compute_context, damping)
 
-    def compare_hessian_estimates(
+    def compare_full_hessian_estimates(
         self,
         comparison_matrix: Float[Array, "n_params n_params"],
         damping: Optional[Float] = None,
@@ -143,7 +143,7 @@ class GNHComputer(HessianEstimator):
 
         p_flat = compute_context.params_flat
         X = compute_context.inputs
-        Y = compute_context.inputs
+        Y = compute_context.targets
         n_params = p_flat.size
 
         G0 = jnp.zeros((n_params, n_params))
