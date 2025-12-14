@@ -7,10 +7,13 @@ from src.config import Config, HessianApproximationConfig, ModelConfig
 from src.hessians.approximator.ekfac import EKFACApproximator
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.ekfac import EKFACComputer
+from src.hessians.computer.fim import FIMComputer
+from src.hessians.computer.fim_block import FIMBlockComputer
+from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.kfac import KFACComputer
 from src.hessians.utils.data import EKFACData, ModelContext
-from src.hessians.utils.pseudo_gradients import generate_pseudo_targets
+from src.hessians.utils.pseudo_targets import generate_pseudo_targets, sample_gradients
 from src.utils.data.data import RandomClassificationDataset
 from src.utils.data.jax_dataloader import JAXDataLoader
 from src.utils.loss import cross_entropy_loss
@@ -83,6 +86,27 @@ def simple_run():
         )
     logger.info("Model trained and loaded successfully.")
 
+    # Generate gradient samples to check for HVP and IHVP later
+    gradient_samples_1 = sample_gradients(
+        model=model,
+        params=params,
+        inputs=dataset.inputs,
+        targets=dataset.targets,
+        loss_fn=cross_entropy_loss,
+        n_vectors=50,
+        rng_key=PRNGKey(config.seed),
+    )
+
+    gradient_samples_2 = sample_gradients(
+        model=model,
+        params=params,
+        inputs=dataset.inputs,
+        targets=dataset.targets,
+        loss_fn=cross_entropy_loss,
+        n_vectors=50,
+        rng_key=PRNGKey(config.seed + 1),
+    )
+
     # Generate pseudo-targets for EKFAC/FIM (run twice to get two different datasets for two different runs)
     collector_data_1 = dataset.replace_targets(
         generate_pseudo_targets(
@@ -126,7 +150,7 @@ def simple_run():
     # Compute KFAC components and save them
     ekfac_approximator = EKFACApproximator(
         collected_data_path=collector_run_dir_1,
-        collected_data_path_snd=collector_run_dir_2,
+        collected_data_path_second=collector_run_dir_2,
     )
     ekfac_approximator.build(
         config=config,
@@ -134,6 +158,9 @@ def simple_run():
     )
 
     # Load EKFAC data and compute Hessians
+    assert config.hessian_approximation.directory is not None, (
+        "Hessian approximation directory must be provided in config."
+    )
     ekfac_data, _ = EKFACApproximator.load_data(
         directory=config.hessian_approximation.directory
     )
@@ -145,32 +172,81 @@ def simple_run():
     # Compute K-FAC Hessian
     kfac_computer = KFACComputer(compute_context=ekfac_data)
     kfac_hessian = kfac_computer.estimate_hessian(damping=damping)
-
-    logger.info(f"K-FAC Hessian computed with shape: {kfac_hessian.shape}")
+    kfac_hvp = kfac_computer.estimate_hvp(vectors=gradient_samples_1, damping=damping)
+    kfac_ihvp = kfac_computer.estimate_ihvp(vectors=gradient_samples_2, damping=damping)
+    logger.info(
+        f"K-FAC Hessian, HVP, and IHVP computed with shapes: {kfac_hessian.shape}, {kfac_hvp.shape}, {kfac_ihvp.shape}"
+    )
 
     # Compute E-KFAC Hessian
     ekfac_computer = EKFACComputer(compute_context=ekfac_data)
     ekfac_hessian = ekfac_computer.estimate_hessian(damping=damping)
-    logger.info(f"E-KFAC Hessian computed with shape: {ekfac_hessian.shape}")
+    ekfac_hvp = ekfac_computer.estimate_hvp(vectors=gradient_samples_1, damping=damping)
+    ekfac_ihvp = ekfac_computer.estimate_ihvp(
+        vectors=gradient_samples_2, damping=damping
+    )
+    logger.info(
+        f"E-KFAC Hessian, HVP, and IHVP computed with shapes: {ekfac_hessian.shape}, {ekfac_hvp.shape}, {ekfac_ihvp.shape}"
+    )
+
+    # Compute FIM
+    model_context = ModelContext.create(
+        dataset=dataset,
+        model=model,
+        params=params,
+        loss_fn=cross_entropy_loss,
+    )
+    fim_computer = FIMComputer(compute_context=model_context)
+    fim = fim_computer.estimate_hessian(damping=damping)
+    fim_hvp = fim_computer.estimate_hvp(vectors=gradient_samples_1, damping=damping)
+    fim_ihvp = fim_computer.estimate_ihvp(vectors=gradient_samples_2, damping=damping)
+    logger.info(
+        f"FIM, HVP, and IHVP computed with shapes: {fim.shape}, {fim_hvp.shape}, {fim_ihvp.shape}"
+    )
+
+    # Compute Block FIM
+    block_fim_data = CollectorActivationsGradients.load(directory=collector_run_dir_1)
+    block_fim_computer = FIMBlockComputer(compute_context=block_fim_data)
+    block_fim = block_fim_computer.estimate_hessian(damping=damping)
+    block_fim_hvp = block_fim_computer.estimate_hvp(
+        vectors=gradient_samples_1, damping=damping
+    )
+    block_fim_ihvp = block_fim_computer.estimate_ihvp(
+        vectors=gradient_samples_2, damping=damping
+    )
+    logger.info(
+        f"Block FIM, HVP, and IHVP computed with shapes: {block_fim.shape}, {block_fim_hvp.shape}, {block_fim_ihvp.shape}"
+    )
+
+    # Compute GNH
+    gnh_computer = GNHComputer(compute_context=model_context)
+    gnh = gnh_computer.estimate_hessian(damping=damping)
+    gnh_hvp = gnh_computer.estimate_hvp(vectors=gradient_samples_1, damping=damping)
+    gnh_ihvp = gnh_computer.estimate_ihvp(vectors=gradient_samples_2, damping=damping)
+    logger.info(
+        f"GNH, HVP, and IHVP computed with shapes: {gnh.shape}, {gnh_hvp.shape}, {gnh_ihvp.shape}"
+    )
 
     # Compute the true Hessian (no precomputation needed)
-    hessian_computer = HessianComputer(
-        compute_context=ModelContext.create(
-            dataset=dataset,
-            model=model,
-            params=params,
-            loss_fn=cross_entropy_loss,
-        )
-    )
+    hessian_computer = HessianComputer(compute_context=model_context)
     full_hessian = hessian_computer.compute_hessian(damping=damping)
-    logger.info(f"Full Hessian computed with shape: {full_hessian.shape}")
+    full_hvp = hessian_computer.compute_hvp(vectors=gradient_samples_1, damping=damping)
+    full_ihvp = hessian_computer.compute_ihvp(
+        vectors=gradient_samples_2, damping=damping
+    )
+    logger.info(
+        f"Full Hessian, HVP, and IHVP computed with shapes: {full_hessian.shape}, {full_hvp.shape}, {full_ihvp.shape}"
+    )
 
     # plot eigenvalue comparison
     import matplotlib.pyplot as plt
 
-    kfac_eigenvalues = jnp.linalg.eigvalsh(kfac_hessian)
-    ekfac_eigenvalues = jnp.linalg.eigvalsh(ekfac_hessian)
-    full_eigenvalues = jnp.linalg.eigvalsh(full_hessian)
+    kfac_eigenvalues = jnp.linalg.eigvalsh(kfac_hessian)[-50:]
+    ekfac_eigenvalues = jnp.linalg.eigvalsh(ekfac_hessian)[-50:]
+    full_eigenvalues = jnp.linalg.eigvalsh(full_hessian)[-50:]
+    fim_eigenvalues = jnp.linalg.eigvalsh(fim)[-50:]
+    block_fim_eigenvalues = jnp.linalg.eigvalsh(block_fim)[-50:]
+    gnh_eigenvalues = jnp.linalg.eigvalsh(gnh)[-50:]
 
     plt.figure(figsize=(8, 6))
     plt.plot(
@@ -194,6 +270,28 @@ def simple_run():
         linestyle="None",
         markersize=4,
     )
+    plt.plot(
+        fim_eigenvalues,
+        label="FIM Eigenvalues",
+        marker="s",
+        linestyle="None",
+        markersize=4,
+    )
+    plt.plot(
+        block_fim_eigenvalues,
+        label="Block FIM Eigenvalues",
+        marker="v",
+        linestyle="None",
+        markersize=4,
+    )
+    plt.plot(
+        gnh_eigenvalues,
+        label="GNH Eigenvalues",
+        marker="d",
+        linestyle="None",
+        markersize=4,
+    )
+    plt.ylabel("Eigenvalue")
     plt.xlabel("Index")
     plt.title("Eigenvalue Comparison: Full Hessian vs K-FAC Hessian")
     plt.legend()

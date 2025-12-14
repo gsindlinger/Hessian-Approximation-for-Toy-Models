@@ -7,12 +7,6 @@ from typing import Any, Dict
 import jax
 import matplotlib.pyplot as plt
 import numpy as np
-from chex import PRNGKey
-from jax import flatten_util
-from jaxtyping import Array, Float
-from models.dataclasses.model_context import ModelContext
-
-from hessian_approximations.kfac.kfac import KFAC
 
 
 def plot_training_curve(train_losses, val_losses, title="Training Curve"):
@@ -533,73 +527,6 @@ def plot_metric_results(
         bbox_inches="tight",
         pad_inches=0.1,
     )
-
-
-def sample_gradient_from_output_distribution(
-    model: ApproximationModel,
-    params: Dict,
-    x_train: Float[Array, "... n_features"],
-    loss_fn,
-    rng_key: PRNGKey | None = None,
-):
-    """Generate a single deterministic test vector."""
-    if x_train.ndim == 1:
-        x_sample = x_train
-    else:
-        x_sample = x_train[0]
-    pseudo_target = KFAC.generate_pseudo_targets(
-        model=model,
-        params=params,
-        training_data=x_sample,
-        loss_fn=loss_fn,
-        rng_key=rng_key,
-    )
-    grad = jax.jit(
-        jax.grad(lambda p: loss_fn(model.apply(p, x_sample), pseudo_target))
-    )(params)
-    vec, _ = flatten_util.ravel_pytree(grad)
-    return vec
-
-
-def sample_gradient_from_output_distribution_batched(
-    model_data: ModelContext, n_vectors: int = 5, rng_key: PRNGKey | None = None
-):
-    """Utility: Sample n_vectors from x_train and compute gradients."""
-    loss_fn = model_data.loss
-    x_train, _ = model_data.dataset.get_train_data()
-
-    # 1) Sample indices from x_train
-    if rng_key is None:
-        rng_key = jax.random.PRNGKey(0)
-
-    num_train = x_train.shape[0]
-    rng_key, subkey = jax.random.split(rng_key)
-    idx = jax.random.choice(subkey, num_train, (n_vectors,), replace=False)
-
-    xs = x_train[idx]
-
-    pseudo_targets = KFAC.generate_pseudo_targets(
-        model=model_data.model,
-        params=model_data.params,
-        training_data=xs,
-        loss_fn=loss_fn,
-        rng_key=rng_key,
-    )
-
-    def single_loss(params, x, y):
-        preds = model_data.model.apply(params, x)
-        return loss_fn(preds, y)
-
-    def grad_and_flatten(params, x, y):
-        grads = jax.grad(single_loss)(params, x, y)
-        flat, _ = flatten_util.ravel_pytree(grads)
-        return flat
-
-    # Batch the fused operation with vmap and JIT
-    batched_grad_fn = jax.jit(jax.vmap(grad_and_flatten, in_axes=(None, 0, 0)))
-
-    flat_grads = batched_grad_fn(model_data.params, xs, pseudo_targets)
-    return flat_grads
 
 
 def write_markdown_report(
