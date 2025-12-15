@@ -4,85 +4,70 @@ import pytest
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 
-from config.config import (
-    Config,
-    LinearModelConfig,
-    ModelConfig,
-    RandomRegressionConfig,
-    TrainingConfig,
-    UCIDatasetConfig,
-)
-from models.train import train_or_load
+from src.utils.data.data import Dataset, RandomRegressionDataset
+from src.utils.loss import mse_loss
+from src.utils.models.linear_model import LinearModel
+from src.utils.optimizers import optimizer
+from src.utils.train import train_model
 
 
 class TestLinearRegression:
     """Tests for basic linear regression implementations."""
 
-    @pytest.fixture(params=["simple_regression", "energy_dataset"])
-    def regression_config(self, request):
-        """Config for different regression scenarios."""
+    @pytest.fixture(params=["simple_regression", "multi_feature_regression"])
+    def dataset(self, request):
+        seed = 0
+
         if request.param == "simple_regression":
-            return Config(
-                dataset=RandomRegressionConfig(
-                    n_samples=1000,
-                    n_features=1,
-                    n_targets=1,
-                    noise=10,
-                    train_test_split=1,
-                ),
-                model=ModelConfig(name="linear", loss="mse"),
-                training=TrainingConfig(
-                    epochs=100,
-                    lr=0.01,
-                    optimizer="sgd",
-                    batch_size=100,
-                    loss="mse",
-                ),
+            return RandomRegressionDataset(
+                n_samples=100,
+                n_features=1,
+                n_targets=1,
+                noise=10.0,
+                seed=seed,
             )
-        elif request.param == "energy_dataset":
-            return Config(
-                dataset=UCIDatasetConfig(
-                    train_test_split=1,
-                ),
-                model=LinearModelConfig(loss="mse", hidden_dim=[]),
-                training=TrainingConfig(
-                    epochs=200,
-                    lr=0.01,
-                    batch_size=768,
-                    optimizer="sgd",
-                    loss="mse",
-                ),
+        else:
+            return RandomRegressionDataset(
+                n_samples=500,
+                n_features=10,
+                n_targets=1,
+                noise=10.0,
+                seed=seed,
             )
 
     @pytest.fixture
-    def model_trained(self, regression_config):
-        """Trained model for regression."""
-        model_data = train_or_load(regression_config)
-        return (
-            model_data.model,
-            model_data.dataset,
-            model_data.params,
-            regression_config,
+    def model_and_params(self, dataset: Dataset):
+        model = LinearModel(
+            input_dim=dataset.input_dim(),
+            output_dim=dataset.output_dim(),
+            hidden_dim=[],
+            seed=0,
+            use_bias=True,
         )
 
-    def test_jax_vs_sklearn_regression(self, model_trained):
+        model, params, _ = train_model(
+            model,
+            dataset.get_dataloader(batch_size=1, seed=0, shuffle=True),
+            loss_fn=mse_loss,
+            optimizer=optimizer("adamw", lr=0.01),
+            epochs=200,
+        )
+
+        return model, params, dataset
+
+    def test_jax_vs_sklearn_regression(self, model_and_params):
         """
         Test that JAX linear model matches sklearn after training.
 
         Verifies that the custom JAX implementation produces predictions
-        that are very close to sklearn's LinearRegression on both simple
-        and real-world datasets.
+        that are very close to sklearn's LinearRegression.
         """
-        model, dataset, params, config = model_trained
-        x, y = dataset.get_train_data()
+        model, params, dataset = model_and_params
+        x, y = dataset.inputs, dataset.targets
 
-        # For simple regression, use interpolated test points
-        # For energy dataset, use training data directly
-        if (
-            isinstance(config.dataset, RandomRegressionConfig)
-            and config.dataset.n_features == 1
-        ):
-            x_test = jnp.linspace(jnp.min(x), jnp.max(x), 100).reshape(-1, 1)
+        # For 1D regression, evaluate on a dense grid
+        if dataset.input_dim() == 1:
+            x_test = jnp.linspace(jnp.min(x), jnp.max(x), 200).reshape(-1, 1)
         else:
             x_test = x
 
@@ -91,11 +76,13 @@ class TestLinearRegression:
 
         # sklearn predictions
         sk_model = LinearRegression()
-        sk_model.fit(np.array(x), np.array(y))
-        y_pred_sklearn = sk_model.predict(np.array(x_test))
+        sk_model.fit(np.asarray(x), np.asarray(y))
+        y_pred_sklearn = sk_model.predict(np.asarray(x_test))
 
         # Compare predictions
-        mse = mean_squared_error(np.array(y_pred_jax), np.array(y_pred_sklearn))
+        mse = mean_squared_error(
+            np.asarray(y_pred_jax),
+            np.asarray(y_pred_sklearn),
+        )
 
-        # MSE should be very small
         assert mse < 0.1, f"MSE between JAX and sklearn is too large: {mse}"

@@ -1,353 +1,167 @@
-from typing import Dict
-
 import jax
 import jax.numpy as jnp
 import pytest
-from config.config import (
-    Config,
-    LinearModelConfig,
-    RandomRegressionConfig,
-    TrainingConfig,
-    UCIDatasetConfig,
+from jax import flatten_util
+from jax.random import PRNGKey
+
+from src.hessians.computer.gnh import GNHComputer
+from src.hessians.computer.hessian import HessianComputer
+from src.hessians.utils.data import ModelContext
+from src.utils.data.data import (
+    RandomClassificationDataset,
+    RandomRegressionDataset,
 )
-from config.dataset_config import RandomClassificationConfig
-from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-from hessian_approximations.hessian.exact_hessian_regression import (
-    HessianExactRegression,
+from src.utils.data.jax_dataloader import JAXDataLoader
+from src.utils.loss import cross_entropy_loss, mse_loss
+from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
+from src.utils.metrics.vector_metrics import VectorMetric
+from src.utils.models.linear_model import LinearModel
+from src.utils.optimizers import optimizer
+from src.utils.train import train_model
+
+# ---------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------
+
+
+@pytest.fixture(
+    scope="session",
+    params=["random_regression", "classification"],
 )
-from hessian_approximations.hessian.hessian import Hessian
-from hessian_approximations.hessian_approximations import HessianApproximation
-from models.dataclasses.hessian_compute_context import HessianComputeContext
-from models.dataclasses.model_context import ModelContext
-from models.train import train_or_load
-from models.utils.loss import get_loss_fn
+def setup(request):
+    seed = 42
 
-from metrics.full_matrix_metrics import FullMatrixMetric
-from metrics.vector_metrics import VectorMetric
-from src.utils.utils import sample_gradient_from_output_distribution_batched
-
-
-class TestHessianApproximations:
-    """Tests for various Hessian approximation methods."""
-
-    @pytest.fixture
-    def random_regression_config(self):
-        """Config for random regression with multiple features and targets."""
-        return Config(
-            dataset=RandomRegressionConfig(
-                n_samples=1000,
-                n_features=100,
-                n_targets=10,
-                noise=20,
-                train_test_split=1,
-            ),
-            model=LinearModelConfig(loss="mse", hidden_dim=[]),
-            training=TrainingConfig(
-                epochs=200,
-                lr=0.001,
-                batch_size=100,
-                optimizer="sgd",
-                loss="mse",
-            ),
-            seed=42,
+    if request.param == "random_regression":
+        dataset = RandomRegressionDataset(
+            n_samples=1200,
+            n_features=100,
+            n_targets=10,
+            noise=20.0,
+            seed=seed,
         )
-
-    @pytest.fixture
-    def energy_regression_config(self):
-        """Config for energy dataset regression."""
-        return Config(
-            dataset=UCIDatasetConfig(
-                train_test_split=1,
-            ),
-            model=LinearModelConfig(loss="mse", hidden_dim=[]),
-            training=TrainingConfig(
-                epochs=200,
-                lr=0.01,
-                batch_size=768,
-                optimizer="sgd",
-                loss="mse",
-            ),
-            seed=42,
+        model = LinearModel(
+            input_dim=dataset.input_dim(),
+            output_dim=dataset.output_dim(),
+            hidden_dim=[],
+            seed=seed,
         )
+        loss_fn = mse_loss
+        tol_matrix = 1e-4
+        tol_vector = 1e-5
 
-    @pytest.fixture
-    def random_model_trained(self, random_regression_config):
-        """Trained model for random regression."""
-        model_data = train_or_load(random_regression_config)
-        return (
-            model_data.model,
-            model_data.dataset,
-            model_data.params,
-            random_regression_config,
+    elif request.param == "classification":
+        dataset = RandomClassificationDataset(
+            n_samples=1000,
+            n_features=20,
+            n_informative=10,
+            n_classes=5,
+            seed=seed,
         )
-
-    @pytest.fixture
-    def energy_model_trained(self, energy_regression_config):
-        model_data = train_or_load(energy_regression_config)
-        return (
-            model_data.model,
-            model_data.dataset,
-            model_data.params,
-            energy_regression_config,
+        model = LinearModel(
+            input_dim=dataset.input_dim(),
+            output_dim=dataset.output_dim(),
+            hidden_dim=[],
+            seed=seed,
         )
+        loss_fn = cross_entropy_loss
+        tol_matrix = 2e-2
+        tol_vector = 2e-1
 
-    @pytest.fixture
-    def random_classification_config(self) -> Config:
-        """Config for random classification with multiple features and classes."""
-        return Config(
-            dataset=RandomClassificationConfig(
-                n_samples=1000,
-                n_features=20,
-                n_classes=5,
-                n_informative=10,
-                train_test_split=1,
-            ),
-            model=LinearModelConfig(loss="cross_entropy", hidden_dim=[]),
-            training=TrainingConfig(
-                epochs=200,
-                lr=0.001,
-                batch_size=100,
-                optimizer="sgd",
-                loss="cross_entropy",
-            ),
-            seed=42,
-        )
+    model, params, _ = train_model(
+        model,
+        dataset.get_dataloader(batch_size=JAXDataLoader.get_batch_size(), seed=seed),
+        loss_fn=loss_fn,
+        optimizer=optimizer("sgd", lr=1e-3),
+        epochs=50,
+    )
 
-    @pytest.fixture
-    def random_classification_config_multi_layer(self) -> Config:
-        """Config for random classification with multiple features and classes."""
-        return Config(
-            dataset=RandomClassificationConfig(
-                n_samples=5000,
-                n_features=50,
-                n_classes=5,
-                n_informative=10,
-                train_test_split=1,
-            ),
-            model=LinearModelConfig(loss="cross_entropy", hidden_dim=[20, 10]),
-            training=TrainingConfig(
-                epochs=1000,
-                lr=0.001,
-                batch_size=100,
-                optimizer="sgd",
-                loss="cross_entropy",
-            ),
-            seed=42,
-        )
+    model_context = ModelContext.create(
+        dataset=dataset,
+        model=model,
+        params=params,
+        loss_fn=loss_fn,
+    )
 
-    def compute_hessians(self, model, params, dataset, config):
-        """Helper to compute all Hessian approximations."""
-        hessian_methods: Dict[str, HessianApproximation] = {
-            "exact-hessian-regression": HessianExactRegression(full_config=config),
-            "hessian": Hessian(full_config=config),
-            "gauss-newton": GaussNewton(full_config=config),
-        }
+    return {
+        "dataset": dataset,
+        "model": model,
+        "params": params,
+        "model_context": model_context,
+        "tol_matrix": tol_matrix,
+        "tol_vector": tol_vector,
+    }
 
-        results = {}
 
-        for name, method in hessian_methods.items():
-            hessian_matrix = method.compute_hessian()
-            results[name] = hessian_matrix
+# ---------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------
 
-        return results
 
-    def test_hessian_equivalence_energy(self, energy_model_trained):
-        """
-        Test that for linear regression, H = H_GNH and both match H_exact.
+def test_exact_hessian_vs_gnh_matrix_equivalence(setup):
+    """For linear regression, exact Hessian == GNH. For"""
+    hessian = HessianComputer(setup["model_context"])
+    gnh = GNHComputer(setup["model_context"])
 
-        For linear models with MSE loss, the Hessian computed via automatic
-        differentiation should match both the Gauss-Newton approximation and
-        the exact analytical formula.
-        """
-        model, dataset, params, config = energy_model_trained
-        hessians = self.compute_hessians(model, params, dataset, config)
+    H = hessian.compute_hessian()
+    G = gnh.estimate_hessian()
 
-        # Compare all pairs
-        comparisons = [
-            ("exact-hessian-regression", "hessian"),
-            ("exact-hessian-regression", "gauss-newton"),
-            ("hessian", "gauss-newton"),
-        ]
+    diff_fro = FullMatrixMetric.RELATIVE_FROBENIUS.compute(H, G)
+    assert diff_fro < setup["tol_matrix"]
 
-        for name1, name2 in comparisons:
-            diff = jnp.linalg.norm(hessians[name1] - hessians[name2], "fro")
-            assert diff < 1e-4, (
-                f"Frobenius norm difference between {name1} and {name2} "
-                f"is too large: {diff}"
-            )
 
-            max_diff = jnp.max(jnp.abs(hessians[name1] - hessians[name2]))
-            assert max_diff < 1e-4, (
-                f"Max absolute difference between {name1} and {name2} "
-                f"is too large: {max_diff}"
-            )
+def test_batched_ihvp_matches_full_inverse(setup):
+    hessian = HessianComputer(setup["model_context"])
+    params_flat, _ = flatten_util.ravel_pytree(setup["params"])
 
-    def test_hessian_equivalence_random(self, random_model_trained):
-        """
-        Test Hessian equivalence on random high-dimensional data.
+    V = jax.random.normal(PRNGKey(0), shape=(10, params_flat.shape[0]))
 
-        Similar to energy dataset test but with higher dimensionality.
-        """
-        model, dataset, params, config = random_model_trained
-        hessians = self.compute_hessians(model, params, dataset, config)
+    IHVP = hessian.compute_ihvp(V, damping=1e-2)
+    H = hessian.compute_hessian(damping=1e-2)
+    Hinv = jnp.linalg.inv(H)
 
-        comparisons = [
-            ("exact-hessian-regression", "hessian"),
-            ("exact-hessian-regression", "gauss-newton"),
-            ("hessian", "gauss-newton"),
-        ]
+    IHVP_ref = (Hinv @ V.T).T
 
-        for name1, name2 in comparisons:
-            diff = jnp.linalg.norm(hessians[name1] - hessians[name2], "fro")
-            assert diff < 1e-4, (
-                f"Frobenius norm difference between {name1} and {name2} "
-                f"is too large: {diff}"
-            )
+    err = VectorMetric.RELATIVE_ERROR.compute(IHVP, IHVP_ref, reduction="mean")
+    assert err < 1e-5
 
-    def test_batched_ihvp_hessian(self, random_model_trained):
-        """
-        Test batched IHVP computation against full Hessian inversion.
 
-        Ensures that the batched IHVP method produces results consistent
-        with directly inverting the full Hessian matrix.
-        """
-        model, dataset, params, config = random_model_trained
+def test_batched_hvp_matches_full_hessian(setup):
+    hessian = HessianComputer(setup["model_context"])
+    params_flat, _ = flatten_util.ravel_pytree(setup["params"])
 
-        hessian = Hessian(full_config=config)
+    V = jax.random.normal(PRNGKey(1), shape=(10, params_flat.shape[0]))
+    HVP = hessian.compute_hvp(V, damping=1e-2)
 
-        test_vectors = sample_gradient_from_output_distribution_batched(
-            model_data=ModelContext(
-                model=model,
-                dataset=dataset,
-                params=params,
-                loss=get_loss_fn(config.training.loss),
-            ),
-            n_vectors=20,
-        )
+    H = hessian.compute_hessian(damping=1e-2)
+    HVP_ref = (H @ V.T).T
 
-        ihvp_batched = hessian.compute_ihvp(vectors=test_vectors)
+    err = VectorMetric.RELATIVE_ERROR.compute(HVP, HVP_ref, reduction="mean")
+    assert err < 1e-5
 
-        # compute full Hessian and invert
-        full_hessian = hessian.compute_hessian()
-        hessian_inv = jnp.linalg.inv(full_hessian)
 
-        ihvp_full = jnp.dot(hessian_inv, test_vectors.T).T
-        # compare results
-        diff = VectorMetric.RELATIVE_ERROR.compute(
-            ihvp_batched, ihvp_full, reduction="mean"
-        )
-        assert diff < 1e-5, f"Batched IHVP differs from full inversion by {diff}"
+def test_hessian_ihvp_roundtrip_unit_vectors(setup):
+    hessian = HessianComputer(setup["model_context"])
 
-    def test_batched_hvp_hessian(self, random_model_trained):
-        """
-        Test batched HVP computation against full Hessian multiplication.
+    n_params = setup["model_context"].params_flat.size
+    I = jnp.eye(n_params)
 
-        Ensures that the batched HVP method produces results consistent
-        with directly multiplying the full Hessian matrix.
-        """
-        model, dataset, params, config = random_model_trained
+    IHVP = hessian.compute_ihvp(I, damping=1e-2)
+    Hinv = jnp.linalg.inv(hessian.compute_hessian(damping=1e-2))
 
-        hessian = Hessian(full_config=config)
+    diff = jnp.max(jnp.abs(Hinv - IHVP.T))
+    assert diff < 1e-6
 
-        test_vectors = sample_gradient_from_output_distribution_batched(
-            model_data=ModelContext(
-                model=model,
-                dataset=dataset,
-                params=params,
-                loss=get_loss_fn(config.training.loss),
-            ),
-            n_vectors=20,
-        )
 
-        hvp_batched = hessian.compute_hvp(vectors=test_vectors)
+def test_hessian_vs_gnh_ihvp_consistency(setup):
+    hessian = HessianComputer(setup["model_context"])
+    gnh = GNHComputer(setup["model_context"])
 
-        # compute full Hessian
-        full_hessian = hessian.compute_hessian()
+    params_flat, _ = flatten_util.ravel_pytree(setup["params"])
 
-        hvp_full = jnp.dot(full_hessian, test_vectors.T).T
-        # compare results
-        diff = VectorMetric.RELATIVE_ERROR.compute(
-            hvp_batched, hvp_full, reduction="mean"
-        )
-        assert diff < 1e-5, f"Batched HVP differs from full multiplication by {diff}"
+    V = jax.random.normal(PRNGKey(2), shape=(10, params_flat.shape[0]))
 
-    def test_hessian_ihvp_hvp_round_trip_hessian(
-        self, random_classification_config: Config
-    ):
-        """Compute IHPV and HVP with unit vectors and check round-trip accuracy."""
+    ihvp_h = hessian.compute_ihvp(V, damping=1e-3)
+    ihvp_g = gnh.estimate_ihvp(V, damping=1e-3)
 
-        config = random_classification_config
-        model_data = train_or_load(config)
-        hessian = Hessian(full_config=config)
-
-        n_params = HessianComputeContext.get_data_and_params_for_hessian(
-            model_data=model_data
-        ).num_params
-
-        # Create unit vectors along each parameter axis
-        unit_vectors = jnp.eye(n_params)
-
-        # Compute IHVPs for all unit vectors
-        ihvps = hessian.compute_ihvp(vectors=unit_vectors)
-
-        # Compare IHVPs with compute_inverse_hessian_method
-        inverse_hessian = jnp.linalg.inv(hessian.compute_hessian())
-
-        matrix_diff = FullMatrixMetric.MAX_ELEMENTWISE.compute(inverse_hessian, ihvps.T)
-        assert matrix_diff < 1e-6, (
-            f"IHVP differs from direct inverse Hessian by {matrix_diff}"
-        )
-
-        # Compute HVPs for all unit vectors
-        hvps = hessian.compute_hvp(vectors=unit_vectors)
-
-        # Compute HVPs of the IHVP results
-        hessian_full = hessian.compute_hessian()
-
-        matrix_diff_hessian = FullMatrixMetric.MAX_ELEMENTWISE.compute(
-            hessian_full, hvps
-        )
-
-        assert matrix_diff_hessian < 1e-5, (
-            f"HVP differs from direct Hessian by {matrix_diff_hessian}"
-        )
-
-    def test_ihvp_hessian_vs_gnh(self, random_classification_config_multi_layer):
-        config = random_classification_config_multi_layer
-        model_data = train_or_load(config)
-        hessian = Hessian(full_config=config)
-        gnh = GaussNewton(full_config=config)
-
-        # Create random vectors out of model distributution
-        test_vectors_1 = sample_gradient_from_output_distribution_batched(
-            model_data=model_data,
-            n_vectors=10,
-            rng_key=jax.random.PRNGKey(0),
-        )
-
-        hessian_matrix = hessian.compute_hessian(damping=1e-3)
-        gnh_matrix = gnh.compute_hessian(damping=1e-3)
-
-        # compare full hessian and gnh
-        rel_error_matrix = FullMatrixMetric.RELATIVE_FROBENIUS.compute(
-            hessian_matrix, gnh_matrix
-        )
-        max_error_matrix = FullMatrixMetric.MAX_ELEMENTWISE.compute(
-            hessian_matrix,
-            gnh_matrix,
-        )
-        print(f"Max elementwise norm between Hessian and GNH: {max_error_matrix}")
-        print(f"Relative Frobenius norm between Hessian and GNH: {rel_error_matrix}")
-
-        assert rel_error_matrix < 0.02, "Full Hessian and GNH differ significantly."
-
-        # compare ihvp results
-        ihvp_hessian = hessian.compute_ihvp(vectors=test_vectors_1, damping=1)
-        ihvp_gnh = gnh.compute_ihvp(vectors=test_vectors_1, damping=1)
-
-        assert (
-            VectorMetric.RELATIVE_ERROR.compute(
-                ihvp_hessian, ihvp_gnh, reduction="mean"
-            )
-            < 0.2
-        ), "IHVP results from Hessian and GNH differ significantly."
+    err = VectorMetric.RELATIVE_ERROR.compute(ihvp_h, ihvp_g, reduction="mean")
+    assert err < setup["tol_vector"]

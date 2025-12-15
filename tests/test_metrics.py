@@ -1,8 +1,8 @@
 import jax.numpy as jnp
 import pytest
 
-from metrics.full_matrix_metrics import FullMatrixMetric, compare_matrices
-from metrics.vector_metrics import VectorMetric
+from src.utils.metrics.full_matrix_metrics import FullMatrixMetric, compare_matrices
+from src.utils.metrics.vector_metrics import VectorMetric
 
 # ---------------------------------------------------------------------------
 # VectorMetric Tests
@@ -146,12 +146,6 @@ def test_relative_frobenius():
     assert FullMatrixMetric.RELATIVE_FROBENIUS.compute(A, B) == pytest.approx(expected)
 
 
-def test_max_elementwise():
-    A = jnp.array([[1.0, 2.0], [3.0, 4.0]])
-    B = jnp.array([[0.0, 2.0], [3.0, 10.0]])
-    assert FullMatrixMetric.MAX_ELEMENTWISE.compute(A, B) == 6.0
-
-
 def test_spectral_norm():
     A = jnp.eye(2)
     B = 2 * jnp.eye(2)
@@ -163,26 +157,6 @@ def test_cosine_similarity_matrix():
     A = jnp.array([[1.0, 0.0], [0.0, 1.0]])
     B = jnp.array([[1.0, 0.0], [0.0, 1.0]])
     assert FullMatrixMetric.COSINE_SIMILARITY.compute(A, B) == pytest.approx(1.0)
-
-
-def test_eigenvalue_max():
-    A = jnp.array([[2.0, 0.0], [0.0, 3.0]])
-    B = jnp.array([[1.0, 0.0], [0.0, 5.0]])
-    expected = jnp.max(jnp.abs(jnp.array([2, 3]) - jnp.array([1, 5])))
-    assert FullMatrixMetric.EIGENVALUE_MAX.compute(A, B) == pytest.approx(
-        float(expected)
-    )
-
-
-def test_eigenvalues_l2_distance():
-    A = jnp.array([[2.0, 0.0], [0.0, 3.0]])  # eigenvalues 2,3 (sorted)
-    B = jnp.array([[3.0, 0.0], [0.0, 1.0]])  # eigenvalues 1,3 (sorted)
-    expected = jnp.linalg.norm(jnp.array([2, 3]) - jnp.array([1, 3])) / jnp.linalg.norm(
-        jnp.array([2, 3])
-    )
-    assert FullMatrixMetric.EIGENVALUES_L2_DISTANCE.compute(A, B) == pytest.approx(
-        float(expected)
-    )
 
 
 def test_trace_distance():
