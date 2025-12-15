@@ -1,252 +1,164 @@
-import copy
-
 import jax
 import jax.numpy as jnp
 import pytest
 from jax import flatten_util
+from jax.random import PRNGKey
 
-from config.config import Config
-from config.dataset_config import RandomClassificationConfig, RandomRegressionConfig
-from config.hessian_approximation_config import FisherInformationConfig
-from config.model_config import LinearModelConfig
-from config.training_config import TrainingConfig
-from hessian_approximations.fim.fisher_information import FisherInformation
-from hessian_approximations.gauss_newton.gauss_newton import GaussNewton
-from metrics.full_matrix_metrics import FullMatrixMetric
-from metrics.vector_metrics import VectorMetric
+from src.hessians.computer.fim import FIMComputer
+from src.hessians.computer.gnh import GNHComputer
+from src.hessians.utils.data import ModelContext
+from src.hessians.utils.pseudo_targets import generate_pseudo_targets
+from src.utils.data.data import (
+    RandomClassificationDataset,
+    RandomRegressionDataset,
+)
+from src.utils.data.jax_dataloader import JAXDataLoader
+from src.utils.loss import cross_entropy_loss, mse_loss
+from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
+from src.utils.metrics.vector_metrics import VectorMetric
+from src.utils.models.linear_model import LinearModel
+from src.utils.models.mlp import MLP
+from src.utils.optimizers import optimizer
+from src.utils.train import train_model
+
+# ---------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------
 
 
-class TestFIMGaussNewton:
-    @pytest.fixture
-    def random_regression_config(self):
-        """Config for random regression with multiple features and targets."""
-        return Config(
-            dataset=RandomRegressionConfig(
-                n_samples=3000,
-                n_features=10,
-                n_targets=2,
-                noise=10,
-                train_test_split=1,
-            ),
-            model=LinearModelConfig(loss="mse", hidden_dim=[5]),
-            training=TrainingConfig(
-                epochs=200,
-                lr=0.001,
-                batch_size=100,
-                optimizer="sgd",
-                loss="mse",
-            ),
+@pytest.fixture(scope="session", params=["classification", "regression"])
+def setup(request):
+    seed = 0
+
+    if request.param == "classification":
+        dataset = RandomClassificationDataset(
+            n_samples=1500,
+            n_features=20,
+            n_informative=10,
+            n_classes=5,
+            seed=seed,
         )
-
-    @pytest.fixture
-    def random_classification_config(self) -> Config:
-        """Config for random classification with multiple features and classes."""
-        return Config(
-            dataset=RandomClassificationConfig(
-                n_samples=3000,
-                n_features=20,
-                n_classes=5,
-                n_informative=10,
-                train_test_split=1,
-            ),
-            model=LinearModelConfig(loss="cross_entropy", hidden_dim=[10]),
-            training=TrainingConfig(
-                epochs=200,
-                lr=0.001,
-                batch_size=100,
-                optimizer="sgd",
-                loss="cross_entropy",
-            ),
+        model = MLP(
+            input_dim=dataset.input_dim(),
+            output_dim=dataset.output_dim(),
+            hidden_dim=[10],
+            activation="relu",
+            seed=seed,
         )
-
-    def test_fim_gnh_comparison_classification(
-        self,
-        random_classification_config: Config,
-    ):
-        """Test comparing FIM and Gauss-Newton Hessians for classification."""
-        config = random_classification_config
-
-        fim_config = FisherInformationConfig(fisher_type="true")
-        random_classification_config.hessian_approximation = fim_config
-        fim = FisherInformation(full_config=config)
-
-        config_copy = copy.deepcopy(config)
-        gnh = GaussNewton(full_config=config_copy)
-
-        fim_hessian = fim.compute_hessian(damping=0.0)
-        gnh_hessian = gnh.compute_hessian(damping=0.0)
-
-        assert (
-            FullMatrixMetric.COSINE_SIMILARITY.compute(fim_hessian, gnh_hessian) > 0.95
-        ), (
-            f"Cosine similarity too low: {FullMatrixMetric.COSINE_SIMILARITY.compute(fim_hessian, gnh_hessian)}"
+        loss_fn = cross_entropy_loss
+        tol_hvp = 0.2
+        tol_ihvp = 0.1
+        tol_cosine = 0.95
+    else:
+        dataset = RandomRegressionDataset(
+            n_samples=1500,
+            n_features=10,
+            n_targets=2,
+            noise=5.0,
+            seed=seed,
         )
-
-    def test_fim_gnh_ihvp_comparison_classification(
-        self,
-        random_classification_config: Config,
-    ):
-        """Test comparing FIM and Gauss-Newton Hessians for classification."""
-        config = random_classification_config
-
-        fim_config = FisherInformationConfig(fisher_type="true")
-        random_classification_config.hessian_approximation = fim_config
-        fim = FisherInformation(full_config=config)
-
-        config_copy = copy.deepcopy(config)
-        gnh = GaussNewton(full_config=config_copy)
-
-        params_flat = flatten_util.ravel_pytree(gnh.model_context.params)
-
-        test_vector = jnp.ones(params_flat[0].shape)
-        random_test_vector = jnp.array(
-            jax.random.normal(jax.random.PRNGKey(0), shape=params_flat[0].shape)
+        model = LinearModel(
+            input_dim=dataset.input_dim(),
+            output_dim=dataset.output_dim(),
+            hidden_dim=[5],
+            seed=seed,
         )
+        loss_fn = mse_loss
+        tol_hvp = 0.6
+        tol_ihvp = 0.1
+        tol_cosine = 0.95
 
-        fim_ivhp = fim.compute_ihvp(test_vector, damping=0.1)
-        gnh_ihvp = gnh.compute_ihvp(test_vector, damping=0.1)
-        assert VectorMetric.RELATIVE_ERROR.compute_single(fim_ivhp, gnh_ihvp) < 0.1, (
-            f"Relative error too high: {VectorMetric.RELATIVE_ERROR.compute_single(fim_ivhp, gnh_ihvp)}"
-        )
+    model, params, _ = train_model(
+        model,
+        dataset.get_dataloader(batch_size=JAXDataLoader.get_batch_size(), seed=seed),
+        loss_fn=loss_fn,
+        optimizer=optimizer("sgd", lr=1e-3),
+        epochs=50,
+    )
 
-        fim_ivhp_random = fim.compute_ihvp(random_test_vector, damping=0.1)
-        gnh_ihvp_random = gnh.compute_ihvp(random_test_vector, damping=0.1)
-        assert (
-            VectorMetric.RELATIVE_ERROR.compute_single(fim_ivhp_random, gnh_ihvp_random)
-            < 0.1
-        ), (
-            f"Relative error too high: {VectorMetric.RELATIVE_ERROR.compute_single(fim_ivhp_random, gnh_ihvp_random)}"
-        )
+    model_context = ModelContext.create(
+        dataset=dataset,
+        model=model,
+        params=params,
+        loss_fn=loss_fn,
+    )
 
-    def test_fim_gnh_hvp_comparison_classification(
-        self,
-        random_classification_config: Config,
-    ):
-        """Test comparing FIM and Gauss-Newton Hessians for classification."""
-        config = random_classification_config
+    pseudo_targets = generate_pseudo_targets(
+        model=model,
+        inputs=dataset.inputs,
+        params=params,
+        loss_fn=loss_fn,
+        rng_key=PRNGKey(seed + 1234),
+    )
+    model_context_fim = ModelContext.create(
+        dataset=dataset.replace_targets(pseudo_targets),
+        model=model,
+        params=params,
+        loss_fn=loss_fn,
+    )
 
-        fim_config = FisherInformationConfig(fisher_type="true")
-        random_classification_config.hessian_approximation = fim_config
-        fim = FisherInformation(full_config=config)
+    return {
+        "dataset": dataset,
+        "model": model,
+        "params": params,
+        "model_context": model_context,
+        "fim_model_context": model_context_fim,
+        "loss_fn": loss_fn,
+        "tol_hvp": tol_hvp,
+        "tol_ihvp": tol_ihvp,
+        "tol_cosine": tol_cosine,
+    }
 
-        config_copy = copy.deepcopy(config)
-        gnh = GaussNewton(full_config=config_copy)
 
-        params_flat = flatten_util.ravel_pytree(gnh.model_context.params)
+# ---------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------
 
-        test_vector = jnp.ones(params_flat[0].shape)
-        random_test_vector = jnp.array(
-            jax.random.normal(jax.random.PRNGKey(0), shape=params_flat[0].shape)
-        )
 
-        fim_hvp = fim.compute_hvp(test_vector, damping=1)
-        gnh_hvp = gnh.compute_hvp(test_vector, damping=1)
+def test_fim_gnh_hessian_similarity(setup):
+    fim = FIMComputer(setup["fim_model_context"])
+    gnh = GNHComputer(setup["model_context"])
 
-        assert VectorMetric.RELATIVE_ERROR.compute_single(fim_hvp, gnh_hvp) < 0.2, (
-            f"Relative error too high: {VectorMetric.RELATIVE_ERROR.compute_single(fim_hvp, gnh_hvp)}"
-        )
+    H_fim = fim.estimate_hessian(damping=0.0)
+    H_gnh = gnh.estimate_hessian(damping=0.0)
 
-        fim_hvp_random = fim.compute_hvp(random_test_vector, damping=1)
-        gnh_hvp_random = gnh.compute_hvp(random_test_vector, damping=1)
-        assert (
-            VectorMetric.RELATIVE_ERROR.compute_single(fim_hvp_random, gnh_hvp_random)
-            < 0.2
-        ), (
-            f"Relative error too high: {VectorMetric.RELATIVE_ERROR.compute_single(fim_hvp_random, gnh_hvp_random)}"
-        )
+    sim = FullMatrixMetric.COSINE_SIMILARITY.compute(H_fim, H_gnh)
+    assert sim > setup["tol_cosine"], f"Cosine similarity too low: {sim}"
 
-    def test_fim_gnh_comparison_regression(
-        self,
-        random_regression_config: Config,
-    ):
-        """Test comparing FIM and Gauss-Newton Hessians for regression."""
-        config = random_regression_config
 
-        fim_config = FisherInformationConfig(fisher_type="true")
-        random_regression_config.hessian_approximation = fim_config
-        fim = FisherInformation(full_config=config)
+def test_fim_gnh_hvp_consistency(setup):
+    fim = FIMComputer(setup["fim_model_context"])
+    gnh = GNHComputer(setup["model_context"])
 
-        config_copy = copy.deepcopy(config)
-        gnh = GaussNewton(full_config=config_copy)
+    params_flat, _ = flatten_util.ravel_pytree(setup["params"])
 
-        fim_hessian = fim.compute_hessian(damping=0.1)
-        gnh_hessian = gnh.compute_hessian(damping=0.1)
+    v = jnp.ones_like(params_flat)
+    v_rand = jax.random.normal(PRNGKey(0), shape=params_flat.shape)
 
-        assert (
-            FullMatrixMetric.COSINE_SIMILARITY.compute(fim_hessian, gnh_hessian) > 0.95
-        ), (
-            f"Cosine similarity too low: {FullMatrixMetric.COSINE_SIMILARITY.compute(fim_hessian, gnh_hessian)}"
-        )
+    fim_hvp = fim.estimate_hvp(v, damping=0.1)
+    gnh_hvp = gnh.estimate_hvp(v, damping=0.1)
+    assert VectorMetric.RELATIVE_ERROR.compute(fim_hvp, gnh_hvp) < setup["tol_hvp"]
 
-    def test_fim_gnh_ihvp_comparison_regression(
-        self,
-        random_regression_config: Config,
-    ):
-        """Test comparing FIM and Gauss-Newton Hessians for regression."""
-        config = random_regression_config
+    fim_hvp_r = fim.estimate_hvp(v_rand, damping=0.1)
+    gnh_hvp_r = gnh.estimate_hvp(v_rand, damping=0.1)
+    assert VectorMetric.RELATIVE_ERROR.compute(fim_hvp_r, gnh_hvp_r) < setup["tol_hvp"]
 
-        fim_config = FisherInformationConfig(fisher_type="true")
-        random_regression_config.hessian_approximation = fim_config
-        fim = FisherInformation(full_config=config)
 
-        config_copy = copy.deepcopy(config)
-        gnh = GaussNewton(full_config=config_copy)
+def test_fim_gnh_ihvp_consistency(setup):
+    fim = FIMComputer(setup["fim_model_context"])
+    gnh = GNHComputer(setup["model_context"])
 
-        params_flat = flatten_util.ravel_pytree(gnh.model_context.params)
+    params_flat, _ = flatten_util.ravel_pytree(setup["params"])
 
-        test_vector = jnp.ones(params_flat[0].shape)
-        random_test_vector = jnp.array(
-            jax.random.normal(jax.random.PRNGKey(0), shape=params_flat[0].shape)
-        )
+    v = jnp.ones_like(params_flat)
+    v_rand = jax.random.normal(PRNGKey(1), shape=params_flat.shape)
 
-        fim_ivhp = fim.compute_ihvp(test_vector, damping=0.1)
-        gnh_ihvp = gnh.compute_ihvp(test_vector, damping=0.1)
-        assert VectorMetric.RELATIVE_ERROR.compute_single(fim_ivhp, gnh_ihvp) < 0.1, (
-            f"Relative error too high: {VectorMetric.RELATIVE_ERROR.compute_single(fim_ivhp, gnh_ihvp)}"
-        )
+    fim_ihvp = fim.estimate_ihvp(v, damping=0.1)
+    gnh_ihvp = gnh.estimate_ihvp(v, damping=0.1)
+    assert VectorMetric.RELATIVE_ERROR.compute(fim_ihvp, gnh_ihvp) < setup["tol_ihvp"]
 
-        fim_ivhp_random = fim.compute_ihvp(random_test_vector, damping=0.1)
-        gnh_ihvp_random = gnh.compute_ihvp(random_test_vector, damping=0.1)
-        assert (
-            VectorMetric.RELATIVE_ERROR.compute_single(fim_ivhp_random, gnh_ihvp_random)
-            < 0.1
-        ), (
-            f"Relative error too high: {VectorMetric.RELATIVE_ERROR.compute_single(fim_ivhp_random, gnh_ihvp_random)}"
-        )
-
-    def test_fim_gnh_hvp_comparison_regression(
-        self,
-        random_regression_config: Config,
-    ):
-        """Test comparing FIM and Gauss-Newton Hessians for regression."""
-        config = random_regression_config
-
-        fim_config = FisherInformationConfig(fisher_type="true")
-        random_regression_config.hessian_approximation = fim_config
-        fim = FisherInformation(full_config=config)
-
-        config_copy = copy.deepcopy(config)
-        gnh = GaussNewton(full_config=config_copy)
-
-        params_flat = flatten_util.ravel_pytree(gnh.model_context.params)
-
-        test_vector = jnp.ones(params_flat[0].shape)
-        random_test_vector = jnp.array(
-            jax.random.normal(jax.random.PRNGKey(0), shape=params_flat[0].shape)
-        )
-
-        fim_hvp = fim.compute_hvp(test_vector, damping=0.1)
-        gnh_hvp = gnh.compute_hvp(test_vector, damping=0.1)
-
-        assert VectorMetric.RELATIVE_ERROR.compute_single(fim_hvp, gnh_hvp) < 0.6, (
-            f"Relative error too high: {VectorMetric.RELATIVE_ERROR.compute_single(fim_hvp, gnh_hvp)}"
-        )
-
-        fim_hvp_random = fim.compute_hvp(random_test_vector, damping=0.1)
-        gnh_hvp_random = gnh.compute_hvp(random_test_vector, damping=0.1)
-        assert (
-            VectorMetric.RELATIVE_ERROR.compute_single(fim_hvp_random, gnh_hvp_random)
-            < 0.6
-        ), (
-            f"Relative error too high: {VectorMetric.RELATIVE_ERROR.compute_single(fim_hvp_random, gnh_hvp_random)}"
-        )
+    fim_ihvp_r = fim.estimate_ihvp(v_rand, damping=0.1)
+    gnh_ihvp_r = gnh.estimate_ihvp(v_rand, damping=0.1)
+    assert (
+        VectorMetric.RELATIVE_ERROR.compute(fim_ihvp_r, gnh_ihvp_r) < setup["tol_ihvp"]
+    )
