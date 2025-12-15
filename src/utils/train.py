@@ -86,7 +86,7 @@ def train_model(
 
     loss_history = []
 
-    for epoch in tqdm(range(epochs)):
+    for _ in tqdm(range(epochs)):
         running_loss = 0.0
         total_samples = 0
 
