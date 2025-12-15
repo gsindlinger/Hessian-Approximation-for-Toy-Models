@@ -10,7 +10,7 @@ from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 class FIMBlockComputer(HessianEstimator):
     compute_context: Tuple[
-        Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]]
+        Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]], List[str]
     ]
     """ Activations and gradients collected from the model. Complies with the tuple ordering of <code>CollectorActivationsGradients.load()</code> method."""
 
@@ -24,6 +24,11 @@ class FIMBlockComputer(HessianEstimator):
         """Maps the second entry of the compute_context tuple to gradients."""
         return self.compute_context[1]
 
+    @property
+    def layer_names(self) -> List[str]:
+        """Maps the third entry of the compute_context tuple to layer names."""
+        return self.compute_context[2]
+
     def estimate_hessian(
         self,
         damping: Optional[Float] = None,
@@ -33,8 +38,10 @@ class FIMBlockComputer(HessianEstimator):
         """
         damping = 0.0 if damping is None else damping
         return self._compute_fim_block(
-            activations=list(self.activations.values()),
-            gradients=list(self.gradients.values()),
+            activations=[
+                self.activations[layer_name] for layer_name in self.layer_names
+            ],
+            gradients=[self.gradients[layer_name] for layer_name in self.layer_names],
             damping=damping,
         )
 
@@ -48,8 +55,10 @@ class FIMBlockComputer(HessianEstimator):
         """
         damping = 0.0 if damping is None else damping
         return self._compute_fim_block_hvp(
-            activations=list(self.activations.values()),
-            gradients=list(self.gradients.values()),
+            activations=[
+                self.activations[layer_name] for layer_name in self.layer_names
+            ],
+            gradients=[self.gradients[layer_name] for layer_name in self.layer_names],
             vectors=vectors,
             damping=damping,
         )
@@ -68,8 +77,12 @@ class FIMBlockComputer(HessianEstimator):
         return metric.compute_fn()(
             comparison_matrix,
             self._compute_fim_block(
-                activations=list(self.activations.values()),
-                gradients=list(self.gradients.values()),
+                activations=[
+                    self.activations[layer_name] for layer_name in self.layer_names
+                ],
+                gradients=[
+                    self.gradients[layer_name] for layer_name in self.layer_names
+                ],
                 damping=damping,
             ),
         )
@@ -84,8 +97,8 @@ class FIMBlockComputer(HessianEstimator):
         """
         damping = 0.0 if damping is None else damping
         return self._compute_fim_block_ihvp(
-            activations=list(self.activations.values()),
-            gradients=list(self.gradients.values()),
+            activations=[self.activations[layer] for layer in self.layer_names],
+            gradients=[self.gradients[layer] for layer in self.layer_names],
             vectors=vectors,
             damping=damping,
         )
@@ -114,7 +127,7 @@ class FIMBlockComputer(HessianEstimator):
         for act, grad in zip(activations, gradients):
             # compute per-sample outer products and vectorize
             # (compare eq. 14 / 15 in Grosse et al. (2023))
-            per_sample_vecs = jnp.einsum("ni,nj->nij", grad, act).reshape(
+            per_sample_vecs = jnp.einsum("ni,nj->nij", act, grad).reshape(
                 act.shape[0], -1
             )
 
