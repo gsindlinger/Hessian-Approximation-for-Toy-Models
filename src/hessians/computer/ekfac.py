@@ -37,6 +37,7 @@ class EKFACComputer(HessianEstimator):
         """Compute Hessian-vector product."""
         return self.compute_ihvp_or_hvp(
             vectors=vectors,
+            layer_names=self.compute_context.layer_names,
             Lambdas=self.compute_context.eigenvalue_corrections,
             method="hvp",
             damping=0.0 if damping is None else damping,
@@ -53,13 +54,18 @@ class EKFACComputer(HessianEstimator):
         Reuses the KFAC comparison implementation.
         """
         return self._compare_hessian_estimates(
-            activations_eigenvectors=list(
-                self.compute_context.activation_eigenvectors.values()
-            ),
-            gradients_eigenvectors=list(
-                self.compute_context.gradient_eigenvectors.values()
-            ),
-            Lambdas=list(self.compute_context.eigenvalue_corrections.values()),
+            activations_eigenvectors=[
+                self.compute_context.activation_eigenvectors[layer]
+                for layer in self.compute_context.layer_names
+            ],
+            gradients_eigenvectors=[
+                self.compute_context.gradient_eigenvectors[layer]
+                for layer in self.compute_context.layer_names
+            ],
+            Lambdas=[
+                self.compute_context.eigenvalue_corrections[layer]
+                for layer in self.compute_context.layer_names
+            ],
             damping=0.0 if damping is None else damping,
             comparison_matrix=comparison_matrix,
             metric=metric.compute_fn(),
@@ -77,6 +83,7 @@ class EKFACComputer(HessianEstimator):
         return self.compute_ihvp_or_hvp(
             vectors=vectors,
             Lambdas=self.compute_context.eigenvalue_corrections,
+            layer_names=self.compute_context.layer_names,
             method="ihvp",
             damping=0.0 if damping is None else damping,
         )
@@ -103,13 +110,18 @@ class EKFACComputer(HessianEstimator):
         Reuses the KFAC implementation.
         """
         return self._compute_hessian_or_inverse_hessian_estimate(
-            eigenvectors_activations=list(
-                self.compute_context.activation_eigenvectors.values()
-            ),
-            eigenvectors_gradients=list(
-                self.compute_context.gradient_eigenvectors.values()
-            ),
-            Lambdas=list(self.compute_context.eigenvalue_corrections.values()),
+            eigenvectors_activations=[
+                self.compute_context.activation_eigenvectors[layer]
+                for layer in self.compute_context.layer_names
+            ],
+            eigenvectors_gradients=[
+                self.compute_context.gradient_eigenvectors[layer]
+                for layer in self.compute_context.layer_names
+            ],
+            Lambdas=[
+                self.compute_context.eigenvalue_corrections[layer]
+                for layer in self.compute_context.layer_names
+            ],
             damping=damping,
             method=method,
         )

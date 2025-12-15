@@ -9,6 +9,7 @@ from typing import (
     Callable,
     Dict,
     Iterable,
+    List,
     Optional,
     Tuple,
     Type,
@@ -82,6 +83,10 @@ class ApproximatorBase(ABC):
                         arrays[f"{field_t.name}/{k}"] = np.asarray(arr)
                     continue
 
+            # list(str)
+            if self._is_string_sequence(field_type):
+                arrays[field_t.name] = np.array(",".join(value), dtype="U")
+
             arrays[field_t.name] = np.asarray(value)
 
         np.savez_compressed(save_dir / "data.npz", **arrays)
@@ -136,6 +141,11 @@ class ApproximatorBase(ABC):
                     data_kwargs[field_t.name] = d
                     continue
 
+            if cls._is_string_sequence(field_type):
+                lst = list(map(str, loaded[field_t.name]))
+                data_kwargs[field_t.name] = lst
+                continue
+
             # Scalar / array
             if field_t.name in loaded:
                 arr = loaded[field_t.name]
@@ -146,6 +156,14 @@ class ApproximatorBase(ABC):
 
         data_obj = data_t(**data_kwargs)
         return data_obj, config
+
+    @staticmethod
+    def _is_string_sequence(t):
+        return (
+            get_origin(t) in (list, List, tuple, Tuple)
+            and get_args(t)
+            and get_args(t)[0] is str
+        )
 
     @staticmethod
     def compute_eigenvectors_and_eigenvalues(

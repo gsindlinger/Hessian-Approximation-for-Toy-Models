@@ -23,6 +23,10 @@ class LinearModel(ApproximationModel):
         config.append(("output", self.output_dim, self.use_bias))
         return config
 
+    def get_linear_layer_names(self) -> list[str]:
+        result = [name for name, _, _ in self._get_layer_config()]
+        return result
+
     @nn.compact
     def __call__(
         self, x: Float[Array, "batch_size input_dim"]

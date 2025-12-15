@@ -133,6 +133,7 @@ class HessianEstimator(ABC):
         self,
         vectors: Float[Array, "*batch_size n_params"],
         Lambdas: Dict[str, Float[Array, "I O"]],
+        layer_names: List[str],
         method: Literal["ihvp", "hvp"],
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
@@ -146,9 +147,6 @@ class HessianEstimator(ABC):
         match the JAX weight layout which is reflected by
         the eigenvalue corrections shape [input_dim, output_dim].
         """
-
-        # Collect all layer data upfront
-        layer_names = self.compute_context.layer_names()
 
         Q_activations_list = []
         Q_gradients_list = []

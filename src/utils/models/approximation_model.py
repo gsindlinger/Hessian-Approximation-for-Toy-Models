@@ -25,6 +25,11 @@ class ApproximationModel(nn.Module):
         return activations[act_str]
 
     @abstractmethod
+    def get_linear_layer_names(self) -> list[str]:
+        """Get the names of the linear layers in the model."""
+        pass
+
+    @abstractmethod
     def collector_apply(self, x, collector) -> Any:
         """Special apply method which enables the custom forward and backward passes in order to collect information."""
         pass
