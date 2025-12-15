@@ -145,25 +145,31 @@ class CollectorActivationsGradients(CollectorBase):
 
     def teardown(
         self,
-    ) -> Tuple[Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]]]:
+    ) -> Tuple[
+        Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]], List[str]
+    ]:
         """
         Concatenate all collected activations and gradients.
 
         Returns:
-            Dictionary with 'activations' and 'gradients' keys
+            Dictionary with 'activations' and 'gradients' keys and the layer names as a list (in order).
         """
         return (
             {k: jnp.concatenate(v, axis=0) for k, v in self.activations.items()},
             {k: jnp.concatenate(v, axis=0) for k, v in self.gradients.items()},
+            self.model.get_linear_layer_names(),
         )
 
     def save(
         self,
         directory: str,
-        data: Tuple[Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]]],
+        data: Tuple[
+            Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]], List[str]
+        ],
     ):
         """
         Save collected activations and gradients to the specified directory.
+        Additionally stores the layer names which can be used for correct ordering later.
         """
 
         # if directory is a file path, use its directory instead
@@ -180,22 +186,25 @@ class CollectorActivationsGradients(CollectorBase):
 
         file_path = os.path.join(directory, self.FILENAME)
 
-        activations, gradients = data
+        activations, gradients, layer_names = data
         data_dict = {
             **{f"activations_{k}": np.array(v) for k, v in activations.items()},
             **{f"gradients_{k}": np.array(v) for k, v in gradients.items()},
+            "layer_names": np.array(",".join(layer_names), dtype="U"),
         }
         np.savez_compressed(file=file_path, allow_pickle=False, **data_dict)
 
     @staticmethod
     def load(
         directory: str,
-    ) -> Tuple[Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]]]:
+    ) -> Tuple[
+        Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]], List[str]
+    ]:
         """
         Load collected activations and gradients from the specified directory.
         Tries with or without file ending, both for .npz and .npy formats.
 
-        Returns tuple of dictionaries: (activations, gradients)
+        Returns tuple of: (activations, gradients, layer_names)
         """
         load_path = f"{directory}/{CollectorActivationsGradients.FILENAME}"
         # Try loading without .npz extension
@@ -207,6 +216,7 @@ class CollectorActivationsGradients(CollectorBase):
 
         activations = {}
         gradients = {}
+        layer_names = loaded["layer_names"].item().split(",")
 
         for k in loaded.files:
             if k.startswith("activations_"):
@@ -216,7 +226,7 @@ class CollectorActivationsGradients(CollectorBase):
                 layer_name = k[len("gradients_") :]
                 gradients[layer_name] = jnp.array(loaded[k])
 
-        return activations, gradients
+        return activations, gradients, layer_names
 
 
 ### Hooks for collecting activations and gradients of specific layers

@@ -1,6 +1,6 @@
 from abc import ABC
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import flax.struct as struct
 from jax.flatten_util import ravel_pytree
@@ -72,6 +72,7 @@ class EKFACData(ApproximationData):
     activation_eigenvalues: Dict[str, Float[Array, "I"]] = field(default_factory=dict)
     gradient_eigenvalues: Dict[str, Float[Array, "O"]] = field(default_factory=dict)
     eigenvalue_corrections: Dict[str, Float[Array, "I O"]] = field(default_factory=dict)
+    layer_names: List[str] = field(default_factory=list)
 
     mean_eigenvalues: Dict[str, Float] = field(
         default_factory=dict
@@ -86,6 +87,3 @@ class EKFACData(ApproximationData):
     mean_corrections_aggregated: Float = field(
         default=0.0
     )  # mean eigenvalue correction over all layers
-
-    def layer_names(self):
-        return self.activation_eigenvectors.keys()
