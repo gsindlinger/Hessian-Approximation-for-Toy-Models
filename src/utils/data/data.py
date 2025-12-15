@@ -71,7 +71,7 @@ class RandomRegressionDataset(Dataset):
         )[:2]
 
         self.inputs = jnp.array(data, dtype=jnp.float32)
-        self.targets = jnp.array(targets.reshape(-1, 1), dtype=jnp.float32)
+        self.targets = jnp.array(targets, dtype=jnp.float32)
 
     @override
     def input_dim(self) -> int:
@@ -79,6 +79,8 @@ class RandomRegressionDataset(Dataset):
 
     @override
     def output_dim(self) -> int:
+        if len(self.targets.shape) == 1:
+            return 1
         return self.targets.shape[1]
 
 
