@@ -13,6 +13,8 @@ from src.hessians.utils.pseudo_targets import generate_pseudo_targets
 from src.utils.data.data import Dataset, RandomClassificationDataset
 from src.utils.data.jax_dataloader import JAXDataLoader
 from src.utils.loss import cross_entropy_loss
+from src.utils.metrics.vector_metrics import VectorMetric
+from src.utils.models.approximation_model import ApproximationModel
 from src.utils.models.linear_model import LinearModel
 from src.utils.models.mlp import MLP
 from src.utils.optimizers import optimizer
@@ -59,7 +61,9 @@ def dataset(config: Config) -> Dataset:
 
 
 @pytest.fixture(scope="session")
-def model_and_params(config: Config, dataset: Dataset):
+def model_and_params(
+    config: Config, dataset: Dataset
+) -> Tuple[ApproximationModel, Dict]:
     config.model.metadata = config.model.metadata or {}
     hidden_dim = config.model.metadata["hidden_dim"]
 
@@ -84,7 +88,9 @@ def model_and_params(config: Config, dataset: Dataset):
 
 
 @pytest.fixture(scope="session")
-def model_context(dataset: Dataset, model_and_params: Tuple[MLP, Dict]):
+def model_context(
+    dataset: Dataset, model_and_params: Tuple[ApproximationModel, Dict]
+) -> ModelContext:
     model, params = model_and_params
 
     pseudo_targets = generate_pseudo_targets(
@@ -160,15 +166,11 @@ def fim_block_data_multi_layer(
 
 @pytest.mark.parametrize("config", ["linear"], indirect=True)
 def test_fim_block_computation(
-    config: Config,
     fim_block_data: Tuple[
         CollectorActivationsGradients, CollectorActivationsGradients, Dict
     ],
     model_context: ModelContext,
 ):
-    if config.model.metadata["hidden_dim"] != []:  # type: ignore
-        pytest.skip("Only applicable for linear model")
-
     damping = 1e-5
 
     # Compute FIM block using FIMBlockComputer
@@ -186,15 +188,11 @@ def test_fim_block_computation(
 
 @pytest.mark.parametrize("config", ["multi_layer"], indirect=True)
 def test_fim_block_computation_multi_layer(
-    config: Config,
     fim_block_data_multi_layer: Tuple[
         CollectorActivationsGradients, CollectorActivationsGradients, Dict
     ],
     model_context: ModelContext,
 ):
-    if config.model.metadata["hidden_dim"] == []:  # type: ignore
-        pytest.skip("Only applicable for multi-layer model")
-
     damping = 1e-5
 
     # Compute FIM block using FIMBlockComputer
@@ -221,3 +219,73 @@ def test_fim_block_computation_multi_layer(
         assert jnp.allclose(block_fim_block, full_fim_block, atol=1e-5), (
             f"FIM block approximation does not match full FIM for layer {layer_name}."
         )
+
+
+@pytest.mark.parametrize("config", ["linear"], indirect=True)
+def test_fim_block_hvp_ihvp_roundtrip_linear(
+    fim_block_data: Tuple[
+        CollectorActivationsGradients, CollectorActivationsGradients, Dict
+    ],
+    model_context: ModelContext,
+):
+    """
+    Check HVP / IHVP consistency and round trips between
+    FIMBlockComputer and full FIMComputer for linear models.
+    """
+
+    damping = 1e-2
+
+    # ------------------------------------------------------------------
+    # Setup computers
+    # ------------------------------------------------------------------
+    block_fim = FIMBlockComputer(compute_context=fim_block_data)
+    full_fim = FIMComputer(compute_context=model_context)
+
+    params_flat = model_context.params_flat
+
+    v_ones = jnp.ones_like(params_flat)
+    v_rand = jax.random.normal(jax.random.PRNGKey(0), params_flat.shape)
+
+    # ------------------------------------------------------------------
+    # HVP consistency
+    # ------------------------------------------------------------------
+    hvp_block = block_fim.estimate_hvp(v_ones, damping=damping)
+    hvp_full = full_fim.estimate_hvp(v_ones, damping=damping)
+
+    assert VectorMetric.RELATIVE_ERROR.compute(hvp_block, hvp_full) < 1e-4, (
+        "Block FIM HVP does not match full FIM HVP (ones vector)"
+    )
+
+    hvp_block_r = block_fim.estimate_hvp(v_rand, damping=damping)
+    hvp_full_r = full_fim.estimate_hvp(v_rand, damping=damping)
+
+    assert VectorMetric.RELATIVE_ERROR.compute(hvp_block_r, hvp_full_r) < 1e-4, (
+        "Block FIM HVP does not match full FIM HVP (random vector)"
+    )
+
+    # ------------------------------------------------------------------
+    # IHVP consistency
+    # ------------------------------------------------------------------
+    ihvp_block = block_fim.estimate_ihvp(v_ones, damping=damping)
+    ihvp_full = full_fim.estimate_ihvp(v_ones, damping=damping)
+
+    assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block, ihvp_full) < 1e-4, (
+        "Block FIM IHVP does not match full FIM IHVP (ones vector)"
+    )
+
+    ihvp_block_r = block_fim.estimate_ihvp(v_rand, damping=damping)
+    ihvp_full_r = full_fim.estimate_ihvp(v_rand, damping=damping)
+
+    # ------------------------------------------------------------------
+    # Round-trip sanity check: H(H^{-1} v) ≈ v
+    # ------------------------------------------------------------------
+    roundtrip_block = block_fim.estimate_hvp(ihvp_block_r, damping=damping)
+    roundtrip_full = full_fim.estimate_hvp(ihvp_full_r, damping=damping)
+
+    assert VectorMetric.RELATIVE_ERROR.compute(roundtrip_block, v_rand) < 1e-4, (
+        "Block FIM round-trip H(H^{-1}v) failed"
+    )
+
+    assert VectorMetric.RELATIVE_ERROR.compute(roundtrip_full, v_rand) < 1e-4, (
+        "Full FIM round-trip H(H^{-1}v) failed"
+    )

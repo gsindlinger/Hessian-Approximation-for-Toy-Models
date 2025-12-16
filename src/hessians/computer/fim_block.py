@@ -165,7 +165,7 @@ class FIMBlockComputer(HessianEstimator):
             D = act.shape[1] * grad.shape[1]
             v_block = vectors[..., offset : offset + D]
 
-            per_sample_vecs = jnp.einsum("ni,nj->nij", grad, act).reshape(
+            per_sample_vecs = jnp.einsum("ni,nj->nij", act, grad).reshape(
                 act.shape[0], -1
             )
 
@@ -202,7 +202,7 @@ class FIMBlockComputer(HessianEstimator):
             D = act.shape[1] * grad.shape[1]
             v_block = vectors[..., offset : offset + D]
 
-            per_sample_vecs = jnp.einsum("ni,nj->nij", grad, act).reshape(
+            per_sample_vecs = jnp.einsum("ni,nj->nij", act, grad).reshape(
                 act.shape[0], -1
             )
 
