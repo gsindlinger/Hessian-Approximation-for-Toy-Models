@@ -140,8 +140,8 @@ def initialize_model(model: ApproximationModel, input_shape: int, key=None):
     dummy_input = jnp.ones((1, input_shape), dtype=jnp.float32)
     params = model.init(key, dummy_input)
 
-    # print device of params
-    print(
+    # log device of params
+    logger.info(
         "Device for Parameters: ",
         {x.device for x in jax.tree_util.tree_leaves(params)},
     )
@@ -195,7 +195,7 @@ def save_model_checkpoint(
             with open(f"{directory}/checkpoint.pkl", "wb") as f:
                 pickle.dump(params, f)
         except Exception as e:
-            print(f"Failed to save model parameters: {e}")
+            logger.error(f"Failed to save model parameters: {e}")
 
 
 def check_saved_model(directory: str, model: ApproximationModel) -> bool:

@@ -157,7 +157,7 @@ class CollectorActivationsGradients(CollectorBase):
         return (
             {k: jnp.concatenate(v, axis=0) for k, v in self.activations.items()},
             {k: jnp.concatenate(v, axis=0) for k, v in self.gradients.items()},
-            self.model.get_linear_layer_names(),
+            self.model.get_layer_names(),
         )
 
     def save(

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import asdict, dataclass
-from typing import Any, Callable
+from typing import Any, Callable, List
 
+import jax
 from flax import linen as nn
+from jax.tree_util import tree_flatten_with_path
 
 
 @dataclass
@@ -24,22 +26,21 @@ class ApproximationModel(nn.Module):
             raise ValueError(f"Unknown activation: {act_str}")
         return activations[act_str]
 
-    @abstractmethod
-    def get_linear_layer_names(self) -> list[str]:
-        """Get the names of the linear layers in the model."""
-        pass
+    def get_layer_names(self) -> List[str]:
+        """
+        Get the names of all layers in the model.
+        Avoids needing to initialize the model parameters and uses eval_shape instead.
+        """
+        shapes = jax.eval_shape(
+            self.init, jax.random.PRNGKey(0), jax.numpy.zeros((1, self.input_dim))
+        )
+        flatted_shapes, _ = tree_flatten_with_path(shapes["params"])
+        return [path[0][0].key for path in flatted_shapes]
 
     @abstractmethod
     def collector_apply(self, x, collector) -> Any:
         """Special apply method which enables the custom forward and backward passes in order to collect information."""
         pass
-
-    def get_num_params(self, params: dict) -> int:
-        """Get total number of parameters in the model."""
-        from jax.flatten_util import ravel_pytree
-
-        flat_params, _ = ravel_pytree(params)
-        return flat_params.shape[0]
 
     def serialize(self):
         return {
