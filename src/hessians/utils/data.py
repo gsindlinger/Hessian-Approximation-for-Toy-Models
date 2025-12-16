@@ -30,6 +30,7 @@ class ModelContext:
     model_apply_fn: Callable = struct.field(pytree_node=False)
     loss_fn: Callable = struct.field(pytree_node=False)
     targets: Optional[Float[Array, "..."]] = None
+    model: Optional[ApproximationModel] = struct.field(pytree_node=False, default=None)
 
     @classmethod
     def create(

@@ -51,9 +51,9 @@ def loss_wrapper_with_apply_fn(
     params_flat: Any,
     unravel_fn: Callable[[Any], Any],
     loss_fn: Callable,
-    training_data: Array,
-    training_targets: Array,
+    inputs: Array,
+    targets: Array,
 ):
     params_unraveled = unravel_fn(params_flat)
-    outputs = apply_fn(params_unraveled, training_data)
-    return loss_fn(outputs, training_targets)
+    outputs = apply_fn(params_unraveled, inputs)
+    return loss_fn(outputs, targets)

@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, List
 
 import jax
+import jax.numpy as jnp
 from flax import linen as nn
 from jax.tree_util import tree_flatten_with_path
 
@@ -32,7 +33,7 @@ class ApproximationModel(nn.Module):
         Avoids needing to initialize the model parameters and uses eval_shape instead.
         """
         shapes = jax.eval_shape(
-            self.init, jax.random.PRNGKey(0), jax.numpy.zeros((1, self.input_dim))
+            self.init, jax.random.PRNGKey(0), jnp.zeros((1, self.input_dim))
         )
         flatted_shapes, _ = tree_flatten_with_path(shapes["params"])
         return [path[0][0].key for path in flatted_shapes]

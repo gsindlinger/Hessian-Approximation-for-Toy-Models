@@ -352,14 +352,6 @@ class ApproximatorBase(ABC):
         The paper of Grosse et al. (2023) misses the transpose of the eigenvector
         basis (Q_A \otimes Q_G) in Equation (20). Refer to George et al. (2018) for the
         correct formulation.
-
-        In this JAX implementation, we have to swap the Kronecker order to
-        (Q_G \otimes Q_A) because JAX layers store weights with shape [input_dim, output_dim],
-        unlike the [output_dim, input_dim] convention used in the original paper.
-
-        Furthermore, we don't store the vectorized version of the outer product, but rather the
-        matrix form. Note, that the resulting matrix represents the row-major flattening
-        of the original EKFAC formulation due to the JAX weight layout convention.
         """
         g_tilde = jnp.einsum("op, np -> no", Q_G.T, gradients)
         a_tilde = jnp.einsum("ij, nj -> ni", Q_A.T, activations)
