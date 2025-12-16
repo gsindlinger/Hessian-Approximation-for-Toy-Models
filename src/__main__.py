@@ -37,7 +37,7 @@ def simple_run():
             model_name="mlp",
             directory="data/checkpoints/mlp",
             metadata={
-                "hidden_dim": [10],
+                "hidden_dim": [10, 10],
                 "activation": "relu",
             },
         ),
@@ -238,15 +238,30 @@ def simple_run():
         f"Full Hessian, HVP, and IHVP computed with shapes: {full_hessian.shape}, {full_hvp.shape}, {full_ihvp.shape}"
     )
 
+    # Compute block Hessian for comparison
+    block_hessian_computer = HessianComputer(compute_context=model_context)
+    block_hessian = block_hessian_computer.compute_hessian(damping=damping)
+    block_hessian_hvp = block_hessian_computer.compute_hvp(
+        vectors=gradient_samples_1, damping=damping
+    )
+    block_hessian_ihvp = block_hessian_computer.compute_ihvp(
+        vectors=gradient_samples_2, damping=damping
+    )
+    logger.info(
+        f"Block Hessian computed with shape: {block_hessian.shape}, {block_hessian_hvp.shape}, {block_hessian_ihvp.shape}"
+    )
+
     # plot eigenvalue comparison
     import matplotlib.pyplot as plt
 
-    kfac_eigenvalues = jnp.linalg.eigvalsh(kfac_hessian)[-50:]
-    ekfac_eigenvalues = jnp.linalg.eigvalsh(ekfac_hessian)[-50:]
-    full_eigenvalues = jnp.linalg.eigvalsh(full_hessian)[-50:]
-    fim_eigenvalues = jnp.linalg.eigvalsh(fim)[-50:]
-    block_fim_eigenvalues = jnp.linalg.eigvalsh(block_fim)[-50:]
-    gnh_eigenvalues = jnp.linalg.eigvalsh(gnh)[-50:]
+    num_samples = 10
+    kfac_eigenvalues = jnp.linalg.eigvalsh(kfac_hessian)[-num_samples:]
+    ekfac_eigenvalues = jnp.linalg.eigvalsh(ekfac_hessian)[-num_samples:]
+    full_eigenvalues = jnp.linalg.eigvalsh(full_hessian)[-num_samples:]
+    fim_eigenvalues = jnp.linalg.eigvalsh(fim)[-num_samples:]
+    block_fim_eigenvalues = jnp.linalg.eigvalsh(block_fim)[-num_samples:]
+    gnh_eigenvalues = jnp.linalg.eigvalsh(gnh)[-num_samples:]
+    block_hessian_eigenvalues = jnp.linalg.eigvalsh(block_hessian)[-num_samples:]
 
     plt.figure(figsize=(8, 6))
     plt.plot(
@@ -288,6 +303,13 @@ def simple_run():
         gnh_eigenvalues,
         label="GNH Eigenvalues",
         marker="d",
+        linestyle="None",
+        markersize=4,
+    )
+    plt.plot(
+        block_hessian_eigenvalues,
+        label="Block Hessian Eigenvalues",
+        marker="*",
         linestyle="None",
         markersize=4,
     )
