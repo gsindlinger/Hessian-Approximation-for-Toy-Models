@@ -15,14 +15,6 @@ class LinearModel(ApproximationModel):
 
     hidden_dim: list[int] = field(default_factory=list)
 
-    def _get_layer_config(self):
-        """Returns list of (name, dim, use_bias) tuples for all layers."""
-        config = []
-        for i, h in enumerate(self.hidden_dim):
-            config.append((f"linear_{i}", h, self.use_bias))
-        config.append(("output", self.output_dim, self.use_bias))
-        return config
-
     @nn.compact
     def __call__(
         self, x: Float[Array, "batch_size input_dim"]
@@ -30,10 +22,12 @@ class LinearModel(ApproximationModel):
         """Forward pass of the Linear model.
         Returns the logits of the model.
         """
-        config = self._get_layer_config()
-        for name, dim, use_bias in config:
-            x = nn.Dense(dim, use_bias=use_bias, name=name)(x)
-        return x
+        for i, h in enumerate(self.hidden_dim):
+            x = nn.Dense(h, use_bias=self.use_bias, name=f"linear_{i}")(x)
+        final_logits = nn.Dense(self.output_dim, use_bias=self.use_bias, name="output")(
+            x
+        )
+        return final_logits
 
     @nn.compact
     def collector_apply(
@@ -46,19 +40,36 @@ class LinearModel(ApproximationModel):
 
         Returns the logits of the model.
         """
+
+        def pure_apply_fn(module, params, activations):
+            """Helper to apply a module with given parameters."""
+            return module.apply({"params": params}, activations)
+
         activations = x
-        config = self._get_layer_config()
 
-        for name, dim, use_bias in config:
-            layer_module = nn.Dense(features=dim, use_bias=use_bias, name=name)
-            layer_params = self.variables["params"][name]
-
-            def pure_apply_fn(p, a, mod=layer_module):
-                return mod.apply({"params": p}, a)
+        for i, h in enumerate(self.hidden_dim):
+            layer_module = nn.Dense(
+                features=h, use_bias=self.use_bias, name=f"linear_{i}"
+            )
+            layer_params = self.variables["params"][f"linear_{i}"]
 
             activations = layer_wrapper_vjp(
-                pure_apply_fn, layer_params, activations, name, collector
+                lambda p, a: pure_apply_fn(layer_module, p, a),
+                layer_params,
+                activations,
+                f"linear_{i}",
+                collector,
             )
 
-        final_logits = activations
+        final_layer_module = nn.Dense(
+            features=self.output_dim, use_bias=self.use_bias, name="output"
+        )
+        final_layer_params = self.variables["params"]["output"]
+        final_logits = layer_wrapper_vjp(
+            lambda p, a: pure_apply_fn(final_layer_module, p, a),
+            final_layer_params,
+            activations,
+            "output",
+            collector,
+        )
         return final_logits

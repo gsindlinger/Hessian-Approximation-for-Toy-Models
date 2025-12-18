@@ -142,10 +142,9 @@ def initialize_model(model: ApproximationModel, input_shape: int, key=None):
 
     # log device of params
     logger.info(
-        "Device for Parameters: ",
+        "Device for Parameters: %s",
         {x.device for x in jax.tree_util.tree_leaves(params)},
     )
-
     return params
 
 

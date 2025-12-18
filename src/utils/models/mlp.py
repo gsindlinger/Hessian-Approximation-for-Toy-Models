@@ -15,14 +15,6 @@ class MLP(ApproximationModel):
     hidden_dim: list[int] = field(default_factory=list)
     activation: str = "relu"
 
-    def _get_layer_config(self):
-        """Returns list of (name, dim, use_bias) tuples for all layers."""
-        config = []
-        for i, h in enumerate(self.hidden_dim):
-            config.append((f"linear_{i}", h, self.use_bias))
-        config.append(("output", self.output_dim, self.use_bias))
-        return config
-
     @nn.compact
     def __call__(
         self, x: Float[Array, "batch_size input_dim"]
@@ -47,10 +39,15 @@ class MLP(ApproximationModel):
         This method uses a custom VJP wrapper around each layer to enable
         collection of necessary data during forward and backward passes.
 
-        Data is colleected by the provided `collector` instance.
+        Data is collected by the provided `collector` instance.
 
         Returns the logits of the model.
         """
+
+        def pure_apply_fn(module, params, activations):
+            """Helper to apply a module with given parameters."""
+            return module.apply({"params": params}, activations)
+
         activations = x
         act_fn = self.get_activation(self.activation)
 
@@ -60,11 +57,12 @@ class MLP(ApproximationModel):
             )
             layer_params = self.variables["params"][f"linear_{i}"]
 
-            def pure_apply_fn(p, a, mod=layer_module):
-                return mod.apply({"params": p}, a)
-
             activations = layer_wrapper_vjp(
-                pure_apply_fn, layer_params, activations, f"linear_{i}", collector
+                lambda p, a: pure_apply_fn(layer_module, p, a),
+                layer_params,
+                activations,
+                f"linear_{i}",
+                collector,
             )
             activations = act_fn(activations)
 
@@ -73,11 +71,12 @@ class MLP(ApproximationModel):
         )
         output_params = self.variables["params"]["output"]
 
-        def pure_apply_fn_output(p, a, mod=output_module):
-            return mod.apply({"params": p}, a)
-
         final_logits = layer_wrapper_vjp(
-            pure_apply_fn_output, output_params, activations, "output", collector
+            lambda p, a: pure_apply_fn(output_module, p, a),
+            output_params,
+            activations,
+            "output",
+            collector,
         )
 
         return final_logits
