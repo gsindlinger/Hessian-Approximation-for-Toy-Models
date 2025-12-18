@@ -36,7 +36,14 @@ class ApproximationModel(nn.Module):
             self.init, jax.random.PRNGKey(0), jnp.zeros((1, self.input_dim))
         )
         flatted_shapes, _ = tree_flatten_with_path(shapes["params"])
-        return [path[0][0].key for path in flatted_shapes]
+        seen_names = set()
+        layer_names = []
+        for path, _ in flatted_shapes:
+            name = "/".join(key.key for key in path[0][:-1])
+            if name not in seen_names:
+                seen_names.add(name)
+                layer_names.append(name)
+        return layer_names
 
     @abstractmethod
     def collector_apply(self, x, collector) -> Any:
