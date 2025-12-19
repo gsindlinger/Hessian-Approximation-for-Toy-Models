@@ -15,6 +15,8 @@ class MLPSwiGLU(ApproximationModel):
     """Multi-layer Perceptron model with SwiGLU activation blocks.
 
     Each hidden layer consists of a SwiGLU block with configurable dimensions.
+
+    Note: Assumes for simplicity no bias in the layers.
     """
 
     hidden_dim: List[Tuple[int, int, int]] = field(default_factory=list)
@@ -35,9 +37,7 @@ class MLPSwiGLU(ApproximationModel):
             )(x)
 
         # Final output layer
-        final_logits = nn.Dense(self.output_dim, use_bias=self.use_bias, name="output")(
-            x
-        )
+        final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
 
         return final_logits
 
@@ -80,7 +80,7 @@ class MLPSwiGLU(ApproximationModel):
 
         # Final output layer
         output_module = nn.Dense(
-            features=self.output_dim, use_bias=self.use_bias, name="output"
+            features=self.output_dim, use_bias=False, name="output"
         )
         output_params = self.variables["params"]["output"]
 

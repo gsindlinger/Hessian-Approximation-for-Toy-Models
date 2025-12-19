@@ -19,6 +19,11 @@ class SwiGLU(nn.Module):
     gate_dim: int
     down_dim: int
 
+    def __post_init__(self) -> None:
+        assert self.up_dim == self.gate_dim, (
+            "For SwiGLU, up_dim must be equal to gate_dim."
+        )
+
     @nn.compact
     def __call__(
         self, x: Float[Array, "batch_size input_dim"]

@@ -14,7 +14,6 @@ from jax.tree_util import tree_flatten_with_path
 class ApproximationModel(nn.Module):
     input_dim: int
     output_dim: int
-    use_bias: bool = False
     seed: int = 42
 
     @classmethod
@@ -29,17 +28,22 @@ class ApproximationModel(nn.Module):
 
     def get_layer_names(self) -> List[str]:
         """
-        Get the names of all layers in the model.
+        Get the names of all unique layers in the model.
         Avoids needing to initialize the model parameters and uses eval_shape instead.
+
+        If a model has multiple parts of a single layer (e.g., kernel and bias),
+        only the layer name is returned once.
         """
         shapes = jax.eval_shape(
             self.init, jax.random.PRNGKey(0), jnp.zeros((1, self.input_dim))
         )
         flatted_shapes, _ = tree_flatten_with_path(shapes["params"])
+
+        # ensuring unique layer names by using a set
         seen_names = set()
         layer_names = []
         for path, _ in flatted_shapes:
-            name = "/".join(key.key for key in path[0][:-1])
+            name = "/".join(key.key for key in path[:-1])
             if name not in seen_names:
                 seen_names.add(name)
                 layer_names.append(name)

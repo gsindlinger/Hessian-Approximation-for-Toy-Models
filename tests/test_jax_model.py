@@ -42,7 +42,6 @@ class TestLinearRegression:
             output_dim=dataset.output_dim(),
             hidden_dim=[],
             seed=0,
-            use_bias=True,
         )
 
         model, params, _ = train_model(
@@ -75,7 +74,7 @@ class TestLinearRegression:
         y_pred_jax = model.apply(params, x_test)
 
         # sklearn predictions
-        sk_model = LinearRegression()
+        sk_model = LinearRegression(fit_intercept=False)
         sk_model.fit(np.asarray(x), np.asarray(y))
         y_pred_sklearn = sk_model.predict(np.asarray(x_test))
 
