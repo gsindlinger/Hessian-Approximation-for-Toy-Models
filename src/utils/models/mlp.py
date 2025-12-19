@@ -10,7 +10,13 @@ from src.utils.models.approximation_model import ApproximationModel
 
 
 class MLP(ApproximationModel):
-    """Multi-layer Perceptron model with configurable hidden layers and activations."""
+    """Multi-layer Perceptron model with configurable hidden layers and activations.
+
+    Each hidden layer consists of a Dense layer followed by an activation function.
+    Supported activations are ReLU and Tanh.
+
+    Note: Assumes for simplicity no bias in the layers.
+    """
 
     hidden_dim: list[int] = field(default_factory=list)
     activation: str = "relu"
@@ -24,11 +30,9 @@ class MLP(ApproximationModel):
         """
         act_fn = self.get_activation(self.activation)
         for i, h in enumerate(self.hidden_dim):
-            x = nn.Dense(h, use_bias=self.use_bias, name=f"linear_{i}")(x)
+            x = nn.Dense(h, use_bias=False, name=f"linear_{i}")(x)
             x = act_fn(x)
-        final_logits = nn.Dense(self.output_dim, use_bias=self.use_bias, name="output")(
-            x
-        )
+        final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
         return final_logits
 
     @nn.compact
@@ -52,9 +56,7 @@ class MLP(ApproximationModel):
         act_fn = self.get_activation(self.activation)
 
         for i, h in enumerate(self.hidden_dim):
-            layer_module = nn.Dense(
-                features=h, use_bias=self.use_bias, name=f"linear_{i}"
-            )
+            layer_module = nn.Dense(features=h, use_bias=False, name=f"linear_{i}")
             layer_params = self.variables["params"][f"linear_{i}"]
 
             activations = layer_wrapper_vjp(
@@ -67,7 +69,7 @@ class MLP(ApproximationModel):
             activations = act_fn(activations)
 
         output_module = nn.Dense(
-            features=self.output_dim, use_bias=self.use_bias, name="output"
+            features=self.output_dim, use_bias=False, name="output"
         )
         output_params = self.variables["params"]["output"]
 
