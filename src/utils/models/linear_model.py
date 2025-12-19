@@ -11,7 +11,12 @@ from .approximation_model import ApproximationModel
 
 
 class LinearModel(ApproximationModel):
-    """Linear model with optional hidden layers."""
+    """Linear model with optional hidden layers.
+
+    Each hidden layer consists of a Dense layer without activation.
+
+    Note: Assumes for simplicity no bias in the layers.
+    """
 
     hidden_dim: list[int] = field(default_factory=list)
 
@@ -23,10 +28,8 @@ class LinearModel(ApproximationModel):
         Returns the logits of the model.
         """
         for i, h in enumerate(self.hidden_dim):
-            x = nn.Dense(h, use_bias=self.use_bias, name=f"linear_{i}")(x)
-        final_logits = nn.Dense(self.output_dim, use_bias=self.use_bias, name="output")(
-            x
-        )
+            x = nn.Dense(h, use_bias=False, name=f"linear_{i}")(x)
+        final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
         return final_logits
 
     @nn.compact
@@ -48,9 +51,7 @@ class LinearModel(ApproximationModel):
         activations = x
 
         for i, h in enumerate(self.hidden_dim):
-            layer_module = nn.Dense(
-                features=h, use_bias=self.use_bias, name=f"linear_{i}"
-            )
+            layer_module = nn.Dense(features=h, use_bias=False, name=f"linear_{i}")
             layer_params = self.variables["params"][f"linear_{i}"]
 
             activations = layer_wrapper_vjp(
@@ -62,7 +63,7 @@ class LinearModel(ApproximationModel):
             )
 
         final_layer_module = nn.Dense(
-            features=self.output_dim, use_bias=self.use_bias, name="output"
+            features=self.output_dim, use_bias=False, name="output"
         )
         final_layer_params = self.variables["params"]["output"]
         final_logits = layer_wrapper_vjp(
