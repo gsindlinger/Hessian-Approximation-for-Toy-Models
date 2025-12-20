@@ -1,3 +1,4 @@
+import json
 import logging
 
 import jax.numpy as jnp
@@ -11,12 +12,15 @@ from src.hessians.computer.fim import FIMComputer
 from src.hessians.computer.fim_block import FIMBlockComputer
 from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
+from src.hessians.computer.hessian_block import BlockHessianComputer
 from src.hessians.computer.kfac import KFACComputer
 from src.hessians.utils.data import EKFACData, ModelContext
 from src.hessians.utils.pseudo_targets import generate_pseudo_targets, sample_gradients
 from src.utils.data.data import RandomClassificationDataset
 from src.utils.data.jax_dataloader import JAXDataLoader
 from src.utils.loss import cross_entropy_loss
+from src.utils.metrics.full_matrix_metrics import MATRIX_METRICS
+from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.mlp import MLP
 from src.utils.optimizers import optimizer
 from src.utils.train import (
@@ -239,17 +243,151 @@ def simple_run():
     )
 
     # Compute block Hessian for comparison
-    block_hessian_computer = HessianComputer(compute_context=model_context)
-    block_hessian = block_hessian_computer.compute_hessian(damping=damping)
-    block_hessian_hvp = block_hessian_computer.compute_hvp(
+    block_hessian_computer = BlockHessianComputer(compute_context=model_context)
+    block_hessian = block_hessian_computer.estimate_hessian(damping=damping)
+    block_hessian_hvp = block_hessian_computer.estimate_hvp(
         vectors=gradient_samples_1, damping=damping
     )
-    block_hessian_ihvp = block_hessian_computer.compute_ihvp(
+    block_hessian_ihvp = block_hessian_computer.estimate_ihvp(
         vectors=gradient_samples_2, damping=damping
     )
     logger.info(
         f"Block Hessian computed with shape: {block_hessian.shape}, {block_hessian_hvp.shape}, {block_hessian_ihvp.shape}"
     )
+
+    matrix_results = {}
+    matrix_metrics = MATRIX_METRICS["all_matrix"]
+    for metric in matrix_metrics:
+        kfac_vs_full = kfac_computer.compare_full_hessian_estimates(
+            comparison_matrix=full_hessian,
+            metric=metric,
+            damping=damping,
+        )
+        ekfac_vs_full = ekfac_computer.compare_full_hessian_estimates(
+            comparison_matrix=full_hessian,
+            metric=metric,
+            damping=damping,
+        )
+        fim_vs_full = fim_computer.compare_full_hessian_estimates(
+            comparison_matrix=full_hessian,
+            metric=metric,
+            damping=damping,
+        )
+        block_fim_vs_full = block_fim_computer.compare_full_hessian_estimates(
+            comparison_matrix=full_hessian,
+            metric=metric,
+            damping=damping,
+        )
+        gnh_vs_full = gnh_computer.compare_full_hessian_estimates(
+            comparison_matrix=full_hessian,
+            metric=metric,
+            damping=damping,
+        )
+        block_hessian_vs_full = block_hessian_computer.compare_full_hessian_estimates(
+            comparison_matrix=full_hessian,
+            metric=metric,
+            damping=damping,
+        )
+        kfac_vs_gnh = kfac_computer.compare_full_hessian_estimates(
+            comparison_matrix=gnh,
+            metric=metric,
+            damping=damping,
+        )
+        ekfac_vs_gnh = ekfac_computer.compare_full_hessian_estimates(
+            comparison_matrix=gnh,
+            metric=metric,
+            damping=damping,
+        )
+        fim_vs_gnh = fim_computer.compare_full_hessian_estimates(
+            comparison_matrix=gnh,
+            metric=metric,
+            damping=damping,
+        )
+        block_fim_vs_gnh = block_fim_computer.compare_full_hessian_estimates(
+            comparison_matrix=gnh,
+            metric=metric,
+            damping=damping,
+        )
+
+        matrix_results[metric.value] = {
+            "kfac_vs_full": float(kfac_vs_full),
+            "ekfac_vs_full": float(ekfac_vs_full),
+            "fim_vs_full": float(fim_vs_full),
+            "block_fim_vs_full": float(block_fim_vs_full),
+            "gnh_vs_full": float(gnh_vs_full),
+            "block_hessian_vs_full": float(block_hessian_vs_full),
+            "kfac_vs_gnh": float(kfac_vs_gnh),
+            "ekfac_vs_gnh": float(ekfac_vs_gnh),
+            "fim_vs_gnh": float(fim_vs_gnh),
+            "block_fim_vs_gnh": float(block_fim_vs_gnh),
+        }
+
+    hvp_results = {}
+    for metric in VectorMetric.all_metrics():
+        kfac_vs_full_hvp = metric.compute(full_hvp, kfac_hvp, gradient_samples_2)
+        ekfac_vs_full_hvp = metric.compute(full_hvp, ekfac_hvp, gradient_samples_2)
+        fim_vs_full_hvp = metric.compute(full_hvp, fim_hvp, gradient_samples_2)
+        block_fim_vs_full_hvp = metric.compute(
+            full_hvp, block_fim_hvp, gradient_samples_2
+        )
+        gnh_vs_full_hvp = metric.compute(full_hvp, gnh_hvp, gradient_samples_2)
+        block_hessian_vs_full_hvp = metric.compute(
+            full_hvp, block_hessian_hvp, gradient_samples_2
+        )
+        kfac_vs_gnh_hvp = metric.compute(gnh_hvp, kfac_hvp, gradient_samples_2)
+        ekfac_vs_gnh_hvp = metric.compute(gnh_hvp, ekfac_hvp, gradient_samples_2)
+        fim_vs_gnh_hvp = metric.compute(gnh_hvp, fim_hvp, gradient_samples_2)
+        block_fim_vs_gnh_hvp = metric.compute(
+            gnh_hvp, block_fim_hvp, gradient_samples_2
+        )
+
+        hvp_results[metric.name] = {
+            "kfac_vs_full_hvp": float(kfac_vs_full_hvp),
+            "ekfac_vs_full_hvp": float(ekfac_vs_full_hvp),
+            "fim_vs_full_hvp": float(fim_vs_full_hvp),
+            "block_fim_vs_full_hvp": float(block_fim_vs_full_hvp),
+            "gnh_vs_full_hvp": float(gnh_vs_full_hvp),
+            "block_hessian_vs_full_hvp": float(block_hessian_vs_full_hvp),
+            "kfac_vs_gnh_hvp": float(kfac_vs_gnh_hvp),
+            "ekfac_vs_gnh_hvp": float(ekfac_vs_gnh_hvp),
+            "fim_vs_gnh_hvp": float(fim_vs_gnh_hvp),
+            "block_fim_vs_gnh_hvp": float(block_fim_vs_gnh_hvp),
+        }
+
+    ihvp_results = {}
+    for metric in VectorMetric.all_metrics():
+        kfac_vs_full_ihvp = metric.compute(full_ihvp, kfac_ihvp, gradient_samples_2)
+        ekfac_vs_full_ihvp = metric.compute(full_ihvp, ekfac_ihvp, gradient_samples_2)
+        fim_vs_full_ihvp = metric.compute(full_ihvp, fim_ihvp, gradient_samples_2)
+        block_fim_vs_full_ihvp = metric.compute(
+            full_ihvp, block_fim_ihvp, gradient_samples_2
+        )
+        gnh_vs_full_ihvp = metric.compute(full_ihvp, gnh_ihvp, gradient_samples_2)
+        block_hessian_vs_full_ihvp = metric.compute(
+            full_ihvp, block_hessian_ihvp, gradient_samples_2
+        )
+        kfac_vs_gnh_ihvp = metric.compute(gnh_ihvp, kfac_ihvp, gradient_samples_2)
+        ekfac_vs_gnh_ihvp = metric.compute(gnh_ihvp, ekfac_ihvp, gradient_samples_2)
+        fim_vs_gnh_ihvp = metric.compute(gnh_ihvp, fim_ihvp, gradient_samples_2)
+        block_fim_vs_gnh_ihvp = metric.compute(
+            gnh_ihvp, block_fim_ihvp, gradient_samples_2
+        )
+        ihvp_results[metric.name] = {
+            "kfac_vs_full_ihvp": float(kfac_vs_full_ihvp),
+            "ekfac_vs_full_ihvp": float(ekfac_vs_full_ihvp),
+            "fim_vs_full_ihvp": float(fim_vs_full_ihvp),
+            "block_fim_vs_full_ihvp": float(block_fim_vs_full_ihvp),
+            "gnh_vs_full_ihvp": float(gnh_vs_full_ihvp),
+            "block_hessian_vs_full_ihvp": float(block_hessian_vs_full_ihvp),
+            "kfac_vs_gnh_ihvp": float(kfac_vs_gnh_ihvp),
+            "ekfac_vs_gnh_ihvp": float(ekfac_vs_gnh_ihvp),
+            "fim_vs_gnh_ihvp": float(fim_vs_gnh_ihvp),
+            "block_fim_vs_gnh_ihvp": float(block_fim_vs_gnh_ihvp),
+        }
+
+    logging.info(f"Matrix comparison results: {json.dumps(matrix_results, indent=2)}")
+    logging.info(f"HVP comparison results: {json.dumps(hvp_results, indent=2)}")
+    logging.info(f"IHVP comparison results: {json.dumps(ihvp_results, indent=2)}")
 
     # plot eigenvalue comparison
     import matplotlib.pyplot as plt

@@ -103,17 +103,23 @@ def train_model(
 
 
 @jax.jit
-def predict_jit(apply_fn, params, x):
+def _predict(apply_fn, params, x):
     return apply_fn(params, x)
 
 
 def predict(model: ApproximationModel, params: Dict, x):
     x = jnp.array(x)
-    return predict_jit(model.apply, params, x)
+    return _predict(model.apply, params, x)
 
 
-@jax.jit
-def evaluate_jit(apply_fn, params, inputs, targets, loss_fn):
+@partial(jax.jit, static_argnames=("loss_fn", "apply_fn"))
+def _evaluate(
+    apply_fn: Callable,
+    params: Dict,
+    inputs: jnp.ndarray,
+    targets: jnp.ndarray,
+    loss_fn: Callable,
+):
     outputs = apply_fn(params, inputs)
     return loss_fn(outputs, targets)
 
@@ -127,8 +133,38 @@ def evaluate(
 ):
     """Evaluate model."""
 
-    loss_value = evaluate_jit(model.apply, params, inputs, targets, loss_fn)
+    loss_value = _evaluate(model.apply, params, inputs, targets, loss_fn)
     return float(loss_value)
+
+
+def evaluate_loss_and_classification_accuracy(
+    model: ApproximationModel,
+    params: Dict,
+    inputs: jnp.ndarray,
+    targets: jnp.ndarray,
+    loss_fn: Callable,
+):
+    loss, acc = _evaluate_loss_and_classification_accuracy(
+        model.apply, params, inputs, targets, loss_fn
+    )
+    return float(loss), float(acc)
+
+
+@partial(jax.jit, static_argnames=["apply_fn", "loss_fn"])
+def _evaluate_loss_and_classification_accuracy(
+    apply_fn: Callable,
+    params: Dict,
+    inputs: jnp.ndarray,
+    targets: jnp.ndarray,
+    loss_fn: Callable,
+):
+    logits = apply_fn(params, inputs)
+    loss = loss_fn(logits, targets)
+
+    assert isinstance(logits, jnp.ndarray)
+    preds = jnp.argmax(logits, axis=-1)
+    acc = jnp.mean(preds == targets)
+    return loss, acc
 
 
 def initialize_model(model: ApproximationModel, input_shape: int, key=None):
@@ -212,13 +248,18 @@ def check_saved_model(directory: str, model: ApproximationModel) -> bool:
 
     return (
         os.path.exists(checkpoint_path_msgpack) or os.path.exists(checkpoint_path_pkl)
-    ) and saved_model_data == model.serialize()
+    ) and json.dumps(saved_model_data) == json.dumps(model.serialize())
 
 
 def load_model_checkpoint(
     directory: str, model: ApproximationModel
 ) -> Tuple[Dict, ApproximationModel, Dict]:
-    """Load model and parameters from checkpoint directory."""
+    """Load model and parameters from checkpoint directory.
+    Returns:
+        params: Model parameters as a PyTree.
+        model: The model instance.
+        metadata: Additional metadata if available, else empty dict.
+    """
 
     if not check_saved_model(directory, model=model):
         raise FileNotFoundError(f"No saved model found in directory: {directory}")
@@ -227,7 +268,7 @@ def load_model_checkpoint(
     with open(f"{directory}/model.json", "r") as f:
         model_data_serialized = json.load(f)
         provided_model_data = model.serialize()
-        if model_data_serialized != provided_model_data:
+        if json.dumps(model_data_serialized) != json.dumps(provided_model_data):
             raise ValueError(
                 "Model definition in checkpoint does not match the provided model."
             )

@@ -20,6 +20,11 @@ class MLPSwiGLU(ApproximationModel):
     """
 
     hidden_dim: List[Tuple[int, int, int]] = field(default_factory=list)
+    activation: str = "swiglu"
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        assert self.activation == "swiglu", "Only 'swiglu' activation is supported."
 
     @nn.compact
     def __call__(

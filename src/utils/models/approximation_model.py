@@ -49,6 +49,19 @@ class ApproximationModel(nn.Module):
                 layer_names.append(name)
         return layer_names
 
+    @property
+    def num_params(self) -> int:
+        """Count the total number of parameters in the model."""
+        shapes = jax.eval_shape(
+            self.init, jax.random.PRNGKey(0), jnp.zeros((1, self.input_dim))
+        )
+        flattened_shapes, _ = tree_flatten_with_path(shapes["params"])
+        total_params = 0
+        for _, leaf in flattened_shapes:
+            total_params += int(jnp.prod(jnp.array(leaf.shape)))
+
+        return total_params
+
     @abstractmethod
     def collector_apply(self, x, collector) -> Any:
         """Special apply method which enables the custom forward and backward passes in order to collect information."""
@@ -57,13 +70,15 @@ class ApproximationModel(nn.Module):
     def serialize(self):
         return {
             "class": self.__class__.__name__,
-            **self.to_dict_with_exluded_fields(["parent", "name"]),
+            **self.to_dict_with_excluded_fields(["parent", "name"]),
         }
 
-    def to_dict_with_exluded_fields(self, excluded_fields: list[str]) -> dict:
+    def to_dict_with_excluded_fields(self, excluded_fields: list[str]) -> dict:
         """Convert the dataclass to a dictionary excluding specified fields."""
-        return {
+        test_dict = {
             key: value
             for key, value in asdict(self).items()
             if key not in excluded_fields
         }
+
+        return test_dict

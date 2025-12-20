@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import time
@@ -7,6 +8,17 @@ from typing import Any, Dict
 import jax
 import matplotlib.pyplot as plt
 import numpy as np
+
+
+def hash_data(data: Dict[str, Any], length: int = 10) -> str:
+    canonical = json.dumps(
+        data,
+        sort_keys=True,
+        separators=(",", ":"),  # canonical JSON
+        ensure_ascii=False,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return digest[:length]
 
 
 def plot_training_curve(train_losses, val_losses, title="Training Curve"):
