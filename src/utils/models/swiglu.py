@@ -20,6 +20,7 @@ class SwiGLU(nn.Module):
     down_dim: int
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         assert self.up_dim == self.gate_dim, (
             "For SwiGLU, up_dim must be equal to gate_dim."
         )
