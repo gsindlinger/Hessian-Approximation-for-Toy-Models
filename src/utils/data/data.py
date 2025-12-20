@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional, Self, Type, TypeVar
 
 import jax
 import numpy as np
@@ -17,6 +17,8 @@ from typing_extensions import override
 from ucimlrepo import fetch_ucirepo
 
 from src.utils.data.jax_dataloader import JAXDataLoader
+
+T = TypeVar("T", bound="DownloadableDataset")
 
 
 @dataclass
@@ -57,6 +59,150 @@ class Dataset:
     def output_dim(self) -> int:
         pass
 
+    def get_k_fold_splits(
+        self,
+        n_splits: int,
+        shuffle: bool = True,
+        seed: int = 42,
+    ) -> Iterator[
+        tuple[
+            tuple[Array, Array],
+            tuple[Array, Array],
+        ]
+    ]:
+        """
+        Yield K-fold (train, test) splits.
+
+        Each yield returns:
+        ((train_inputs, train_targets), (test_inputs, test_targets))
+        """
+        num_samples = len(self)
+        indices = jnp.arange(num_samples)
+
+        if shuffle:
+            key = jax.random.PRNGKey(seed)
+            indices = jax.random.permutation(key, indices)
+
+        folds = jnp.array_split(indices, n_splits)
+
+        for i in range(n_splits):
+            test_idx = folds[i]
+            train_idx = jnp.concatenate([folds[j] for j in range(n_splits) if j != i])
+
+            yield (
+                (self.inputs[train_idx], self.targets[train_idx]),
+                (self.inputs[test_idx], self.targets[test_idx]),
+            )
+
+
+class ClassificationDataset(Dataset):
+    """Dataset for classification tasks."""
+
+    def train_test_split(self, test_size: float = 0.2, seed: int = 42):
+        y = self.targets.reshape(-1)
+        num_classes = self.output_dim()
+
+        key = jax.random.PRNGKey(seed)
+        train_indices = []
+        test_indices = []
+
+        for cls in range(num_classes):
+            cls_indices = jnp.where(y == cls)[0]
+
+            key, subkey = jax.random.split(key)
+            cls_indices = jax.random.permutation(subkey, cls_indices)
+
+            split_idx = int(len(cls_indices) * (1 - test_size))
+            train_indices.append(cls_indices[:split_idx])
+            test_indices.append(cls_indices[split_idx:])
+
+        train_indices = jnp.concatenate(train_indices)
+        test_indices = jnp.concatenate(test_indices)
+
+        # Final shuffle so classes are mixed
+        key, subkey = jax.random.split(key)
+        train_indices = jax.random.permutation(subkey, train_indices)
+
+        key, subkey = jax.random.split(key)
+        test_indices = jax.random.permutation(subkey, test_indices)
+
+        train_dataset = replace(
+            self,
+            inputs=self.inputs[train_indices],
+            targets=self.targets[train_indices],
+        )
+        test_dataset = replace(
+            self,
+            inputs=self.inputs[test_indices],
+            targets=self.targets[test_indices],
+        )
+
+        return train_dataset, test_dataset
+
+    def get_k_fold_splits(
+        self,
+        n_splits: int,
+        shuffle: bool = True,
+        seed: int = 42,
+    ):
+        y = self.targets.reshape(-1)
+        num_classes = self.output_dim()
+
+        key = jax.random.PRNGKey(seed)
+
+        # collect per-class folds
+        class_folds = [[] for _ in range(n_splits)]
+
+        for cls in range(num_classes):
+            cls_indices = jnp.where(y == cls)[0]
+
+            if shuffle:
+                key, subkey = jax.random.split(key)
+                cls_indices = jax.random.permutation(subkey, cls_indices)
+
+            splits = jnp.array_split(cls_indices, n_splits)
+            for i in range(n_splits):
+                class_folds[i].append(splits[i])
+
+        folds = [jnp.concatenate(class_folds[i]) for i in range(n_splits)]
+
+        for i in range(n_splits):
+            test_idx = folds[i]
+            train_idx = jnp.concatenate([folds[j] for j in range(n_splits) if j != i])
+
+            yield (
+                (self.inputs[train_idx], self.targets[train_idx]),
+                (self.inputs[test_idx], self.targets[test_idx]),
+            )
+
+
+class RegressionDataset(Dataset):
+    """Dataset for regression tasks."""
+
+    def train_test_split(self, test_size: float = 0.2, seed: int = 42):
+        num_samples = self.inputs.shape[0]
+        indices = jnp.arange(num_samples)
+
+        key = jax.random.PRNGKey(seed)
+        shuffled_indices = jax.random.permutation(key, indices)
+
+        split_idx = int(num_samples * (1 - test_size))
+        train_indices = shuffled_indices[:split_idx]
+        test_indices = shuffled_indices[split_idx:]
+
+        train_dataset = replace(
+            self,
+            inputs=self.inputs[train_indices],
+            targets=self.targets[train_indices],
+        )
+        test_dataset = replace(
+            self,
+            inputs=self.inputs[test_indices],
+            targets=self.targets[test_indices],
+        )
+
+        return train_dataset, test_dataset
+
 
 @dataclass(frozen=True)
 class RawDataset:
@@ -80,16 +226,16 @@ class DownloadableDataset(Dataset, ABC):
     @abstractmethod
     def load_from_disk(directory: Path) -> RawDataset: ...
 
-    @staticmethod
+    @classmethod
     @abstractmethod
-    def create_dataset_from_raw(raw: RawDataset) -> Dataset: ...
+    def create_dataset_from_raw(cls, raw: RawDataset) -> Self: ...
 
     @classmethod
     def load(
-        cls,
+        cls: Type[T],
         directory: Optional[str] = None,
         store_on_disk: bool = True,
-    ) -> Dataset:
+    ) -> T:
         """
         Load a dataset from disk or download it.
 
@@ -119,7 +265,7 @@ class DownloadableDataset(Dataset, ABC):
 
 
 @dataclass
-class RandomRegressionDataset(Dataset):
+class RandomRegressionDataset(RegressionDataset):
     n_samples: int = field(default=100)
     n_features: int = field(default=10)
     n_targets: int = field(default=1)
@@ -156,7 +302,7 @@ class RandomRegressionDataset(Dataset):
 
 
 @dataclass
-class RandomClassificationDataset(Dataset):
+class RandomClassificationDataset(ClassificationDataset):
     n_samples: int = field(default=100)
     n_features: int = field(default=10)
     n_informative: int = field(default=5)
@@ -189,7 +335,7 @@ class RandomClassificationDataset(Dataset):
 
 
 @dataclass
-class UCIDataset(DownloadableDataset):
+class UCIRegressionDataset(DownloadableDataset, RegressionDataset):
     """Base class for UCI datasets - handles regression datasets."""
 
     id: int = 0
@@ -250,20 +396,20 @@ class UCIDataset(DownloadableDataset):
         return self.targets.shape[1]
 
 
-class EnergyDataset(UCIDataset):
+class EnergyDataset(UCIRegressionDataset):
     """Energy efficiency dataset - regression task."""
 
     id = 242
 
 
-class ConcreteDataset(UCIDataset):
+class ConcreteDataset(UCIRegressionDataset):
     """Concrete compressive strength - regression task."""
 
     id = 165
 
 
 @dataclass
-class UCIClassificationDataset(DownloadableDataset):
+class UCIClassificationDataset(DownloadableDataset, ClassificationDataset):
     """Base class for UCI classification datasets."""
 
     id: int = 0
@@ -357,7 +503,7 @@ class DigitsDataset(UCIClassificationDataset):
 
 
 @dataclass
-class OpenMLDataset(DownloadableDataset):
+class OpenMLDataset(DownloadableDataset, ClassificationDataset):
     """Base class for OpenML datasets - handles classification tasks."""
 
     name: str = ""
