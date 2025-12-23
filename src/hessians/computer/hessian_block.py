@@ -122,7 +122,7 @@ class BlockHessianComputer(HessianEstimator):
     ) -> Float[Array, "... d"]:
         """
         Computes (E_i[H_ii^(i)] + λI) v for a single block,
-        averaged over samples (x_i, y_i).
+        averaged over samples (x_i, y_i), using scan over vectors.
         """
         start, end = block
 
@@ -142,38 +142,44 @@ class BlockHessianComputer(HessianEstimator):
 
         grad_loss_single = jax.grad(loss_single)
 
-        # Embed block vector into full parameter vector
+        # Embed a block vector into full param vector
         def embed(v):
             full = jnp.zeros((p_flat.shape[0],), dtype=v.dtype)
             return lax.dynamic_update_slice(full, v, (start,))
 
-        # Per-sample HVP for a single v
+        # Compute HVP for one (v, x, y)
         def hvp_single_sample(v, x, y):
             _, hv = jax.jvp(
                 lambda p: grad_loss_single(p, x, y),
                 (p_flat,),
                 (embed(v),),
             )
+            # extract just the block
             return lax.dynamic_slice(hv, (start,), (end - start,))
 
-        # Average HVP over batch
+        # average HVP over dataset
         def hvp_avg(v):
             def scan_body(acc, xy):
                 x_i, y_i = xy
-                hv_i = hvp_single_sample(v, x_i, y_i)
-                return acc + hv_i, None
+                return acc + hvp_single_sample(v, x_i, y_i), None
 
             hv0 = jnp.zeros_like(v)
             hv_sum, _ = lax.scan(scan_body, hv0, (X, Y))
             hv_mean = hv_sum / X.shape[0]
-
             return hv_mean + damping * v
 
-        # Support batched v_block
+        # Scan over batch of vectors
+        # If v_block is a single vector
         if v_block.ndim == 1:
             return hvp_avg(v_block)
-        else:
-            return jax.vmap(hvp_avg)(v_block)
+
+        # Else v_block.shape = (B, d)
+        def scan_vec(carry, v):
+            out = hvp_avg(v)
+            return carry, out
+
+        _, hvp_out = lax.scan(scan_vec, None, v_block)
+        return hvp_out
 
     def _compute_blocks(self, damping: Float):
         blocks = []
