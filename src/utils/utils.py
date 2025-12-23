@@ -166,6 +166,9 @@ def get_peak_bytes_in_use():
             total_peak += stats.get("peak_bytes_in_use", 0)
         except Exception:
             pass
+
+    # convert to GB
+    total_peak /= 1024**3
     return total_peak
 
 

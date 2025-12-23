@@ -101,7 +101,6 @@ class GNHComputer(HessianEstimator):
         Compute inverse Gauss-Newton-vector products for a batch of vectors.
         """
         gnh = GNHComputer._compute_gnh(data, damping)
-
         return jnp.linalg.solve(gnh, vectors.T).T
 
     @staticmethod
@@ -162,12 +161,15 @@ class GNHComputer(HessianEstimator):
         damping: float,
     ) -> jnp.ndarray:
         """
-        Computes Gauss-Newton Hessian-vector products.
-        """
+        Minimal memory version: double scan over vectors AND data samples.
+        Processes one vector and one data sample at a time.
 
-        p_flat = compute_context.params_flat  # shape: [n_params]
-        X = compute_context.inputs  # shape: [n_samples, ...]
-        Y = compute_context.targets  # shape: [n_samples, ...]
+        Memory usage: O(n_params) instead of O(batch_size * n_samples * n_outputs)
+        """
+        p_flat = compute_context.params_flat
+        X = compute_context.inputs
+        Y = compute_context.targets
+        n_samples = X.shape[0]
 
         def model_out(p, x):
             params = compute_context.unravel_fn(p)
@@ -176,31 +178,48 @@ class GNHComputer(HessianEstimator):
         def loss_wrt_output(z, y):
             return compute_context.loss_fn(z, y)
 
-        def gnhvp_single_data_point(p_flat, x_i, y_i, v_batch):
+        def gnhvp_single_data_single_vector(x_i, y_i, v):
+            """
+            Compute GN-vector product for ONE data point and ONE vector.
+            This is the minimal memory unit.
+            """
             z = model_out(p_flat, x_i)
-
-            H_z = jax.hessian(lambda z_: loss_wrt_output(z_, y_i))(
-                z
-            )  # Hessian of loss wrt outputs
+            H_z = jax.hessian(lambda z_: loss_wrt_output(z_, y_i))(z)
 
             def logits_fn(p):
                 return model_out(p, x_i)
 
-            J = jax.jacrev(logits_fn)(
-                p_flat
-            )  # Jacobian of model outputs wrt parameters
-            Jv = v_batch @ J.T
-            HJv = Jv @ H_z.T
-            Gv = HJv @ J
+            # Use JVP/VJP / never materialize Jacobian
+            _, Jv = jax.jvp(logits_fn, (p_flat,), (v,))  # [n_outputs]
+            HJv = H_z @ Jv  # [n_outputs]
+            JT_HJv = jax.vjp(logits_fn, p_flat)[1](HJv)[0]  # [n_params]
 
-            return Gv
+            return JT_HJv
 
-        # vmap over dataset and sum contributions
-        Gv_sum = jax.vmap(
-            lambda x_i, y_i: gnhvp_single_data_point(p_flat, x_i, y_i, vectors),
-            in_axes=(0, 0),
-        )(X, Y).sum(axis=0)
+        def process_single_vector(v):
+            """Process one vector across all data samples."""
 
-        # Average over batch + damping
-        n = X.shape[0]
-        return Gv_sum / n + damping * vectors
+            # Scan over data samples for this vector
+            def data_scan_body(accum, xy):
+                x_i, y_i = xy
+                contribution = gnhvp_single_data_single_vector(x_i, y_i, v)
+                return accum + contribution, None
+
+            result, _ = jax.lax.scan(data_scan_body, jnp.zeros_like(v), (X, Y))
+            return result
+
+        # Scan over vectors
+        def vector_scan_body(results_accum, i):
+            v = vectors[i]
+            result = process_single_vector(v)
+            # Update the i-th row of results
+            results_accum = results_accum.at[i].set(result)
+            return results_accum, None
+
+        n_vectors = vectors.shape[0]
+        results, _ = jax.lax.scan(
+            vector_scan_body, jnp.zeros_like(vectors), jnp.arange(n_vectors)
+        )
+
+        # Average over data samples + damping
+        return results / n_samples + damping * vectors
