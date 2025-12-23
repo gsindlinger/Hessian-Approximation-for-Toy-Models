@@ -75,6 +75,22 @@ def simple_run():
 
     best_model_names = []
 
+    # Track memory at start of Hessian analysis
+    logging.info(f"Peak memory usage at start: {get_peak_bytes_in_use()}")
+
+    def split_dim_for_swiglu(x: int) -> tuple[int, int, int]:
+        """
+        Split a hidden dimension into (up_dim, gate_dim, down_dim) for SwiGLU,
+        trying to keep the sizes as close to the regular MLP setup as possible.
+        """
+        base = x // 3
+        rem = x % 3
+        return (
+            base + (1 if rem > 0 else 0),
+            base + (1 if rem > 1 else 0),
+            base,
+        )
+
     # Loop over models
     for hidden_layers in layer_settings:
         model_mlp = MLP(
@@ -88,7 +104,7 @@ def simple_run():
         model_mlp_swiglu = MLPSwiGLU(
             input_dim=dataset.input_dim(),
             output_dim=dataset.output_dim(),
-            hidden_dim=[(dim // 3,) * 3 for dim in hidden_layers],  # type: ignore
+            hidden_dim=[split_dim_for_swiglu(dim) for dim in hidden_layers],
             activation="swiglu",
         )
         logging.info(
@@ -222,13 +238,13 @@ def simple_run():
             logger.info(
                 f"Best model selected: {best_model_name} with test loss: {best_test_loss}"
             )
+            logger.info(
+                f"Peak memory usage during model training / loading: {get_peak_bytes_in_use()}"
+            )
             best_model_names.append(best_model_name)
 
             # PHASE 2: Load best model and perform Hessian analysis
             logger.info(f"Starting Hessian analysis for best model: {best_model_name}")
-
-            # Track memory at start of Hessian analysis
-            memory_start = get_peak_bytes_in_use()
 
             # Load best model
             best_model_directory = (
@@ -240,6 +256,8 @@ def simple_run():
             fold_splits = list(
                 dataset.get_k_fold_splits(n_splits=2, shuffle=True, seed=seed)
             )
+
+            assert best_fold_index is not None
             (train_inputs, train_targets), (test_inputs, test_targets) = fold_splits[
                 best_fold_index
             ]
@@ -267,6 +285,10 @@ def simple_run():
                 rng_key=PRNGKey(seed + 1),
             )
 
+            logger.info(
+                f"Peak memory after gradient sampling: {get_peak_bytes_in_use()}"
+            )
+
             # Generate pseudo-targets for EKFAC/FIM using training data
             collector_data_1 = train_dataset.replace_targets(
                 generate_pseudo_targets(
@@ -288,6 +310,10 @@ def simple_run():
                 )
             )
 
+            logger.info(
+                f"Peak memory after pseudo-target generation: {get_peak_bytes_in_use()}"
+            )
+
             # Collect activations and gradients
             collector_run_dir_1 = f"experiments/sweep_1/data/activation_gradient_collector/{best_model_name}/run1/"
             collector = CollectorActivationsGradients(model=model, params=params)
@@ -304,6 +330,10 @@ def simple_run():
                 collector_data_2.targets,
                 cross_entropy_loss,
                 save_directory=collector_run_dir_2,
+            )
+
+            logger.info(
+                f"Peak memory after activation and gradient collection: {get_peak_bytes_in_use()}"
             )
 
             # Compute KFAC components and save them
@@ -339,7 +369,9 @@ def simple_run():
             damping = ekfac_data.mean_eigenvalues_aggregated * 0.1
 
             # Memory checkpoint after EKFAC loading
-            memory_after_ekfac = get_peak_bytes_in_use()
+            logger.info(
+                f"Peak memory after EKFAC data loading: {get_peak_bytes_in_use()}"
+            )
 
             # Compute K-FAC Hessian
             kfac_computer = KFACComputer(compute_context=ekfac_data)
@@ -354,7 +386,9 @@ def simple_run():
             )
 
             # Memory checkpoint after KFAC computation
-            memory_after_kfac = get_peak_bytes_in_use()
+            logger.info(
+                f"Peak memory after K-FAC computation: {get_peak_bytes_in_use()}"
+            )
 
             # Compute E-KFAC Hessian
             ekfac_computer = EKFACComputer(compute_context=ekfac_data)
@@ -369,7 +403,9 @@ def simple_run():
             )
 
             # Memory checkpoint after EKFAC computation
-            memory_after_ekfac_compute = get_peak_bytes_in_use()
+            logger.info(
+                f"Peak memory after E-KFAC computation: {get_peak_bytes_in_use()}"
+            )
 
             # Compute FIM
             model_context = ModelContext.create(
@@ -390,7 +426,7 @@ def simple_run():
             )
 
             # Memory checkpoint after FIM computation
-            memory_after_fim = get_peak_bytes_in_use()
+            logger.info(f"Peak memory after FIM computation: {get_peak_bytes_in_use()}")
 
             # Compute Block FIM
             block_fim_data = CollectorActivationsGradients.load(
@@ -408,11 +444,16 @@ def simple_run():
             )
 
             # Memory checkpoint after Block FIM computation
-            memory_after_block_fim = get_peak_bytes_in_use()
+            logger.info(
+                f"Peak memory after Block FIM computation: {get_peak_bytes_in_use()}"
+            )
 
             # Compute GNH
             gnh_computer = GNHComputer(compute_context=model_context)
             gnh = gnh_computer.estimate_hessian(damping=damping)
+            logger.info(
+                f"Peak memory after GNH Hessian estimation: {get_peak_bytes_in_use()}"
+            )
             gnh_hvp = gnh_computer.estimate_hvp(
                 vectors=gradient_samples_1, damping=damping
             )
@@ -424,11 +465,14 @@ def simple_run():
             )
 
             # Memory checkpoint after GNH computation
-            memory_after_gnh = get_peak_bytes_in_use()
+            logger.info(f"Peak memory after GNH computation: {get_peak_bytes_in_use()}")
 
             # Compute the true Hessian
             hessian_computer = HessianComputer(compute_context=model_context)
             full_hessian = hessian_computer.compute_hessian(damping=damping)
+            logger.info(
+                f"Peak memory after Full Hessian estimation: {get_peak_bytes_in_use()}"
+            )
             full_hvp = hessian_computer.compute_hvp(
                 vectors=gradient_samples_1, damping=damping
             )
@@ -437,6 +481,11 @@ def simple_run():
             )
             logger.info(
                 f"Full Hessian, HVP, and IHVP computed with shapes: {full_hvp.shape}, {full_ihvp.shape}"
+            )
+
+            # Memory checkpoint after full Hessian computation
+            logger.info(
+                f"Peak memory after Full Hessian computation: {get_peak_bytes_in_use()}"
             )
 
             # Compute block Hessian for comparison
@@ -449,6 +498,11 @@ def simple_run():
             )
             logger.info(
                 f"Block Hessian HVP and IHVP computed with shapes: {block_hessian_hvp.shape}, {block_hessian_ihvp.shape}"
+            )
+
+            # Memory checkpoint after Block Hessian computation
+            logger.info(
+                f"Peak memory after Block Hessian computation: {get_peak_bytes_in_use()}"
             )
 
             # Compare matrices
@@ -573,6 +627,9 @@ def simple_run():
                     },
                 }
                 logger.info(f"Finished HVP comparison for metric: {metric.name}")
+                logger.info(
+                    f"Peak memory during HVP comparison {metric.name}: {get_peak_bytes_in_use()}"
+                )
 
             # Compare IHVPs
             logging.info("Comparing Inverse Hessian-vector products (IHVPs).")
@@ -624,6 +681,9 @@ def simple_run():
                     },
                 }
                 logger.info(f"Finished IHVP comparison for metric: {metric.name}")
+                logger.info(
+                    f"Peak memory during IHVP comparison {metric.name}: {get_peak_bytes_in_use()}"
+                )
 
             # Store Hessian analysis results
             experiment_result["hessian_analysis"] = {
@@ -634,6 +694,9 @@ def simple_run():
             }
 
             logger.info(f"Hessian analysis completed for {best_model_name}.")
+            logger.info(
+                f"Peak memory at end of Hessian analysis for {best_model_name}: {get_peak_bytes_in_use()}"
+            )
 
             # Add experiment result to all_results
             all_results["experiments"].append(experiment_result)

@@ -71,7 +71,7 @@ class HessianComputer:
         )
 
         # Compute batched HVP
-        result: Float[Array, "batch_size n_params"] = self._compute_hvp_batched(
+        result: Float[Array, "batch_size n_params"] = self._compute_hvp_scan(
             compute_context=self.compute_context,
             vectors=vectors_2D,
             damping=0.0 if damping is None else damping,
@@ -128,18 +128,28 @@ class HessianComputer:
 
     @staticmethod
     @jax.jit
-    def _compute_hvp_batched(
+    def _compute_hvp_scan(
         compute_context: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
-    ) -> Float[Array, "n_params"]:
+    ) -> Float[Array, "batch_size n_params"]:
         """
-        JIT-compiled Hessian-vector product (HVP) computation.
+        Memory-efficient Hessian-vector product computation.
+        Uses JAX's scan to avoid large intermediate allocations.
         """
-        # Vectorize over the batch dimension
-        return jax.vmap(
-            lambda v: HessianComputer._compute_hvp_single(compute_context, v, damping)
-        )(vectors)
+
+        def vector_scan_body(results_accum, i):
+            v = vectors[i]
+            result = HessianComputer._compute_hvp_single(compute_context, v, damping)
+            results_accum = results_accum.at[i].set(result)
+            return results_accum, None
+
+        n_vectors = vectors.shape[0]
+        results, _ = jax.lax.scan(
+            vector_scan_body, jnp.zeros_like(vectors), jnp.arange(n_vectors)
+        )
+
+        return results
 
     @staticmethod
     @jax.jit
@@ -149,7 +159,7 @@ class HessianComputer:
         damping: Float,
     ) -> Float[Array, "n_params"]:
         """
-        JIT-compiled Hessian-vector product (HVP) computation.
+        Hessian-vector product (HVP) computation for a single vector.
         """
 
         targets = compute_context.targets
