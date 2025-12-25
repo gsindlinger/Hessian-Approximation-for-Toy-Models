@@ -13,7 +13,6 @@ class VectorMetric(Enum):
     RELATIVE_ERROR = "relative_error"  # ||v_1 - v_2|| / ||v_1||
     COSINE_SIMILARITY = "cosine_similarity"  # ⟨v_1, v_2⟩ / (||v_1|| * ||v_2||)
     INNER_PRODUCT_DIFF = "inner_product_diff"  # |⟨x, v_1⟩ - ⟨x, v_2⟩|
-    SIGN_AGREEMENT = "sign_agreement"  # fraction of same-sign coordinates (irrelevant)
     RELATIVE_ENERGY_DIFF = "relative_energy_diff"  # |‖v_1‖² - ‖v_2‖²| / ‖v_1‖²
     INNER_PRODUCT_RATIO = "inner_product_ratio"  # ⟨x, v_2⟩ / ⟨x, v_1⟩
 
@@ -46,13 +45,6 @@ class VectorMetric(Enum):
         def absolute_l2_diff(v1, v2, x=None):
             return jnp.linalg.norm(v1 - v2)
 
-        # fraction of same-sign coordinates
-        def sign_agreement(v1, v2, x=None):
-            eps = 1e-4
-            close = (jnp.abs(v1) < eps) | (jnp.abs(v2) < eps)
-            same = jnp.sign(v1) == jnp.sign(v2)
-            return jnp.mean(close | same)
-
         # |‖v_1‖² - ‖v_2‖²| / ‖v_1‖²
         def relative_energy_diff(v1, v2, x=None):
             e1 = jnp.sum(v1**2)
@@ -75,7 +67,6 @@ class VectorMetric(Enum):
             VectorMetric.COSINE_SIMILARITY: cosine_similarity,
             VectorMetric.INNER_PRODUCT_DIFF: inner_product_diff,
             VectorMetric.ABSOLUTE_L2_DIFF: absolute_l2_diff,
-            VectorMetric.SIGN_AGREEMENT: sign_agreement,
             VectorMetric.RELATIVE_ENERGY_DIFF: relative_energy_diff,
             VectorMetric.INNER_PRODUCT_RATIO: inner_product_ratio,
         }

@@ -59,6 +59,18 @@ class Dataset:
     def output_dim(self) -> int:
         pass
 
+    @staticmethod
+    def normalize_data(train_data, test_data) -> tuple[Array, Array]:
+        """Standardize inputs to have zero mean and unit variance."""
+        scaler = StandardScaler()
+        normalized_train_inputs = scaler.fit_transform(train_data)
+        normalized_test_inputs = scaler.transform(test_data)
+
+        return (
+            jnp.asarray(normalized_train_inputs, dtype=train_data.dtype),
+            jnp.asarray(normalized_test_inputs, dtype=test_data.dtype),
+        )
+
     def get_k_fold_splits(
         self,
         n_splits: int,
@@ -179,7 +191,9 @@ class ClassificationDataset(Dataset):
 class RegressionDataset(Dataset):
     """Dataset for regression tasks."""
 
-    def train_test_split(self, test_size: float = 0.2, seed: int = 42):
+    def train_test_split(
+        self, test_size: float = 0.2, seed: int = 42
+    ) -> tuple[Dataset, Dataset]:
         num_samples = self.inputs.shape[0]
         indices = jnp.arange(num_samples)
 
@@ -374,12 +388,6 @@ class UCIRegressionDataset(DownloadableDataset, RegressionDataset):
         X = np.nan_to_num(X, nan=0.0)
         Y = np.nan_to_num(Y, nan=0.0)
 
-        # Standardize inputs (standard for regression)
-        X = StandardScaler().fit_transform(X)
-
-        # Keep targets at original scale for regression tasks
-        # This preserves interpretability and is standard practice
-
         # Ensure Y is 2D
         if Y.ndim == 1:
             Y = Y.reshape(-1, 1)
@@ -446,9 +454,6 @@ class UCIClassificationDataset(DownloadableDataset, ClassificationDataset):
 
         # Handle missing values
         X = np.nan_to_num(X, nan=0.0)
-
-        # Standardize inputs (standard for classification)
-        X = StandardScaler().fit_transform(X)
 
         # Encode labels as integers starting from 0
         label_encoder = LabelEncoder()

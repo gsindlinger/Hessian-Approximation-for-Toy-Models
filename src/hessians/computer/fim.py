@@ -85,7 +85,7 @@ class FIMComputer(HessianEstimator):
 
         F_full = F_full / X.shape[0]  # average
 
-        # add damping like in your Hessian
+        # add damping
         return F_full + damping * jnp.eye(F_full.shape[0])
 
     def estimate_hvp(
