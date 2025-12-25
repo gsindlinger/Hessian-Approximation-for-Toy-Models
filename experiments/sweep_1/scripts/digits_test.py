@@ -1,8 +1,10 @@
+import gc
 import json
 import logging
 import os
 import time
 
+import jax
 from jax.random import PRNGKey
 
 from src.config import Config, HessianApproximationConfig, ModelConfig
@@ -36,6 +38,22 @@ from src.utils.utils import get_peak_bytes_in_use, hash_data
 logger = logging.getLogger(__name__)
 
 
+def save_experiment_result(experiment_result, results_dir, timestamp, model_idx):
+    """Save individual experiment result to disk."""
+    os.makedirs(results_dir, exist_ok=True)
+    result_file = f"{results_dir}/experiment_{timestamp}_model_{model_idx}.json"
+    with open(result_file, "w") as f:
+        json.dump(experiment_result, f, indent=2)
+    logger.info(f"Saved experiment result to {result_file}")
+
+
+def cleanup_memory():
+    """Force garbage collection and clear JAX caches."""
+    gc.collect()
+    jax.clear_caches()
+    logger.info(f"Memory cleaned. Current peak: {get_peak_bytes_in_use()}")
+
+
 def run_digits():
     # Define config which serves mostly as reference for paths and model metadata
     seed = 32
@@ -47,22 +65,22 @@ def run_digits():
         directory=digits_dataset_path, store_on_disk=True
     )
 
+    # Split dataset into train and validation sets (single split)
+    train_val_split = list(
+        dataset.get_k_fold_splits(n_splits=2, shuffle=True, seed=seed)
+    )[0]
+    (train_inputs, train_targets), (val_inputs, val_targets) = train_val_split
+
     layer_settings = [
         [16],
-        2 * [16],
-        4 * [16],
-        # 8 * [16],
+        # 2 * [16],
         [32],
-        2 * [32],
-        4 * [32],
-        # 8 * [32],
-        [64],
-        2 * [64],
-        4 * [64],
-        # 8 * [64],
     ]
-    optimizer_name = "sgd_schedule_cosine"
-    learning_rate = 0.03
+    optimizer_name = "sgd"
+
+    # Hyperparameter grid
+    learning_rates = [0.01, 0.05, 0.1]
+    weight_decays = [0.0, 0.0001, 0.001]
 
     # Initialize results structure
     all_results = {
@@ -70,15 +88,19 @@ def run_digits():
             "timestamp": timestamp,
             "seed": seed,
             "optimizer": optimizer_name,
-            "learning_rate": learning_rate,
             "dataset_path": digits_dataset_path,
+            "hyperparameter_grid": {
+                "learning_rates": learning_rates,
+                "weight_decays": weight_decays,
+            },
         },
-        "experiments": [],
+        "best_models": [],
     }
 
-    best_model_names = []
+    results_dir = "experiments/sweep_1/data/results"
+    os.makedirs(results_dir, exist_ok=True)
 
-    # Track memory at start of Hessian analysis
+    # Track memory at start
     logging.info(f"Peak memory usage at start: {get_peak_bytes_in_use()}")
 
     def split_dim_for_swiglu(x: int) -> tuple[int, int, int]:
@@ -97,6 +119,8 @@ def run_digits():
             dims = (base + 1, base + 1, base)
         logger.info(f"Splitting {x} into SwiGLU dims: {dims}")
         return dims
+
+    model_idx = 0
 
     # Loop over models
     for hidden_layers in layer_settings:
@@ -124,131 +148,128 @@ def run_digits():
                 "model_type": "MLP" if isinstance(model, MLP) else "MLPSwiGLU",
                 "hidden_layers": hidden_layers,
                 "num_params": model.num_params,
-                "fold_selection": [],
+                "hyperparameter_search": [],
             }
 
-            # PHASE 1: K-fold cross-validation for model selection
-            train_losses = []
-            test_losses = []
-            best_fold_index = None
-            best_test_loss = float("inf")
+            # PHASE 1: Hyperparameter grid search for model selection
+            best_val_loss = float("inf")
+            best_learning_rate = None
+            best_weight_decay = None
+            best_model_name = None
 
-            for fold_index, (
-                (train_inputs, train_targets),
-                (test_inputs, test_targets),
-            ) in enumerate(
-                dataset.get_k_fold_splits(
-                    n_splits=2,
-                    shuffle=True,
-                    seed=seed,
-                )
-            ):
-                hashed_data = hash_data(
-                    {
-                        "hidden_layers": hidden_layers,
-                        "optimizer": optimizer_name,
-                        "learning_rate": learning_rate,
-                    }
-                )
-                if isinstance(model, MLP):
-                    model_name = f"mlp_hidden_{hashed_data}_fold_{fold_index}"
-                else:
-                    model_name = f"mlp_swiglu_hidden_{hashed_data}_fold_{fold_index}"
-
-                model_directory = (
-                    f"experiments/sweep_1/data/models/digits_model/{model_name}/"
-                )
-                metadata = {
-                    "model_name": model_name,
-                    "model_directory": model_directory,
-                    "metadata": {
-                        "model_name": model_name,
-                        "hidden_layers": hidden_layers,
-                        "optimizer": optimizer_name,
-                        "learning_rate": learning_rate,
-                        "param_count": model.num_params,
-                    },
-                }
-
-                # Train or load model
-                if check_saved_model(model_directory, model=model):
-                    params, _, metadata = load_model_checkpoint(
-                        model_directory, model=model
+            for learning_rate in learning_rates:
+                for weight_decay in weight_decays:
+                    hashed_data = hash_data(
+                        {
+                            "hidden_layers": hidden_layers,
+                            "optimizer": optimizer_name,
+                            "learning_rate": learning_rate,
+                            "weight_decay": weight_decay,
+                        }
                     )
-                    train_loss = metadata.get("train_loss", None)
-                else:
-                    model, params, loss_history = train_model(
+                    if isinstance(model, MLP):
+                        model_name = f"mlp_hidden_{hashed_data}_lr_{learning_rate}_wd_{weight_decay}"
+                    else:
+                        model_name = f"mlp_swiglu_hidden_{hashed_data}_lr_{learning_rate}_wd_{weight_decay}"
+
+                    model_directory = (
+                        f"experiments/sweep_1/data/models/digits_model/{model_name}/"
+                    )
+                    metadata = {
+                        "model_name": model_name,
+                        "model_directory": model_directory,
+                        "metadata": {
+                            "model_name": model_name,
+                            "hidden_layers": hidden_layers,
+                            "optimizer": optimizer_name,
+                            "learning_rate": learning_rate,
+                            "weight_decay": weight_decay,
+                            "param_count": model.num_params,
+                        },
+                    }
+
+                    # Train or load model
+                    if check_saved_model(model_directory, model=model):
+                        params, _, metadata = load_model_checkpoint(
+                            model_directory, model=model
+                        )
+                        train_loss = metadata.get("train_loss", None)
+                    else:
+                        model, params, loss_history = train_model(
+                            model,
+                            Dataset(train_inputs, train_targets).get_dataloader(
+                                batch_size=32, seed=seed
+                            ),
+                            loss_fn=cross_entropy_loss,
+                            optimizer=optimizer(
+                                optimizer_name,
+                                lr=learning_rate,
+                                weight_decay=weight_decay,
+                            ),
+                            epochs=100,
+                        )
+                        train_loss = loss_history[-1]
+                        metadata["train_loss"] = train_loss
+
+                    val_loss, val_accuracy = evaluate_loss_and_classification_accuracy(
                         model,
-                        Dataset(train_inputs, train_targets).get_dataloader(
-                            batch_size=32, seed=seed
-                        ),
+                        params,
+                        val_inputs,
+                        val_targets,
                         loss_fn=cross_entropy_loss,
-                        optimizer=optimizer(optimizer_name, lr=learning_rate),
-                        epochs=100,
                     )
-                    train_loss = loss_history[-1]
-                    metadata["train_loss"] = train_loss
+                    metadata["val_loss"] = val_loss
+                    metadata["val_accuracy"] = val_accuracy
 
-                test_loss, test_accuracy = evaluate_loss_and_classification_accuracy(
-                    model,
-                    params,
-                    test_inputs,
-                    test_targets,
-                    loss_fn=cross_entropy_loss,
-                )
-                metadata["test_loss"] = test_loss
-                metadata["test_accuracy"] = test_accuracy
+                    save_model_checkpoint(
+                        model=model,
+                        params=params,
+                        directory=model_directory,
+                        metadata=metadata,
+                    )
 
-                train_losses.append(train_loss)
-                test_losses.append(test_loss)
+                    # Track best hyperparameters
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_learning_rate = learning_rate
+                        best_weight_decay = weight_decay
+                        best_model_name = model_name
 
-                save_model_checkpoint(
-                    model=model,
-                    params=params,
-                    directory=model_directory,
-                    metadata=metadata,
-                )
+                    # Store hyperparameter search results
+                    experiment_result["hyperparameter_search"].append(
+                        {
+                            "learning_rate": learning_rate,
+                            "weight_decay": weight_decay,
+                            "model_name": model_name,
+                            "train_loss": float(train_loss),
+                            "val_loss": float(val_loss),
+                            "val_accuracy": float(val_accuracy),
+                        }
+                    )
 
-                # Track best fold
-                if test_loss < best_test_loss:
-                    best_test_loss = test_loss
-                    best_fold_index = fold_index
-                    best_model_name = model_name
+                    logger.info(
+                        f"Model {model_name} trained and evaluated. Val loss: {val_loss}"
+                    )
 
-                # Store fold selection results
-                experiment_result["fold_selection"].append(
-                    {
-                        "fold_index": fold_index,
-                        "model_name": model_name,
-                        "train_loss": float(train_loss),
-                        "test_loss": float(test_loss),
-                        "test_accuracy": float(test_accuracy),
-                    }
-                )
-
-                logger.info(
-                    f"Model {model_name} trained and evaluated. Test loss: {test_loss}"
-                )
-
-            # Store fold selection summary
-            avg_train_loss = sum(train_losses) / len(train_losses)
-            avg_test_loss = sum(test_losses) / len(test_losses)
-
-            experiment_result["fold_selection_summary"] = {
-                "avg_train_loss": float(avg_train_loss),
-                "avg_test_loss": float(avg_test_loss),
-                "best_fold_index": best_fold_index,
+            # Store hyperparameter search summary
+            experiment_result["hyperparameter_search_summary"] = {
+                "best_learning_rate": best_learning_rate,
+                "best_weight_decay": best_weight_decay,
                 "best_model_name": best_model_name,
-                "best_test_loss": float(best_test_loss),
+                "best_val_loss": float(best_val_loss),
             }
 
             logger.info(
-                f"Best model selected: {best_model_name} with test loss: {best_test_loss}"
+                f"Best model selected: {best_model_name} with val loss: {best_val_loss}"
             )
             logger.info(
                 f"Peak memory usage during model training / loading: {get_peak_bytes_in_use()}"
             )
-            best_model_names.append(best_model_name)
+
+            all_results["best_models"].append(best_model_name)
+
+            # Clean up before Hessian analysis
+            cleanup_memory()
 
             # PHASE 2: Load best model and perform Hessian analysis
             logger.info(f"Starting Hessian analysis for best model: {best_model_name}")
@@ -258,16 +279,6 @@ def run_digits():
                 f"experiments/sweep_1/data/models/digits_model/{best_model_name}/"
             )
             params, _, _ = load_model_checkpoint(best_model_directory, model=model)
-
-            # Get the training data for the best fold
-            fold_splits = list(
-                dataset.get_k_fold_splits(n_splits=2, shuffle=True, seed=seed)
-            )
-
-            assert best_fold_index is not None
-            (train_inputs, train_targets), (test_inputs, test_targets) = fold_splits[
-                best_fold_index
-            ]
 
             train_dataset = Dataset(train_inputs, train_targets)
 
@@ -339,6 +350,10 @@ def run_digits():
                 save_directory=collector_run_dir_2,
             )
 
+            # Clear collector from memory
+            del collector
+            cleanup_memory()
+
             logger.info(
                 f"Peak memory after activation and gradient collection: {get_peak_bytes_in_use()}"
             )
@@ -375,7 +390,10 @@ def run_digits():
 
             damping = ekfac_data.mean_eigenvalues_aggregated * 0.1
 
-            # Memory checkpoint after EKFAC loading
+            # Clear approximator from memory
+            del ekfac_approximator
+            cleanup_memory()
+
             logger.info(
                 f"Peak memory after EKFAC data loading: {get_peak_bytes_in_use()}"
             )
@@ -392,7 +410,6 @@ def run_digits():
                 f"K-FAC HVP, and IHVP computed with shapes:, {kfac_hvp.shape}, {kfac_ihvp.shape}"
             )
 
-            # Memory checkpoint after KFAC computation
             logger.info(
                 f"Peak memory after K-FAC computation: {get_peak_bytes_in_use()}"
             )
@@ -409,7 +426,6 @@ def run_digits():
                 f"E-KFAC HVP, and IHVP computed with shapes: {ekfac_hvp.shape}, {ekfac_ihvp.shape}"
             )
 
-            # Memory checkpoint after EKFAC computation
             logger.info(
                 f"Peak memory after E-KFAC computation: {get_peak_bytes_in_use()}"
             )
@@ -432,7 +448,6 @@ def run_digits():
                 f"FIM HVP, and IHVP computed with shapes: {fim_hvp.shape}, {fim_ihvp.shape}"
             )
 
-            # Memory checkpoint after FIM computation
             logger.info(f"Peak memory after FIM computation: {get_peak_bytes_in_use()}")
 
             # Compute Block FIM
@@ -450,7 +465,10 @@ def run_digits():
                 f"FIM Block HVP and IHVP computed with shapes: {block_fim_hvp.shape}, {block_fim_ihvp.shape}"
             )
 
-            # Memory checkpoint after Block FIM computation
+            # Clear block_fim_data from memory
+            del block_fim_data
+            cleanup_memory()
+
             logger.info(
                 f"Peak memory after Block FIM computation: {get_peak_bytes_in_use()}"
             )
@@ -471,7 +489,6 @@ def run_digits():
                 f"GNH HVP, and IHVP computed with shapes: {gnh_hvp.shape}, {gnh_ihvp.shape}"
             )
 
-            # Memory checkpoint after GNH computation
             logger.info(f"Peak memory after GNH computation: {get_peak_bytes_in_use()}")
 
             # Compute the true Hessian
@@ -490,7 +507,6 @@ def run_digits():
                 f"Full Hessian, HVP, and IHVP computed with shapes: {full_hvp.shape}, {full_ihvp.shape}"
             )
 
-            # Memory checkpoint after full Hessian computation
             logger.info(
                 f"Peak memory after Full Hessian computation: {get_peak_bytes_in_use()}"
             )
@@ -507,7 +523,6 @@ def run_digits():
                 f"Block Hessian HVP and IHVP computed with shapes: {block_hessian_hvp.shape}, {block_hessian_ihvp.shape}"
             )
 
-            # Memory checkpoint after Block Hessian computation
             logger.info(
                 f"Peak memory after Block Hessian computation: {get_peak_bytes_in_use()}"
             )
@@ -634,9 +649,6 @@ def run_digits():
                     },
                 }
                 logger.info(f"Finished HVP comparison for metric: {metric.name}")
-                logger.info(
-                    f"Peak memory during HVP comparison {metric.name}: {get_peak_bytes_in_use()}"
-                )
 
             # Compare IHVPs
             logging.info("Comparing Inverse Hessian-vector products (IHVPs).")
@@ -688,9 +700,6 @@ def run_digits():
                     },
                 }
                 logger.info(f"Finished IHVP comparison for metric: {metric.name}")
-                logger.info(
-                    f"Peak memory during IHVP comparison {metric.name}: {get_peak_bytes_in_use()}"
-                )
 
             # Store Hessian analysis results
             experiment_result["hessian_analysis"] = {
@@ -705,24 +714,56 @@ def run_digits():
                 f"Peak memory at end of Hessian analysis for {best_model_name}: {get_peak_bytes_in_use()}"
             )
 
-            # Add experiment result to all_results
-            all_results["experiments"].append(experiment_result)
+            # Save experiment result to disk immediately
+            save_experiment_result(experiment_result, results_dir, timestamp, model_idx)
+            model_idx += 1
 
-    # Store best models summary
-    all_results["best_models"] = best_model_names
-    logger.info(f"All best models: {best_model_names}")
+            # Clean up large objects from memory before next iteration
+            del (
+                kfac_computer,
+                ekfac_computer,
+                fim_computer,
+                block_fim_computer,
+                gnh_computer,
+                hessian_computer,
+                block_hessian_computer,
+                kfac_hvp,
+                kfac_ihvp,
+                ekfac_hvp,
+                ekfac_ihvp,
+                fim_hvp,
+                fim_ihvp,
+                block_fim_hvp,
+                block_fim_ihvp,
+                gnh_hvp,
+                gnh_ihvp,
+                full_hvp,
+                full_ihvp,
+                full_hessian,
+                gnh,
+                ekfac_data,
+                model_context,
+                gradient_samples_1,
+                gradient_samples_2,
+                collector_data_1,
+                collector_data_2,
+            )
+            cleanup_memory()
 
-    # Save all results to JSON
-    results_dir = "experiments/sweep_1/data/results"
-    if not os.path.exists(results_dir):
-        os.makedirs(results_dir)
+            logger.info(f"Memory cleaned after model {model_idx - 1}")
 
-    results_file = f"{results_dir}/experiment_results_{timestamp}.json"
-    with open(results_file, "w") as f:
+    # Save final summary with best models
+    logger.info(f"All best models: {all_results['best_models']}")
+
+    summary_file = f"{results_dir}/experiment_summary_{timestamp}.json"
+    with open(summary_file, "w") as f:
         json.dump(all_results, f, indent=2)
 
-    logger.info(f"All results saved to {results_file}")
-    print(f"Results saved to: {results_file}")
+    logger.info(f"Summary saved to {summary_file}")
+    print(f"Summary saved to: {summary_file}")
+    print(
+        f"Individual results saved in: {results_dir}/experiment_{timestamp}_model_*.json"
+    )
 
     return all_results
 

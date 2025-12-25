@@ -26,7 +26,7 @@ class FullMatrixMetric(Enum):
     TRACE_DISTANCE = (
         "trace_distance"  # Difference in traces (divided by size) (semirelevant)
     )
-    CONDITION_NUMBER_LOG_RATIO = "condition_number_log_ratio"  # Invertibility quality
+    # CONDITION_NUMBER_LOG_RATIO = "condition_number_log_ratio"  # Invertibility quality
 
     def compute_fn(self) -> Callable:
         """Return function / metric for the corresponding metric."""
@@ -65,10 +65,10 @@ class FullMatrixMetric(Enum):
 
         def cosine_similarity(A, B):
             # tr(A @ B^T) / (||A||_F * ||B||_F)
-            inner_product = jnp.trace(A @ B.T)
+            inner = jnp.vdot(A, B)
             norm_a = jnp.linalg.norm(A, ord="fro")
             norm_b = jnp.linalg.norm(B, ord="fro")
-            cosine = inner_product / (norm_a * norm_b + 1e-10)
+            cosine = inner / (norm_a * norm_b + 1e-10)
             return cosine  # 1 = perfect match, 0 = orthogonal
 
         # ------------------------------------------------------
@@ -81,13 +81,19 @@ class FullMatrixMetric(Enum):
 
         def condition_number_log_ratio(A, B):
             # | log κ(A) - log κ(B) |
-            def safe_cond(M):
-                eigs = jnp.abs(jnp.linalg.eigh(M)[0])
-                max_eig = jnp.max(eigs)
-                min_eig = jnp.min(eigs)
-                return max_eig / (min_eig + 1e-10)
 
-            return jnp.abs(jnp.log(safe_cond(A)) - jnp.log(safe_cond(B)))
+            def safe_cond(M):
+                M = 0.5 * (M + M.T)  # Ensure symmetry
+                eps = 1e-6 * jnp.eye(M.shape[0], dtype=M.dtype)  # Regularization
+                M = M + eps
+
+                eigs = jnp.linalg.eigh(M)[0]
+                eigs = jnp.clip(jnp.abs(eigs), a_min=1e-12)  # Avoid zero eigenvalues
+                return jnp.max(eigs) / jnp.min(eigs)
+
+            cond_A = safe_cond(A)
+            cond_B = safe_cond(B)
+            return jnp.abs(jnp.log(cond_A + 1e-12) - jnp.log(cond_B + 1e-12))
 
         # ------------------------------------------------------
         # Dispatch table mapping enum → pure JAX function
@@ -99,7 +105,7 @@ class FullMatrixMetric(Enum):
             FullMatrixMetric.RELATIVE_SPECTRAL: relative_spectral,
             FullMatrixMetric.COSINE_SIMILARITY: cosine_similarity,
             FullMatrixMetric.TRACE_DISTANCE: trace_distance,
-            FullMatrixMetric.CONDITION_NUMBER_LOG_RATIO: condition_number_log_ratio,
+            # FullMatrixMetric.CONDITION_NUMBER_LOG_RATIO: condition_number_log_ratio,
         }
 
         return jax.jit(table[self])

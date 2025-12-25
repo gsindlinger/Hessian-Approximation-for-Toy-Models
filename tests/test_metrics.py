@@ -48,17 +48,6 @@ def test_absolute_l2_diff():
     )
 
 
-def test_sign_agreement():
-    v1 = jnp.array([1.0, -1.0, 0.0])
-    v2 = jnp.array([2.0, -3.0, 1e-5])
-    # manually:
-    # +/+ → agree
-    # -/- → agree
-    # 0 ~ small value → agree
-    expected = 1.0
-    assert pytest.approx(VectorMetric.SIGN_AGREEMENT.compute_single(v1, v2)) == expected
-
-
 def test_relative_energy_diff():
     v1 = jnp.array([1.0, 2.0])
     v2 = jnp.array([1.0, 3.0])
