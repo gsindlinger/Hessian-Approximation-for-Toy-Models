@@ -9,7 +9,6 @@ from src.config import Config, HessianApproximationConfig, ModelConfig
 from src.hessians.approximator.ekfac import EKFACApproximator
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.ekfac import EKFACComputer
-from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.kfac import KFACComputer
 from src.hessians.utils.data import EKFACData, ModelContext
@@ -45,11 +44,11 @@ def run_digits():
     )
 
     layer_settings = [
-        [32],
-        4 * [32],
-        8 * [32],
-        [64],
-        4 * [64],
+        # [32],
+        # 4 * [32],
+        # 8 * [32],
+        # [64],
+        # 4 * [64],
         8 * [64],
     ]
     optimizer_name = "sgd_schedule_cosine"
@@ -444,20 +443,20 @@ def run_digits():
             # )
 
             # Compute GNH
-            gnh_computer = GNHComputer(compute_context=model_context)
-            # gnh = gnh_computer.estimate_hessian(damping=damping)
-            # logger.info(
-            #     f"Peak memory after GNH Hessian estimation: {get_peak_bytes_in_use()}"
+            # gnh_computer = GNHComputer(compute_context=model_context)
+            # # gnh = gnh_computer.estimate_hessian(damping=damping)
+            # # logger.info(
+            # #     f"Peak memory after GNH Hessian estimation: {get_peak_bytes_in_use()}"
+            # # )
+            # gnh_hvp = gnh_computer.estimate_hvp(
+            #     vectors=gradient_samples_1, damping=damping
             # )
-            gnh_hvp = gnh_computer.estimate_hvp(
-                vectors=gradient_samples_1, damping=damping
-            )
-            gnh_ihvp = gnh_computer.estimate_ihvp(
-                vectors=gradient_samples_1, damping=damping
-            )
-            logger.info(
-                f"GNH HVP, and IHVP computed with shapes: {gnh_hvp.shape}, {gnh_ihvp.shape}"
-            )
+            # gnh_ihvp = gnh_computer.estimate_ihvp(
+            #     vectors=gradient_samples_1, damping=damping
+            # )
+            # logger.info(
+            #     f"GNH HVP, and IHVP computed with shapes: {gnh_hvp.shape}, {gnh_ihvp.shape}"
+            # )
 
             # # Memory checkpoint after GNH computation
             # logger.info(f"Peak memory after GNH computation: {get_peak_bytes_in_use()}")

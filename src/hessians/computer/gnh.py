@@ -71,14 +71,17 @@ class GNHComputer(HessianEstimator):
         """
         Compute the Gauss-Newton-vector product (GNVP).
         """
-        damping = damping if damping is not None else 0.0
         # Normalize to 2D: add batch dimension if needed
         is_single = vectors.ndim == 1
         vectors_2D: Float[Array, "batch_size n_params"] = (
             vectors[None, :] if is_single else vectors
         )
 
-        result_2D = self._compute_gnhvp(self.compute_context, vectors_2D, damping)
+        result_2D = self._compute_gnhvp(
+            self.compute_context,
+            vectors_2D,
+            damping=0.0 if damping is None else damping,
+        )
         return result_2D.squeeze(0) if is_single else result_2D
 
     def estimate_ihvp(
@@ -271,72 +274,107 @@ class GNHComputer(HessianEstimator):
         return G_full + damping * jnp.eye(n_params)
 
     @staticmethod
-    @jax.jit
     def _compute_gnhvp(
         compute_context: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
         damping: float,
     ) -> jnp.ndarray:
         """
-        Minimal memory version: double scan over vectors AND data samples.
-        Processes one vector and one data sample at a time.
+        Efficient Gauss-Newton vector product (GNVP) computation.
 
-        Memory usage: O(n_params) instead of O(batch_size * n_samples * n_outputs)
+        - Handles mse and cross_entropy losses analytically.
+        - Avoids nested Hessian inside scans.
+        - Uses vmap over vectors with chunking for memory efficiency.
         """
         p_flat = compute_context.params_flat
         X = compute_context.inputs
         Y = compute_context.targets
-        n_samples = X.shape[0]
+        loss_name = get_loss_name(compute_context.loss_fn)
 
         def model_out(p, x):
             params = compute_context.unravel_fn(p)
             return compute_context.model_apply_fn(params, x[None, ...]).squeeze(0)
 
-        def loss_wrt_output(z, y):
-            return compute_context.loss_fn(z, y)
+        # ------------------------------------------------------------
+        # Per-vector GNVP function
+        # ------------------------------------------------------------
 
-        def gnhvp_single_data_single_vector(x_i, y_i, v):
-            """
-            Compute GN-vector product for ONE data point and ONE vector.
-            This is the minimal memory unit.
-            """
-            z = model_out(p_flat, x_i)
-            H_z = jax.hessian(lambda z_: loss_wrt_output(z_, y_i))(z)
+        if loss_name == "mse":
 
-            def logits_fn(p):
-                return model_out(p, x_i)
+            @jax.jit
+            def gnvp_single(v):
+                def body_fn(accum, x_i):
+                    # J @ v and then J.T @ Jv
+                    _, Jv = jax.jvp(lambda p: model_out(p, x_i), (p_flat,), (v,))
+                    JTJv = jax.vjp(lambda p: model_out(p, x_i), p_flat)[1](Jv)[0]
+                    return accum + JTJv, None
 
-            # Use JVP/VJP / never materialize Jacobian
-            _, Jv = jax.jvp(logits_fn, (p_flat,), (v,))  # [n_outputs]
-            HJv = H_z @ Jv  # [n_outputs]
-            JT_HJv = jax.vjp(logits_fn, p_flat)[1](HJv)[0]  # [n_params]
+                summed, _ = jax.lax.scan(body_fn, jnp.zeros_like(v), X)
+                # Effective output Hessian = identity scaled by constant for MSE
+                z0 = model_out(p_flat, X[0])
+                n_outputs = z0.size
+                gnvp = (2.0 / (X.shape[0] * n_outputs)) * summed
+                return gnvp + damping * v
 
-            return JT_HJv
+        elif loss_name == "cross_entropy":
 
-        def process_single_vector(v):
-            """Process one vector across all data samples."""
+            @jax.jit
+            def gnvp_single(v):
+                def body_fn(accum, xy):
+                    x_i, y_i = xy
+                    logits = model_out(p_flat, x_i)
+                    probs = jax.nn.softmax(logits)
+                    _, Jv = jax.jvp(lambda p: model_out(p, x_i), (p_flat,), (v,))
 
-            # Scan over data samples for this vector
-            def data_scan_body(accum, xy):
-                x_i, y_i = xy
-                contribution = gnhvp_single_data_single_vector(x_i, y_i, v)
-                return accum + contribution, None
+                    # Analytical H_z @ Jv
+                    HJv = probs * Jv - probs * jnp.dot(probs, Jv)
 
-            result, _ = jax.lax.scan(data_scan_body, jnp.zeros_like(v), (X, Y))
-            return result
+                    JT_HJv = jax.vjp(lambda p: model_out(p, x_i), p_flat)[1](HJv)[0]
+                    return accum + JT_HJv, None
 
-        # Scan over vectors
-        def vector_scan_body(results_accum, i):
-            v = vectors[i]
-            result = process_single_vector(v)
-            # Update the i-th row of results
-            results_accum = results_accum.at[i].set(result)
-            return results_accum, None
+                summed, _ = jax.lax.scan(body_fn, jnp.zeros_like(v), (X, Y))
+                gnvp = summed / X.shape[0]
+                return gnvp + damping * v
 
+        else:
+            # Fallback: only for arbitrary losses, not recommended for large outputs
+            @jax.jit
+            def compute_output_hessians():
+                def loss_wrt_output(z, y):
+                    return compute_context.loss_fn(z, y)
+
+                def compute_hz(x_i, y_i):
+                    z = model_out(p_flat, x_i)
+                    return jax.hessian(lambda z_: loss_wrt_output(z_, y_i))(z)
+
+                return jax.vmap(compute_hz)(X, Y)
+
+            H_z_all = compute_output_hessians()
+
+            @jax.jit
+            def gnvp_single(v):
+                def body_fn(accum, data):
+                    x_i, H_z_i = data
+                    _, Jv = jax.jvp(lambda p: model_out(p, x_i), (p_flat,), (v,))
+                    HJv = H_z_i @ Jv
+                    JT_HJv = jax.vjp(lambda p: model_out(p, x_i), p_flat)[1](HJv)[0]
+                    return accum + JT_HJv, None
+
+                summed, _ = jax.lax.scan(body_fn, jnp.zeros_like(v), (X, H_z_all))
+                gnvp = summed / X.shape[0]
+                return gnvp + damping * v
+
+        # ------------------------------------------------------------
+        # Chunking vectors to avoid OOM
+        # ------------------------------------------------------------
+        CHUNK_SIZE = 32
         n_vectors = vectors.shape[0]
-        results, _ = jax.lax.scan(
-            vector_scan_body, jnp.zeros_like(vectors), jnp.arange(n_vectors)
-        )
 
-        # Average over data samples + damping
-        return results / n_samples + damping * vectors
+        if n_vectors <= CHUNK_SIZE:
+            return jax.vmap(gnvp_single)(vectors)
+        else:
+            outs = []
+            for i in range(0, n_vectors, CHUNK_SIZE):
+                chunk = vectors[i : i + CHUNK_SIZE]
+                outs.append(jax.vmap(gnvp_single)(chunk))
+            return jnp.concatenate(outs, axis=0)

@@ -8,6 +8,7 @@ from jax.random import PRNGKey
 from src.config import Config, HessianApproximationConfig, ModelConfig
 from src.hessians.approximator.ekfac import EKFACApproximator
 from src.hessians.collector import CollectorActivationsGradients
+from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.computer.fim_block import FIMBlockComputer
@@ -17,8 +18,8 @@ from src.hessians.computer.hessian_block import BlockHessianComputer
 from src.hessians.computer.kfac import KFACComputer
 from src.hessians.utils.data import EKFACData, ModelContext
 from src.hessians.utils.pseudo_targets import generate_pseudo_targets, sample_gradients
-from src.utils.data.data import Dataset, DigitsDataset
-from src.utils.loss import cross_entropy_loss
+from src.utils.data.data import ConcreteDataset, Dataset
+from src.utils.loss import mse_loss
 from src.utils.metrics.full_matrix_metrics import MATRIX_METRICS
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.mlp import MLP
@@ -26,7 +27,7 @@ from src.utils.models.mlp_swiglu import MLPSwiGLU
 from src.utils.optimizers import optimizer
 from src.utils.train import (
     check_saved_model,
-    evaluate_loss_and_classification_accuracy,
+    evaluate,
     load_model_checkpoint,
     save_model_checkpoint,
     train_model,
@@ -36,30 +37,39 @@ from src.utils.utils import get_peak_bytes_in_use, hash_data
 logger = logging.getLogger(__name__)
 
 
-def simple_run():
+def run_concrete():
     # Define config which serves mostly as reference for paths and model metadata
     seed = 32
     timestamp = time.strftime("%Y%m%d-%H%M%S")
 
     # Load dataset
-    digits_dataset_path = "experiments/sweep_1/data/datasets/digits"
-    dataset: DigitsDataset = DigitsDataset.load(
-        directory=digits_dataset_path, store_on_disk=True
+    concrete_dataset_path = "experiments/sweep_1/data/datasets/concrete"
+    dataset: ConcreteDataset = ConcreteDataset.load(
+        directory=concrete_dataset_path, store_on_disk=True
+    )
+    dataset_name = "concrete"
+
+    # Split dataset into train and validation sets
+
+    train_dataset, val_dataset = dataset.train_test_split(test_size=0.1, seed=seed)
+    train_inputs, train_targets = train_dataset.inputs, train_dataset.targets
+    val_inputs, val_targets = val_dataset.inputs, val_dataset.targets
+    train_inputs, val_inputs = Dataset.normalize_data(
+        train_data=train_inputs, test_data=val_inputs
+    )
+    train_targets, val_targets = Dataset.normalize_data(
+        train_data=train_targets, test_data=val_targets
     )
 
     layer_settings = [
-        [16],
-        4 * [16],
-        8 * [16],
-        [32],
-        4 * [32],
-        8 * [32],
-        [64],
-        4 * [64],
-        8 * [64],
+        [32, 32],
+        # [128, 128],  # Setup of Grosse et al. (2023)
     ]
-    optimizer_name = "sgd_schedule_cosine"
-    learning_rate = 0.03
+    optimizer_name = "adamw"
+
+    # Hyperparameter grid
+    learning_rates = [0.0005, 0.001, 0.005, 0.01, 0.05]
+    weight_decays = [0.0, 0.00001, 0.0001, 0.001, 0.01]
 
     # Initialize results structure
     all_results = {
@@ -67,8 +77,11 @@ def simple_run():
             "timestamp": timestamp,
             "seed": seed,
             "optimizer": optimizer_name,
-            "learning_rate": learning_rate,
-            "dataset_path": digits_dataset_path,
+            "dataset_path": concrete_dataset_path,
+            "hyperparameter_grid": {
+                "learning_rates": learning_rates,
+                "weight_decays": weight_decays,
+            },
         },
         "experiments": [],
     }
@@ -85,11 +98,13 @@ def simple_run():
         """
         base = x // 3
         rem = x % 3
-        return (
-            base + (1 if rem > 0 else 0),
-            base + (1 if rem > 1 else 0),
-            base,
-        )
+
+        if rem == 0:
+            return (base, base, base)
+        elif rem == 1:
+            return (base, base, base + 1)
+        else:
+            return (base + 1, base + 1, base)
 
     # Loop over models
     for hidden_layers in layer_settings:
@@ -107,9 +122,6 @@ def simple_run():
             hidden_dim=[split_dim_for_swiglu(dim) for dim in hidden_layers],
             activation="swiglu",
         )
-        logging.info(
-            f"Created Model: {model_mlp_swiglu} with {model_mlp_swiglu.num_params} parameters."
-        )
 
         for model in [model_mlp, model_mlp_swiglu]:
             # Initialize experiment result
@@ -117,126 +129,117 @@ def simple_run():
                 "model_type": "MLP" if isinstance(model, MLP) else "MLPSwiGLU",
                 "hidden_layers": hidden_layers,
                 "num_params": model.num_params,
-                "fold_selection": [],
+                "hyperparameter_search": [],
             }
 
-            # PHASE 1: K-fold cross-validation for model selection
-            train_losses = []
-            test_losses = []
-            best_fold_index = None
-            best_test_loss = float("inf")
+            # PHASE 1: Hyperparameter grid search for model selection
+            best_val_loss = float("inf")
+            best_learning_rate = None
+            best_weight_decay = None
+            best_model_name = None
 
-            for fold_index, (
-                (train_inputs, train_targets),
-                (test_inputs, test_targets),
-            ) in enumerate(
-                dataset.get_k_fold_splits(
-                    n_splits=2,
-                    shuffle=True,
-                    seed=seed,
-                )
-            ):
-                hashed_data = hash_data(
-                    {
-                        "hidden_layers": hidden_layers,
-                        "optimizer": optimizer_name,
-                        "learning_rate": learning_rate,
-                    }
-                )
-                if isinstance(model, MLP):
-                    model_name = f"mlp_hidden_{hashed_data}_fold_{fold_index}"
-                else:
-                    model_name = f"mlp_swiglu_hidden_{hashed_data}_fold_{fold_index}"
-
-                model_directory = (
-                    f"experiments/sweep_1/data/models/digits_model/{model_name}/"
-                )
-                metadata = {
-                    "model_name": model_name,
-                    "model_directory": model_directory,
-                    "metadata": {
-                        "model_name": model_name,
-                        "hidden_layers": hidden_layers,
-                        "optimizer": optimizer_name,
-                        "learning_rate": learning_rate,
-                        "param_count": model.num_params,
-                    },
-                }
-
-                # Train or load model
-                if check_saved_model(model_directory, model=model):
-                    params, _, metadata = load_model_checkpoint(
-                        model_directory, model=model
+            for learning_rate in learning_rates:
+                for weight_decay in weight_decays:
+                    hashed_data = hash_data(
+                        {
+                            "hidden_layers": hidden_layers,
+                            "optimizer": optimizer_name,
+                            "learning_rate": learning_rate,
+                            "weight_decay": weight_decay,
+                        }
                     )
-                    train_loss = metadata.get("train_loss", None)
-                else:
-                    model, params, loss_history = train_model(
-                        model,
-                        Dataset(train_inputs, train_targets).get_dataloader(
-                            batch_size=32, seed=seed
-                        ),
-                        loss_fn=cross_entropy_loss,
-                        optimizer=optimizer(optimizer_name, lr=learning_rate),
-                        epochs=100,
+                    if isinstance(model, MLP):
+                        model_name = f"mlp_hidden_{hashed_data}_lr_{learning_rate}_wd_{weight_decay}"
+                    else:
+                        model_name = f"mlp_swiglu_hidden_{hashed_data}_lr_{learning_rate}_wd_{weight_decay}"
+
+                    model_directory = (
+                        f"experiments/sweep_1/data/models/{dataset_name}/{model_name}/"
                     )
-                    train_loss = loss_history[-1]
-                    metadata["train_loss"] = train_loss
-
-                test_loss, test_accuracy = evaluate_loss_and_classification_accuracy(
-                    model,
-                    params,
-                    test_inputs,
-                    test_targets,
-                    loss_fn=cross_entropy_loss,
-                )
-                metadata["test_loss"] = test_loss
-                metadata["test_accuracy"] = test_accuracy
-
-                train_losses.append(train_loss)
-                test_losses.append(test_loss)
-
-                save_model_checkpoint(
-                    model=model,
-                    params=params,
-                    directory=model_directory,
-                    metadata=metadata,
-                )
-
-                # Track best fold
-                if test_loss < best_test_loss:
-                    best_test_loss = test_loss
-                    best_fold_index = fold_index
-                    best_model_name = model_name
-
-                # Store fold selection results
-                experiment_result["fold_selection"].append(
-                    {
-                        "fold_index": fold_index,
+                    metadata = {
                         "model_name": model_name,
-                        "train_loss": float(train_loss),
-                        "test_loss": float(test_loss),
-                        "test_accuracy": float(test_accuracy),
+                        "model_directory": model_directory,
+                        "metadata": {
+                            "model_name": model_name,
+                            "hidden_layers": hidden_layers,
+                            "optimizer": optimizer_name,
+                            "learning_rate": learning_rate,
+                            "weight_decay": weight_decay,
+                            "param_count": model.num_params,
+                        },
                     }
-                )
 
-                logger.info(
-                    f"Model {model_name} trained and evaluated. Test loss: {test_loss}"
-                )
+                    # Train or load model
+                    if check_saved_model(model_directory, model=model):
+                        params, _, metadata = load_model_checkpoint(
+                            model_directory, model=model
+                        )
+                        train_loss = metadata.get("train_loss", None)
+                    else:
+                        model, params, loss_history = train_model(
+                            model,
+                            Dataset(train_inputs, train_targets).get_dataloader(
+                                batch_size=128, seed=seed
+                            ),
+                            loss_fn=mse_loss,
+                            optimizer=optimizer(
+                                optimizer_name,
+                                lr=learning_rate,
+                                weight_decay=weight_decay,
+                            ),
+                            epochs=1000,
+                        )
+                        train_loss = loss_history[-1]
+                        metadata["train_loss"] = train_loss
 
-            # Store fold selection summary
-            avg_train_loss = sum(train_losses) / len(train_losses)
-            avg_test_loss = sum(test_losses) / len(test_losses)
+                    val_loss = evaluate(
+                        model=model,
+                        params=params,
+                        inputs=val_inputs,
+                        targets=val_targets,
+                        loss_fn=mse_loss,
+                    )
+                    metadata["val_loss"] = val_loss
 
-            experiment_result["fold_selection_summary"] = {
-                "avg_train_loss": float(avg_train_loss),
-                "avg_test_loss": float(avg_test_loss),
-                "best_fold_index": best_fold_index,
+                    save_model_checkpoint(
+                        model=model,
+                        params=params,
+                        directory=model_directory,
+                        metadata=metadata,
+                    )
+
+                    # Track best hyperparameters
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_learning_rate = learning_rate
+                        best_weight_decay = weight_decay
+                        best_model_name = model_name
+
+                    # Store hyperparameter search results
+                    experiment_result["hyperparameter_search"].append(
+                        {
+                            "learning_rate": learning_rate,
+                            "weight_decay": weight_decay,
+                            "model_name": model_name,
+                            "train_loss": float(train_loss),
+                            "val_loss": float(val_loss),
+                        }
+                    )
+
+                    logger.info(
+                        f"Model {model_name} trained and evaluated. Val loss: {val_loss}"
+                    )
+
+            # Store hyperparameter search summary
+            experiment_result["hyperparameter_search_summary"] = {
+                "best_learning_rate": best_learning_rate,
+                "best_weight_decay": best_weight_decay,
                 "best_model_name": best_model_name,
-                "best_test_loss": float(best_test_loss),
+                "best_val_loss": float(best_val_loss),
             }
 
             logger.info(
-                f"Best model selected: {best_model_name} with test loss: {best_test_loss}"
+                f"Best model selected: {best_model_name} with val loss: {best_val_loss}"
             )
             logger.info(
                 f"Peak memory usage during model training / loading: {get_peak_bytes_in_use()}"
@@ -248,19 +251,9 @@ def simple_run():
 
             # Load best model
             best_model_directory = (
-                f"experiments/sweep_1/data/models/digits_model/{best_model_name}/"
+                f"experiments/sweep_1/data/models/{dataset_name}/{best_model_name}/"
             )
             params, _, _ = load_model_checkpoint(best_model_directory, model=model)
-
-            # Get the training data for the best fold
-            fold_splits = list(
-                dataset.get_k_fold_splits(n_splits=2, shuffle=True, seed=seed)
-            )
-
-            assert best_fold_index is not None
-            (train_inputs, train_targets), (test_inputs, test_targets) = fold_splits[
-                best_fold_index
-            ]
 
             train_dataset = Dataset(train_inputs, train_targets)
 
@@ -270,7 +263,7 @@ def simple_run():
                 params=params,
                 inputs=train_inputs,
                 targets=train_targets,
-                loss_fn=cross_entropy_loss,
+                loss_fn=mse_loss,
                 n_vectors=500,
                 rng_key=PRNGKey(seed),
             )
@@ -280,7 +273,7 @@ def simple_run():
                 params=params,
                 inputs=train_inputs,
                 targets=train_targets,
-                loss_fn=cross_entropy_loss,
+                loss_fn=mse_loss,
                 n_vectors=500,
                 rng_key=PRNGKey(seed + 1),
             )
@@ -295,7 +288,7 @@ def simple_run():
                     model=model,
                     inputs=train_inputs,
                     params=params,
-                    loss_fn=cross_entropy_loss,
+                    loss_fn=mse_loss,
                     rng_key=PRNGKey(seed),
                 )
             )
@@ -305,7 +298,7 @@ def simple_run():
                     model=model,
                     inputs=train_inputs,
                     params=params,
-                    loss_fn=cross_entropy_loss,
+                    loss_fn=mse_loss,
                     rng_key=PRNGKey(seed + 1),
                 )
             )
@@ -320,15 +313,15 @@ def simple_run():
             collector.collect(
                 collector_data_1.inputs,
                 collector_data_1.targets,
-                cross_entropy_loss,
+                mse_loss,
                 save_directory=collector_run_dir_1,
             )
 
-            collector_run_dir_2 = f"experiments/sweep_1/data/activation_gradient_collector/{best_model_name}/run2/"
+            collector_run_dir_2 = f"experiments/sweep_1/data/activation_gradient_collector/{dataset_name}/{best_model_name}/run2/"
             collector.collect(
                 collector_data_2.inputs,
                 collector_data_2.targets,
-                cross_entropy_loss,
+                mse_loss,
                 save_directory=collector_run_dir_2,
             )
 
@@ -345,7 +338,7 @@ def simple_run():
                 collected_data_path_second=collector_run_dir_2,
             )
             ekfac_config = Config(
-                dataset_path=digits_dataset_path,
+                dataset_path=concrete_dataset_path,
                 model=ModelConfig(
                     model_name=best_model_name,
                     directory=best_model_directory,
@@ -366,7 +359,7 @@ def simple_run():
             assert isinstance(ekfac_data, EKFACData)
             logger.info("K-FAC approximation loaded successfully.")
 
-            damping = ekfac_data.mean_eigenvalues_aggregated * 0.1
+            damping = 0.1
 
             # Memory checkpoint after EKFAC loading
             logger.info(
@@ -412,7 +405,7 @@ def simple_run():
                 dataset=train_dataset,
                 model=model,
                 params=params,
-                loss_fn=cross_entropy_loss,
+                loss_fn=mse_loss,
             )
             fim_computer = FIMComputer(compute_context=model_context)
             fim_hvp = fim_computer.estimate_hvp(
@@ -506,81 +499,37 @@ def simple_run():
             )
 
             # Compare matrices
-            matrix_results = {}
+            matrix_results = {
+                metric.value: {"hessian_comparison": {}, "gnh_comparison": {}}
+                for metric in MATRIX_METRICS["all_matrix"]
+            }
             matrix_metrics = MATRIX_METRICS["all_matrix"]
-            for metric in matrix_metrics:
-                logger.info(f"Comparing Hessian estimates using metric: {metric.value}")
-                kfac_vs_full = kfac_computer.compare_full_hessian_estimates(
-                    comparison_matrix=full_hessian,
-                    metric=metric,
-                    damping=damping,
+
+            method_computers: dict[str, HessianEstimator] = {
+                "kfac": kfac_computer,
+                "ekfac": ekfac_computer,
+                "fim": fim_computer,
+                "block_fim": block_fim_computer,
+                "gnh": gnh_computer,
+                "block_hessian": block_hessian_computer,
+            }
+            for method in ["kfac", "ekfac", "fim", "block_fim", "gnh", "block_hessian"]:
+                hessian_estimate = method_computers[method].estimate_hessian(
+                    damping=damping
                 )
-                ekfac_vs_full = ekfac_computer.compare_full_hessian_estimates(
-                    comparison_matrix=full_hessian,
-                    metric=metric,
-                    damping=damping,
-                )
-                fim_vs_full = fim_computer.compare_full_hessian_estimates(
-                    comparison_matrix=full_hessian,
-                    metric=metric,
-                    damping=damping,
-                )
-                block_fim_vs_full = block_fim_computer.compare_full_hessian_estimates(
-                    comparison_matrix=full_hessian,
-                    metric=metric,
-                    damping=damping,
-                )
-                gnh_vs_full = gnh_computer.compare_full_hessian_estimates(
-                    comparison_matrix=full_hessian,
-                    metric=metric,
-                    damping=damping,
-                )
-                block_hessian_vs_full = (
-                    block_hessian_computer.compare_full_hessian_estimates(
-                        comparison_matrix=full_hessian,
-                        metric=metric,
-                        damping=damping,
+
+                for metric in matrix_metrics:
+                    matrix_results[metric.value]["hessian_comparison"][method] = float(
+                        metric.compute(full_hessian, hessian_estimate)
                     )
-                )
-                kfac_vs_gnh = kfac_computer.compare_full_hessian_estimates(
-                    comparison_matrix=gnh,
-                    metric=metric,
-                    damping=damping,
-                )
-                ekfac_vs_gnh = ekfac_computer.compare_full_hessian_estimates(
-                    comparison_matrix=gnh,
-                    metric=metric,
-                    damping=damping,
-                )
-                fim_vs_gnh = fim_computer.compare_full_hessian_estimates(
-                    comparison_matrix=gnh,
-                    metric=metric,
-                    damping=damping,
-                )
-                block_fim_vs_gnh = block_fim_computer.compare_full_hessian_estimates(
-                    comparison_matrix=gnh,
-                    metric=metric,
-                    damping=damping,
-                )
 
-                matrix_results[metric.value] = {
-                    "hessian_comparison": {
-                        "kfac": float(kfac_vs_full),
-                        "ekfac": float(ekfac_vs_full),
-                        "fim": float(fim_vs_full),
-                        "block_fim": float(block_fim_vs_full),
-                        "gnh": float(gnh_vs_full),
-                        "block_hessian": float(block_hessian_vs_full),
-                    },
-                    "gnh_comparison": {
-                        "kfac": float(kfac_vs_gnh),
-                        "ekfac": float(ekfac_vs_gnh),
-                        "fim": float(fim_vs_gnh),
-                        "block_fim": float(block_fim_vs_gnh),
-                    },
-                }
+                if method in ["kfac", "ekfac", "fim", "block_fim"]:
+                    for metric in matrix_metrics:
+                        matrix_results[metric.value]["gnh_comparison"][method] = float(
+                            metric.compute(gnh, hessian_estimate)
+                        )
 
-                logger.info(f"Finished matrix comparison for metric: {metric.value}")
+                logger.info(f"Finished matrix comparison for method: {method}")
 
             # Compare HVPs
             logger.info("Comparing Hessian-vector products (HVPs).")
@@ -706,7 +655,7 @@ def simple_run():
     logger.info(f"All best models: {best_model_names}")
 
     # Save all results to JSON
-    results_dir = "experiments/sweep_1/data/results"
+    results_dir = f"experiments/sweep_1/data/results/{dataset_name}/"
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
 
@@ -721,4 +670,4 @@ def simple_run():
 
 
 if __name__ == "__main__":
-    simple_run()
+    run_concrete()
