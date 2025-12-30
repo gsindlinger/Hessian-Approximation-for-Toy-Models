@@ -9,7 +9,6 @@ from jax import flatten_util
 from jaxtyping import Array, Float
 
 from src.hessians.utils.data import ModelContext
-from src.utils.loss import loss_wrapper_with_apply_fn
 
 
 @dataclass
@@ -71,7 +70,7 @@ class HessianComputer:
         )
 
         # Compute batched HVP
-        result: Float[Array, "batch_size n_params"] = self._compute_hvp_scan(
+        result: Float[Array, "batch_size n_params"] = self._compute_hvp(
             compute_context=self.compute_context,
             vectors=vectors_2D,
             damping=0.0 if damping is None else damping,
@@ -86,7 +85,7 @@ class HessianComputer:
         """
         Compute the inverse Hessian-vector product (IHVP).
         """
-        return self.compute_ihvp_batched(
+        return self._compute_ihvp(
             self.compute_context,
             vectors,
             damping=0.0 if damping is None else damping,
@@ -128,66 +127,75 @@ class HessianComputer:
 
     @staticmethod
     @jax.jit
-    def _compute_hvp_scan(
+    def _compute_hvp(
         compute_context: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
     ) -> Float[Array, "batch_size n_params"]:
         """
         Memory-efficient Hessian-vector product computation.
-        Uses JAX's scan to avoid large intermediate allocations.
+        Uses scan over samples and vmap over vectors, matching GNH strategy.
         """
+        p_flat = compute_context.params_flat
+        X = compute_context.inputs
+        Y = compute_context.targets
 
-        def vector_scan_body(results_accum, i):
-            v = vectors[i]
-            result = HessianComputer._compute_hvp_single(compute_context, v, damping)
-            results_accum = results_accum.at[i].set(result)
-            return results_accum, None
-
-        n_vectors = vectors.shape[0]
-        results, _ = jax.lax.scan(
-            vector_scan_body, jnp.zeros_like(vectors), jnp.arange(n_vectors)
-        )
-
-        return results
-
-    @staticmethod
-    @jax.jit
-    def _compute_hvp_single(
-        compute_context: ModelContext,
-        vector: Float[Array, "n_params"],
-        damping: Float,
-    ) -> Float[Array, "n_params"]:
-        """
-        Hessian-vector product (HVP) computation for a single vector.
-        """
-
-        targets = compute_context.targets
-        assert targets is not None, (
+        assert Y is not None, (
             "Targets must be provided in ModelContext for HVP computation."
         )
 
-        def loss_wrapper(p):
-            return loss_wrapper_with_apply_fn(
-                compute_context.model_apply_fn,
-                p,
-                compute_context.unravel_fn,
-                compute_context.loss_fn,
-                compute_context.inputs,
-                targets,
-            )
+        def model_out(p, x):
+            params = compute_context.unravel_fn(p)
+            return compute_context.model_apply_fn(params, x[None, ...]).squeeze(0)
 
-        # Use jax.jvp for efficient Hessian-vector product
-        _, hvp_result = jax.jvp(
-            lambda p: jax.grad(loss_wrapper)(p),
-            (compute_context.params_flat,),
-            (vector,),
-        )
-        return hvp_result + damping * vector
+        def loss_single(p, x, y):
+            """Loss for a single sample"""
+            z = model_out(p, x)
+            return compute_context.loss_fn(z, y)
+
+        # Per-vector HVP function (scans over samples)
+        @jax.jit
+        def hvp_single(v):
+            """Compute H @ v by accumulating over samples"""
+
+            def body_fn(accum, xy):
+                x_i, y_i = xy
+
+                # Compute per-sample Hessian-vector product
+                # hvp = ∇²L_i @ v for sample i
+                def grad_fn(p):
+                    return jax.grad(lambda p_: loss_single(p_, x_i, y_i))(p)
+
+                # Use JVP to compute Hessian-vector product efficiently
+                _, hvp_i = jax.jvp(grad_fn, (p_flat,), (v,))
+
+                return accum + hvp_i, None
+
+            # Accumulate HVP contributions across all samples
+            summed, _ = jax.lax.scan(body_fn, jnp.zeros_like(v), (X, Y))
+
+            # Average and add damping
+            hvp = summed / X.shape[0]
+            return hvp + damping * v
+
+        # ------------------------------------------------------------
+        # Chunking vectors to avoid OOM
+        # ------------------------------------------------------------
+        CHUNK_SIZE = 32
+        n_vectors = vectors.shape[0]
+
+        if n_vectors <= CHUNK_SIZE:
+            return jax.vmap(hvp_single)(vectors)
+        else:
+            outs = []
+            for i in range(0, n_vectors, CHUNK_SIZE):
+                chunk = vectors[i : i + CHUNK_SIZE]
+                outs.append(jax.vmap(hvp_single)(chunk))
+            return jnp.concatenate(outs, axis=0)
 
     @staticmethod
     @jax.jit
-    def compute_ihvp_batched(
+    def _compute_ihvp(
         compute_context: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,

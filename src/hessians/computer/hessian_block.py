@@ -122,7 +122,7 @@ class BlockHessianComputer(HessianEstimator):
     ) -> Float[Array, "... d"]:
         """
         Computes (E_i[H_ii^(i)] + λI) v for a single block,
-        averaged over samples (x_i, y_i), using scan over vectors.
+        averaged over samples (x_i, y_i), using vmap over vectors with chunking.
         """
         start, end = block
 
@@ -157,8 +157,13 @@ class BlockHessianComputer(HessianEstimator):
             # extract just the block
             return lax.dynamic_slice(hv, (start,), (end - start,))
 
-        # average HVP over dataset
+        # ------------------------------------------------------------
+        # Per-vector HVP function (scans over samples)
+        # ------------------------------------------------------------
+        @jax.jit
         def hvp_avg(v):
+            """Compute H @ v by accumulating over samples"""
+
             def scan_body(acc, xy):
                 x_i, y_i = xy
                 return acc + hvp_single_sample(v, x_i, y_i), None
@@ -168,18 +173,24 @@ class BlockHessianComputer(HessianEstimator):
             hv_mean = hv_sum / X.shape[0]
             return hv_mean + damping * v
 
-        # Scan over batch of vectors
-        # If v_block is a single vector
+        # ------------------------------------------------------------
+        # Handle single vector vs batch with chunking
+        # ------------------------------------------------------------
         if v_block.ndim == 1:
             return hvp_avg(v_block)
 
-        # Else v_block.shape = (B, d)
-        def scan_vec(carry, v):
-            out = hvp_avg(v)
-            return carry, out
+        # Batch case: vmap over vectors with chunking
+        CHUNK_SIZE = 32
+        n_vectors = v_block.shape[0]
 
-        _, hvp_out = lax.scan(scan_vec, None, v_block)
-        return hvp_out
+        if n_vectors <= CHUNK_SIZE:
+            return jax.vmap(hvp_avg)(v_block)
+        else:
+            outs = []
+            for i in range(0, n_vectors, CHUNK_SIZE):
+                chunk = v_block[i : i + CHUNK_SIZE]
+                outs.append(jax.vmap(hvp_avg)(chunk))
+            return jnp.concatenate(outs, axis=0)
 
     def _compute_blocks(self, damping: Float):
         blocks = []

@@ -32,6 +32,7 @@ class CollectorBase(ABC):
         loss_fn: Callable,
         batch_size: Optional[int] = None,
         save_directory: Optional[str] = None,
+        try_load: bool = False,
     ) -> Any:
         """
         Run the model with hooks to collect activations and gradients.
@@ -48,6 +49,19 @@ class CollectorBase(ABC):
             Collected data from teardown().
         """
 
+        # Try loading previously collected data if specified
+        if try_load and save_directory is not None:
+            try:
+                logger.info(
+                    f"Trying to load previously collected data from: {save_directory}"
+                )
+                return self.load(save_directory)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load collected data from {save_directory}: {e}. Proceeding to collect data."
+                )
+
+        # Else, perform data collection and save if specified
         def loss_fn_for_grad(p, inputs, targets):
             predictions = self.model.apply(
                 p,

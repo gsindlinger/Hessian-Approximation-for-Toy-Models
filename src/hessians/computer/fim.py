@@ -122,14 +122,12 @@ class FIMComputer(HessianEstimator):
             vectors[None, :] if is_single else vectors
         )
 
-        result_2D = self._estimate_ifvp_batched(
-            self.compute_context, vectors_2D, damping
-        )
+        result_2D = self._estimate_ifvp(self.compute_context, vectors_2D, damping)
         return result_2D.squeeze(0) if is_single else result_2D
 
     @staticmethod
     @jax.jit
-    def _estimate_ifvp_batched(
+    def _estimate_ifvp(
         compute_context: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
@@ -144,25 +142,83 @@ class FIMComputer(HessianEstimator):
         compute_context: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
+        sample_batch_size: int = 64,
     ) -> Float[Array, "batch_size n_params"]:
-        x, y = compute_context.inputs, compute_context.targets
-        p0 = compute_context.params_flat
-        N = x.shape[0]
+        """
+        Fisher-vector product using dynamic slicing (JAX-safe).
 
-        # per-sample loss
+        Uses:
+        - lax.dynamic_slice for batching samples
+        - scan over batch indices
+        """
+
+        X = compute_context.inputs
+        Y = compute_context.targets
+        assert Y is not None, "Targets must be provided in compute_context for FIM."
+
+        p0 = compute_context.params_flat
+        N = X.shape[0]
+        D = p0.size
+
+        # ------------------------------------------------------------
+        # Pad data so all batches are full
+        # ------------------------------------------------------------
+        n_batches = (N + sample_batch_size - 1) // sample_batch_size
+        padded_N = n_batches * sample_batch_size
+        pad = padded_N - N
+
+        Xp = jnp.pad(X, ((0, pad),) + ((0, 0),) * (X.ndim - 1))
+        Yp = jnp.pad(Y, ((0, pad),) + ((0, 0),) * (Y.ndim - 1))
+
         def loss_single(p, xi, yi):
             params = compute_context.unravel_fn(p)
             preds = compute_context.model_apply_fn(params, xi[None, ...])
             return compute_context.loss_fn(preds.squeeze(0), yi)
 
-        # per-sample grads of the loss
-        grads = jax.vmap(lambda xi, yi: jax.grad(loss_single)(p0, xi, yi))(
-            x, y
-        )  # shape (N, D)
-
+        # Single-vector FVP
         def fvp_single(v):
-            proj = grads @ v  # (N,)
-            fvp = grads.T @ proj / N  # (D,)
-            return fvp + damping * v
+            def scan_body(accum, batch_idx):
+                start = batch_idx * sample_batch_size
 
-        return jax.vmap(fvp_single)(vectors)
+                # Dynamic slice
+                x_batch = jax.lax.dynamic_slice(
+                    Xp,
+                    (start,) + (0,) * (Xp.ndim - 1),
+                    (sample_batch_size,) + Xp.shape[1:],
+                )
+                y_batch = jax.lax.dynamic_slice(
+                    Yp,
+                    (start,) + (0,) * (Yp.ndim - 1),
+                    (sample_batch_size,) + Yp.shape[1:],
+                )
+
+                # Compute per-sample gradients
+                grads = jax.vmap(lambda xi, yi: jax.grad(loss_single)(p0, xi, yi))(
+                    x_batch, y_batch
+                )  # (B, D)
+
+                # Fisher contribution: sum_i (g_i^T v) g_i
+                proj = grads @ v  # (B,)
+                fvp_batch = grads.T @ proj  # (D,)
+
+                return accum + fvp_batch, None
+
+            fvp_sum, _ = jax.lax.scan(
+                scan_body,
+                jnp.zeros((D,), dtype=v.dtype),
+                jnp.arange(n_batches),
+            )
+
+            return fvp_sum / N + damping * v
+
+        # Vector batching
+        CHUNK_SIZE = 32
+        n_vectors = vectors.shape[0]
+
+        if n_vectors <= CHUNK_SIZE:
+            return jax.vmap(fvp_single)(vectors)
+        else:
+            outs = []
+            for i in range(0, n_vectors, CHUNK_SIZE):
+                outs.append(jax.vmap(fvp_single)(vectors[i : i + CHUNK_SIZE]))
+            return jnp.concatenate(outs, axis=0)
