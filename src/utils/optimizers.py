@@ -7,19 +7,20 @@ def optimizer(
     optimizer_str: Literal["sgd", "adam", "adamw", "sgd_schedule_cosine"],
     lr: float,
     weight_decay: float = 0.0,
+    momentum: float = 0.9,
 ) -> optax.GradientTransformation:
     """Return optimizer with optional L2 weight decay."""
     match optimizer_str:
         case "sgd":
-            base = optax.sgd(lr)
+            base = optax.sgd(learning_rate=lr, momentum=momentum)
         case "adam":
-            base = optax.adam(lr)
+            base = optax.adam(learning_rate=lr)
         case "adamw":
             # AdamW has weight_decay built in
             return optax.adamw(learning_rate=lr, weight_decay=weight_decay)
         case "sgd_schedule_cosine":
             schedule = optax.cosine_decay_schedule(init_value=lr, decay_steps=1000)
-            base = optax.sgd(schedule)
+            base = optax.sgd(learning_rate=schedule, momentum=momentum)
         case _:
             raise ValueError(f"Unknown optimizer: {optimizer_str}")
 

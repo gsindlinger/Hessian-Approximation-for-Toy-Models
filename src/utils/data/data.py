@@ -11,7 +11,12 @@ import numpy as np
 import pandas as pd
 from jax import numpy as jnp
 from jaxtyping import Array
-from sklearn.datasets import fetch_openml, make_classification, make_regression
+from sklearn.datasets import (
+    fetch_openml,
+    load_digits,
+    make_classification,
+    make_regression,
+)
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from typing_extensions import override
 from ucimlrepo import fetch_ucirepo
@@ -346,6 +351,35 @@ class RandomClassificationDataset(ClassificationDataset):
     @override
     def output_dim(self) -> int:
         return self.n_classes
+
+
+@dataclass
+class SklearnDigitsDataset(ClassificationDataset):
+    """
+    sklearn.datasets.load_digits dataset.
+    8x8 images (64 features) with pixel values in range 0-16, already flattened.
+    """
+
+    normalize: bool = True
+
+    def __post_init__(self):
+        digits = load_digits()
+
+        X = digits.data.astype(jnp.float32)  # type: ignore
+        Y = digits.target.astype(jnp.int32)  # type: ignore
+
+        # Normalize pixel values to [0, 1]
+        if self.normalize:
+            X = X / 16.0
+
+        self.inputs = jnp.asarray(X, dtype=jnp.float32)
+        self.targets = jnp.asarray(Y, dtype=jnp.int32)
+
+    def input_dim(self) -> int:
+        return 64
+
+    def output_dim(self) -> int:
+        return 10
 
 
 @dataclass
