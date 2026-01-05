@@ -19,7 +19,7 @@ from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.hessian_block import BlockHessianComputer
 from src.hessians.computer.kfac import KFACComputer
-from src.hessians.utils.data import EKFACData, ModelContext
+from src.hessians.utils.data import DataActivationsGradients, EKFACData, ModelContext
 from src.hessians.utils.pseudo_targets import generate_pseudo_targets, sample_gradients
 from src.utils.data.data import Dataset, DigitsDataset
 from src.utils.loss import cross_entropy_loss
@@ -312,13 +312,16 @@ def run_digits():
             collector_dir_1 = (
                 f"experiments/sweep_1/data/collector/{best_model_name}/run1/"
             )
-            collector_1 = CollectorActivationsGradients(model=model, params=params)
-            collector_1.collect(
-                inputs=collector_data_1.inputs,
-                targets=collector_data_1.targets,
-                loss_fn=cross_entropy_loss,
-                save_directory=collector_dir_1,
-                try_load=True,
+            collector_1 = CollectorActivationsGradients(
+                model=model, params=params, loss_fn=cross_entropy_loss
+            )
+            collected_activations_gradients_1: DataActivationsGradients = (
+                collector_1.collect(
+                    inputs=collector_data_1.inputs,
+                    targets=collector_data_1.targets,
+                    save_directory=collector_dir_1,
+                    try_load=True,
+                )
             )
             cleanup_memory("activation/gradient collection")
 
@@ -334,11 +337,12 @@ def run_digits():
             collector_dir_2 = (
                 f"experiments/sweep_1/data/collector/{best_model_name}/run2/"
             )
-            collector_2 = CollectorActivationsGradients(model=model, params=params)
+            collector_2 = CollectorActivationsGradients(
+                model=model, params=params, loss_fn=cross_entropy_loss
+            )
             collector_2.collect(
                 inputs=collector_data_2.inputs,
                 targets=collector_data_2.targets,
-                loss_fn=cross_entropy_loss,
                 save_directory=collector_dir_2,
                 try_load=True,
             )
@@ -370,21 +374,6 @@ def run_digits():
                 loss_fn=cross_entropy_loss,
             )
 
-            # for fim double train inputs and generate pseudo targets
-            fim_targets = generate_pseudo_targets(
-                model=model,
-                inputs=train_inputs,
-                params=params,
-                loss_fn=cross_entropy_loss,
-                rng_key=PRNGKey(seed + 20),
-            )
-            model_ctx_fim = ModelContext.create(
-                dataset=Dataset(train_inputs, fim_targets),
-                model=model,
-                params=params,
-                loss_fn=cross_entropy_loss,
-            )
-
             hessian_results = {
                 "damping": damping,
                 "matrix_comparisons": {},
@@ -401,8 +390,8 @@ def run_digits():
                 "kfac": KFACComputer(ekfac_data),
                 "ekfac": EKFACComputer(ekfac_data),
                 "gnh": GNHComputer(model_ctx),
-                "fim": FIMComputer(model_ctx_fim),
-                "block_fim": FIMBlockComputer(collector_1.load(collector_dir_1)),
+                "fim": FIMComputer(collected_activations_gradients_1),
+                "block_fim": FIMBlockComputer(collected_activations_gradients_1),
                 "block_hessian": BlockHessianComputer(model_ctx),
             }
 
@@ -461,8 +450,8 @@ def run_digits():
             gnh_comparison_computers: dict[str, HessianEstimator] = {
                 "kfac": KFACComputer(ekfac_data),
                 "ekfac": EKFACComputer(ekfac_data),
-                "fim": FIMComputer(model_ctx),
-                "block_fim": FIMComputer(model_ctx),
+                "fim": FIMComputer(collected_activations_gradients_1),
+                "block_fim": FIMBlockComputer(collected_activations_gradients_1),
             }
 
             gnh = GNHComputer(model_ctx)

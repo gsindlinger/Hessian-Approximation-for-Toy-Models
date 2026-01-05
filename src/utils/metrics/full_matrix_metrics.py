@@ -26,7 +26,7 @@ class FullMatrixMetric(Enum):
     TRACE_DISTANCE = (
         "trace_distance"  # Difference in traces (divided by size) (semirelevant)
     )
-    # CONDITION_NUMBER_LOG_RATIO = "condition_number_log_ratio"  # Invertibility quality
+    CONDITION_NUMBER_LOG_RATIO = "condition_number_log_ratio"  # Invertibility quality
 
     def compute_fn(self) -> Callable:
         """Return function / metric for the corresponding metric."""
@@ -105,7 +105,7 @@ class FullMatrixMetric(Enum):
             FullMatrixMetric.RELATIVE_SPECTRAL: relative_spectral,
             FullMatrixMetric.COSINE_SIMILARITY: cosine_similarity,
             FullMatrixMetric.TRACE_DISTANCE: trace_distance,
-            # FullMatrixMetric.CONDITION_NUMBER_LOG_RATIO: condition_number_log_ratio,
+            FullMatrixMetric.CONDITION_NUMBER_LOG_RATIO: condition_number_log_ratio,
         }
 
         return jax.jit(table[self])

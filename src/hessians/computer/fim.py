@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import HessianEstimator
-from src.hessians.utils.data import ModelContext
+from src.hessians.utils.data import DataActivationsGradients
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
@@ -18,22 +18,37 @@ class FIMComputer(HessianEstimator):
     The Fisher Information Matrix is defined as:
     FIM = E[∇log p(y|x) ∇log p(y|x)^T]
 
-    Two variants are supported:
-    - Empirical FIM: Uses actual training data and labels
-    - True FIM: Samples labels from the model's predictive distribution
+    Use previously collected gradients to compute the FIM using its outer product.
     """
 
-    compute_context: ModelContext
+    compute_context: DataActivationsGradients
+
+    def build_full_gradients(self) -> Float[Array, "n_samples n_params"]:
+        grads_per_layer = []
+
+        for layer in self.compute_context.layer_names:
+            a = self.compute_context.activations[layer]  # (N, I_l)
+            g = self.compute_context.gradients[layer]  # (N, O_l)
+
+            # Per-layer parameter gradients
+            # (N, I_l, O_l) -> (N, I_l * O_l)
+            G_l = jnp.einsum("ni,no->nio", a, g).reshape(a.shape[0], -1)
+            grads_per_layer.append(G_l)
+
+        # (N, n_params)
+        return jnp.concatenate(grads_per_layer, axis=1)
 
     def estimate_hessian(
         self,
         damping: Optional[Float] = None,
     ) -> jnp.ndarray:
         """
-        Compute the Fisher Information Matrix.
+        Compute the Fisher Information Matrix from pre-collected gradients.
         """
+        gradients = self.build_full_gradients()
         damping = 0.0 if damping is None else damping
-        return self._compute_fim(self.compute_context, damping)
+
+        return self._compute_fim(gradients, damping)
 
     def compare_full_hessian_estimates(
         self,
@@ -44,49 +59,36 @@ class FIMComputer(HessianEstimator):
         """
         Compare the Fisher Information Matrix with another Hessian matrix using the specified metric.
         """
+        gradients = self.build_full_gradients()
         damping = 0.0 if damping is None else damping
+
         return metric.compute_fn()(
             comparison_matrix,
-            self._compute_fim(self.compute_context, damping),
+            self._compute_fim(gradients, damping),
         )
 
     @staticmethod
     @jax.jit
     def _compute_fim(
-        compute_context: ModelContext,
+        gradients: Float[Array, "n_samples n_params"],
         damping: Float = 0.0,
     ) -> Float[Array, "n_params n_params"]:
-        def loss_single(p, x, y):
-            params_unflat = compute_context.unravel_fn(p)
-            preds = compute_context.model_apply_fn(params_unflat, x[None, ...])
-            return compute_context.loss_fn(preds.squeeze(0), y)
+        """
+        Memory-efficient Fisher Information Matrix computation using scan.
+        F = (1/N) * sum_i g_i g_i^T + damping * Eye(n_params)
+        """
+        n_samples = gradients.shape[0]
+        n_params = gradients.shape[1]
 
-        # per-sample gradient of loss
-        grad_loss = jax.grad(loss_single)
+        def body_fn(accum, g):
+            return accum + jnp.outer(g, g), None
 
-        @jax.jit
-        def compute_sample_fim(p_flat, x, y):
-            g = grad_loss(p_flat, x, y)  # shape = (n_params,)
-            return jnp.outer(g, g)  # (n_params, n_params)
+        fim0 = jnp.zeros((n_params, n_params), dtype=gradients.dtype)
 
-        def scan_body(carry, xy):
-            p_flat, F = carry
-            x_i, y_i = xy
-            F_i = compute_sample_fim(p_flat, x_i, y_i)
-            return (p_flat, F + F_i), None
-
-        p_flat = compute_context.params_flat
-        X = compute_context.inputs
-        Y = compute_context.targets
-
-        F0 = jnp.zeros((p_flat.size, p_flat.size))
-
-        (_, F_full), _ = jax.lax.scan(scan_body, init=(p_flat, F0), xs=(X, Y))
-
-        F_full = F_full / X.shape[0]  # average
-
-        # add damping
-        return F_full + damping * jnp.eye(F_full.shape[0])
+        fim_sum, _ = jax.lax.scan(body_fn, fim0, gradients)
+        fim = fim_sum / n_samples
+        fim += damping * jnp.eye(n_params, dtype=fim.dtype)
+        return fim
 
     def estimate_hvp(
         self,
@@ -94,8 +96,9 @@ class FIMComputer(HessianEstimator):
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
-        Compute the Fisher-vector product (FVP).
+        Compute the Fisher-vector product (FVP) from pre-collected gradients.
         """
+        gradients = self.build_full_gradients()
         damping = 0.0 if damping is None else damping
 
         # Normalize to 2D: add batch dimension if needed
@@ -103,7 +106,7 @@ class FIMComputer(HessianEstimator):
         vectors_2D: Float[Array, "batch_size n_params"] = (
             vectors[None, :] if is_single else vectors
         )
-        result = self._compute_fvp(self.compute_context, vectors_2D, damping)
+        result = self._compute_fvp(gradients, vectors_2D, damping)
         return result.squeeze(0) if is_single else result
 
     def estimate_ihvp(
@@ -112,8 +115,9 @@ class FIMComputer(HessianEstimator):
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
-        Compute the inverse Fisher-vector product (IFVP) using Conjugate Gradient.
+        Compute the inverse Fisher-vector product (IFVP) using direct solve.
         """
+        gradients = self.build_full_gradients()
         damping = 0.0 if damping is None else damping
 
         # Normalize to 2D: add batch dimension if needed
@@ -122,103 +126,87 @@ class FIMComputer(HessianEstimator):
             vectors[None, :] if is_single else vectors
         )
 
-        result_2D = self._estimate_ifvp(self.compute_context, vectors_2D, damping)
+        result_2D = self._estimate_ifvp(gradients, vectors_2D, damping)
         return result_2D.squeeze(0) if is_single else result_2D
 
     @staticmethod
     @jax.jit
     def _estimate_ifvp(
-        compute_context: ModelContext,
+        gradients: Float[Array, "n_samples n_params"],
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
     ) -> Float[Array, "batch_size n_params"]:
-        # Take the simplest approach: calculate full FIM and solve by linalg solve
-        fim = FIMComputer._compute_fim(compute_context, damping)
+        """
+        Solve FIM^{-1} @ v for each vector v using direct linear solve.
+        """
+        fim = FIMComputer._compute_fim(gradients, damping)
         return jnp.linalg.solve(fim, vectors.T).T
 
     @staticmethod
     @jax.jit
     def _compute_fvp(
-        compute_context: ModelContext,
+        gradients: Float[Array, "n_samples n_params"],
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
-        sample_batch_size: int = 64,
+        sample_batch_size: int = 32,
     ) -> Float[Array, "batch_size n_params"]:
         """
-        Fisher-vector product using dynamic slicing (JAX-safe).
+        Fisher-vector product: FIM @ v for each vector v.
 
-        Uses:
-        - lax.dynamic_slice for batching samples
-        - scan over batch indices
+        Efficiently computes: (1/N) * sum_i (g_i @ v) * g_i + damping * v
+        without materializing the full FIM matrix.
+
+        Uses batched processing over samples to reduce memory overhead.
+
+        Args:
+            gradients: Pre-collected gradients (n_samples, n_params)
+            vectors: Vectors to multiply (batch_size, n_params)
+            damping: Damping factor
+            sample_batch_size: Number of samples to process at once
+
+        Returns:
+            FVP results (batch_size, n_params)
         """
+        n_samples, n_params = gradients.shape
 
-        X = compute_context.inputs
-        Y = compute_context.targets
-        assert Y is not None, "Targets must be provided in compute_context for FIM."
+        # Pad gradients to make batching exact
+        n_batches = (n_samples + sample_batch_size - 1) // sample_batch_size
+        padded_n_samples = n_batches * sample_batch_size
+        pad = padded_n_samples - n_samples
 
-        p0 = compute_context.params_flat
-        N = X.shape[0]
-        D = p0.size
+        if pad > 0:
+            gradients_padded = jnp.pad(gradients, ((0, pad), (0, 0)))
+        else:
+            gradients_padded = gradients
 
-        # ------------------------------------------------------------
-        # Pad data so all batches are full
-        # ------------------------------------------------------------
-        n_batches = (N + sample_batch_size - 1) // sample_batch_size
-        padded_N = n_batches * sample_batch_size
-        pad = padded_N - N
-
-        Xp = jnp.pad(X, ((0, pad),) + ((0, 0),) * (X.ndim - 1))
-        Yp = jnp.pad(Y, ((0, pad),) + ((0, 0),) * (Y.ndim - 1))
-
-        def loss_single(p, xi, yi):
-            params = compute_context.unravel_fn(p)
-            preds = compute_context.model_apply_fn(params, xi[None, ...])
-            return compute_context.loss_fn(preds.squeeze(0), yi)
-
-        # Single-vector FVP
+        # Single-vector FVP with batched sample processing
         def fvp_single(v):
             def scan_body(accum, batch_idx):
                 start = batch_idx * sample_batch_size
 
-                # Dynamic slice
-                x_batch = jax.lax.dynamic_slice(
-                    Xp,
-                    (start,) + (0,) * (Xp.ndim - 1),
-                    (sample_batch_size,) + Xp.shape[1:],
-                )
-                y_batch = jax.lax.dynamic_slice(
-                    Yp,
-                    (start,) + (0,) * (Yp.ndim - 1),
-                    (sample_batch_size,) + Yp.shape[1:],
+                # Extract batch of gradients
+                grad_batch = jax.lax.dynamic_slice(
+                    gradients_padded,
+                    (start, 0),
+                    (sample_batch_size, n_params),
                 )
 
-                # Compute per-sample gradients
-                grads = jax.vmap(lambda xi, yi: jax.grad(loss_single)(p0, xi, yi))(
-                    x_batch, y_batch
-                )  # (B, D)
+                # Compute projections: g_i^T @ v for this batch
+                projections = grad_batch @ v  # (sample_batch_size,)
 
-                # Fisher contribution: sum_i (g_i^T v) g_i
-                proj = grads @ v  # (B,)
-                fvp_batch = grads.T @ proj  # (D,)
+                # Accumulate: sum_i (g_i^T @ v) * g_i
+                fvp_batch = grad_batch.T @ projections  # (n_params,)
 
                 return accum + fvp_batch, None
 
             fvp_sum, _ = jax.lax.scan(
                 scan_body,
-                jnp.zeros((D,), dtype=v.dtype),
+                jnp.zeros((n_params,), dtype=v.dtype),
                 jnp.arange(n_batches),
             )
 
-            return fvp_sum / N + damping * v
+            # Average and add damping
+            return fvp_sum / n_samples + damping * v
 
-        # Vector batching
-        CHUNK_SIZE = 32
-        n_vectors = vectors.shape[0]
-
-        if n_vectors <= CHUNK_SIZE:
-            return jax.vmap(fvp_single)(vectors)
-        else:
-            outs = []
-            for i in range(0, n_vectors, CHUNK_SIZE):
-                outs.append(jax.vmap(fvp_single)(vectors[i : i + CHUNK_SIZE]))
-            return jnp.concatenate(outs, axis=0)
+        # Apply to all vectors in batch
+        return jax.vmap(fvp_single)(vectors)

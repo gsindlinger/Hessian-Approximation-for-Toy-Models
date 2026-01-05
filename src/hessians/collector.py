@@ -10,7 +10,9 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float
 
+from src.hessians.utils.data import DataActivationsGradients
 from src.utils.data.jax_dataloader import JAXDataLoader
+from src.utils.loss import get_loss_name
 from src.utils.models.approximation_model import ApproximationModel
 
 logger = logging.getLogger(__name__)
@@ -24,12 +26,12 @@ class CollectorBase(ABC):
 
     model: ApproximationModel
     params: Dict
+    loss_fn: Callable
 
     def collect(
         self,
         inputs: jnp.ndarray,
         targets: jnp.ndarray,
-        loss_fn: Callable,
         batch_size: Optional[int] = None,
         save_directory: Optional[str] = None,
         try_load: bool = False,
@@ -70,7 +72,7 @@ class CollectorBase(ABC):
                 method=self.model.collector_apply,
             )
             # Use sum reduction to avoid prematurely averaging gradients
-            return loss_fn(predictions, targets, reduction="sum")
+            return self.loss_fn(predictions, targets, reduction="sum")
 
         dataloader_batch_size = (
             JAXDataLoader.get_batch_size() if batch_size is None else batch_size
@@ -137,8 +139,17 @@ class CollectorBase(ABC):
 @dataclass
 class CollectorActivationsGradients(CollectorBase):
     """
-    Collector specifically for storing activations and gradients for K-FAC.
-    Inherits from CollectorBase.
+    Collector for storing layer-wise activations and output gradients used in
+    FIM / KFAC / EKFAC computations.
+
+    We store gradients of the log-likelihood:
+        ∂ log p(y | x) / ∂z
+
+    - For MSE loss, the raw backpropagated gradient corresponds to
+      ∂ℓ / ∂z = 2 (pred - target), so we rescale by -0.5 to recover
+      the log-likelihood gradient.
+    - For cross-entropy loss, the gradient already equals ∂ log p / ∂z
+      and no rescaling is needed.
     """
 
     activations: Dict[str, List[Float[Array, "N I"]]] = field(default_factory=dict)
@@ -149,7 +160,11 @@ class CollectorActivationsGradients(CollectorBase):
     def backward_collector_fn(
         self, name: str, a: Float[Array, "N I"], g: Float[Array, "N O"]
     ):
-        """Store activations and gradients for this layer."""
+        """Store per-layer activations and log-likelihood gradients."""
+        if get_loss_name(self.loss_fn) == "mse":
+            # Convert MSE output gradient to log-likelihood gradient
+            g = -0.5 * g
+
         if name not in self.activations:
             self.activations[name] = [a]
             self.gradients[name] = [g]
@@ -159,28 +174,20 @@ class CollectorActivationsGradients(CollectorBase):
 
     def teardown(
         self,
-    ) -> Tuple[
-        Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]], List[str]
-    ]:
+    ) -> DataActivationsGradients:
         """
         Concatenate all collected activations and gradients.
 
         Returns:
             Dictionary with 'activations' and 'gradients' keys and the layer names as a list (in order).
         """
-        return (
+        return DataActivationsGradients(
             {k: jnp.concatenate(v, axis=0) for k, v in self.activations.items()},
             {k: jnp.concatenate(v, axis=0) for k, v in self.gradients.items()},
             self.model.get_layer_names(),
         )
 
-    def save(
-        self,
-        directory: str,
-        data: Tuple[
-            Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]], List[str]
-        ],
-    ):
+    def save(self, directory: str, data: DataActivationsGradients):
         """
         Save collected activations and gradients to the specified directory.
         Additionally stores the layer names which can be used for correct ordering later.
@@ -200,7 +207,11 @@ class CollectorActivationsGradients(CollectorBase):
 
         file_path = os.path.join(directory, self.FILENAME)
 
-        activations, gradients, layer_names = data
+        activations, gradients, layer_names = (
+            data.activations,
+            data.gradients,
+            data.layer_names,
+        )
         data_dict = {
             **{f"activations_{k}": np.array(v) for k, v in activations.items()},
             **{f"gradients_{k}": np.array(v) for k, v in gradients.items()},
@@ -211,9 +222,7 @@ class CollectorActivationsGradients(CollectorBase):
     @staticmethod
     def load(
         directory: str,
-    ) -> Tuple[
-        Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]], List[str]
-    ]:
+    ) -> DataActivationsGradients:
         """
         Load collected activations and gradients from the specified directory.
         Tries with or without file ending, both for .npz and .npy formats.
@@ -240,7 +249,7 @@ class CollectorActivationsGradients(CollectorBase):
                 layer_name = k[len("gradients_") :]
                 gradients[layer_name] = jnp.array(loaded[k])
 
-        return activations, gradients, layer_names
+        return DataActivationsGradients(activations, gradients, layer_names)
 
 
 ### Hooks for collecting activations and gradients of specific layers

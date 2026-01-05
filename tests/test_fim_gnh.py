@@ -4,9 +4,10 @@ import pytest
 from jax import flatten_util
 from jax.random import PRNGKey
 
+from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.computer.gnh import GNHComputer
-from src.hessians.utils.data import ModelContext
+from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import generate_pseudo_targets
 from src.utils.data.data import (
     RandomClassificationDataset,
@@ -90,19 +91,24 @@ def setup(request):
         loss_fn=loss_fn,
         rng_key=PRNGKey(seed + 1234),
     )
-    model_context_fim = ModelContext.create(
-        dataset=dataset.replace_targets(pseudo_targets),
-        model=model,
-        params=params,
-        loss_fn=loss_fn,
+
+    activation_gradients_collector = CollectorActivationsGradients(
+        model=model, params=params, loss_fn=loss_fn
     )
+    fim_data = activation_gradients_collector.collect(
+        inputs=dataset.inputs,
+        targets=pseudo_targets,
+        save_directory=None,
+    )
+
+    assert isinstance(fim_data, DataActivationsGradients)
 
     return {
         "dataset": dataset,
         "model": model,
         "params": params,
         "model_context": model_context,
-        "fim_model_context": model_context_fim,
+        "fim_model_context": fim_data,
         "loss_fn": loss_fn,
         "tol_hvp": tol_hvp,
         "tol_ihvp": tol_ihvp,
@@ -137,6 +143,7 @@ def test_fim_gnh_hvp_consistency(setup):
 
     fim_hvp = fim.estimate_hvp(v, damping=0.1)
     gnh_hvp = gnh.estimate_hvp(v, damping=0.1)
+
     assert VectorMetric.RELATIVE_ERROR.compute(fim_hvp, gnh_hvp) < setup["tol_hvp"]
 
     fim_hvp_r = fim.estimate_hvp(v_rand, damping=0.1)

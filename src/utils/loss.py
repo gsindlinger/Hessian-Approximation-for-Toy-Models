@@ -4,11 +4,13 @@ from typing import Any, Callable, Literal
 import jax
 import jax.numpy as jnp
 import optax
-from jaxtyping import Array
+from jaxtyping import Array, Float
 
 
 @partial(jax.jit, static_argnames=("reduction",))
-def mse_loss(pred: Array, target: Array, reduction="mean") -> jnp.ndarray:
+def mse_loss(
+    pred: Float[Array, "batch ..."], target: Float[Array, "batch ..."], reduction="mean"
+) -> Float:
     """MSE loss"""
     if reduction == "mean":
         return jnp.mean((pred - target) ** 2)
@@ -17,7 +19,7 @@ def mse_loss(pred: Array, target: Array, reduction="mean") -> jnp.ndarray:
 
 
 @partial(jax.jit, static_argnames=("reduction",))
-def cross_entropy_loss(pred, target, reduction="mean") -> jnp.ndarray:
+def cross_entropy_loss(pred, target, reduction="mean") -> Float:
     """Cross entropy loss"""
     if reduction == "mean":
         return optax.softmax_cross_entropy_with_integer_labels(pred, target).mean()

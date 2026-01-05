@@ -8,7 +8,7 @@ from src.config import Config, HessianApproximationConfig, ModelConfig
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.computer.fim_block import FIMBlockComputer
-from src.hessians.utils.data import ModelContext
+from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import generate_pseudo_targets
 from src.utils.data.data import Dataset, RandomClassificationDataset
 from src.utils.data.jax_dataloader import JAXDataLoader
@@ -109,19 +109,26 @@ def model_context(
 
 
 @pytest.fixture(scope="session")
-def fim_block_data(
+def fim_data(
     config: Config, model_and_params: Tuple[MLP, Dict], model_context: ModelContext
 ):
     base = config.hessian_approximation.directory
     assert base is not None, "Hessian approximation directory must be set in config"
 
-    try:
+    collector_data: DataActivationsGradients | None = None
+
+    def load_data():
         return CollectorActivationsGradients.load(base)
+
+    try:
+        collector_data = load_data()
     except (ValueError, FileNotFoundError):
         pass
 
     collector = CollectorActivationsGradients(
-        model=model_and_params[0], params=model_and_params[1]
+        model=model_and_params[0],
+        params=model_and_params[1],
+        loss_fn=cross_entropy_loss,
     )
 
     assert model_context.targets is not None, "ModelContext targets must not be None"
@@ -129,27 +136,35 @@ def fim_block_data(
     collector.collect(
         inputs=model_context.inputs,
         targets=model_context.targets,
-        loss_fn=cross_entropy_loss,
         save_directory=base,
     )
 
-    return CollectorActivationsGradients.load(base)
+    if collector_data is None:
+        collector_data = load_data()
+    return collector_data
 
 
 @pytest.fixture(scope="session")
-def fim_block_data_multi_layer(
+def fim_data_multi_layer(
     config: Config, model_and_params: Tuple[MLP, Dict], model_context: ModelContext
 ):
     base = config.hessian_approximation.directory + "_multi_layer"  # type: ignore
     assert base is not None, "Hessian approximation directory must be set in config"
 
-    try:
+    def load_data():
         return CollectorActivationsGradients.load(base)
+
+    collector_data: DataActivationsGradients | None = None
+
+    try:
+        collector_data = load_data()
     except (ValueError, FileNotFoundError):
         pass
 
     collector = CollectorActivationsGradients(
-        model=model_and_params[0], params=model_and_params[1]
+        model=model_and_params[0],
+        params=model_and_params[1],
+        loss_fn=cross_entropy_loss,
     )
 
     assert model_context.targets is not None, "ModelContext targets must not be None"
@@ -157,28 +172,27 @@ def fim_block_data_multi_layer(
     collector.collect(
         inputs=model_context.inputs,
         targets=model_context.targets,
-        loss_fn=cross_entropy_loss,
         save_directory=base,
     )
 
-    return CollectorActivationsGradients.load(base)
+    if collector_data is None:
+        collector_data = load_data()
+
+    return collector_data
 
 
 @pytest.mark.parametrize("config", ["linear"], indirect=True)
 def test_fim_block_computation(
-    fim_block_data: Tuple[
-        CollectorActivationsGradients, CollectorActivationsGradients, Dict
-    ],
-    model_context: ModelContext,
+    fim_data: DataActivationsGradients,
 ):
     damping = 1e-5
 
     # Compute FIM block using FIMBlockComputer
-    block_fim_computer = FIMBlockComputer(compute_context=fim_block_data)
+    block_fim_computer = FIMBlockComputer(compute_context=fim_data)
     block_fim = block_fim_computer.estimate_hessian(damping=damping)
 
     # Compute full FIM using standard method for comparison
-    fim_computer = FIMComputer(compute_context=model_context)
+    fim_computer = FIMComputer(compute_context=fim_data)
     full_fim = fim_computer.estimate_hessian(damping=damping)
 
     assert jnp.allclose(block_fim, full_fim, atol=1e-5), (
@@ -188,25 +202,22 @@ def test_fim_block_computation(
 
 @pytest.mark.parametrize("config", ["multi_layer"], indirect=True)
 def test_fim_block_computation_multi_layer(
-    fim_block_data_multi_layer: Tuple[
-        CollectorActivationsGradients, CollectorActivationsGradients, Dict
-    ],
-    model_context: ModelContext,
+    fim_data_multi_layer: DataActivationsGradients,
 ):
     damping = 1e-5
 
     # Compute FIM block using FIMBlockComputer
-    block_fim_computer = FIMBlockComputer(compute_context=fim_block_data_multi_layer)
+    block_fim_computer = FIMBlockComputer(compute_context=fim_data_multi_layer)
     block_fim = block_fim_computer.estimate_hessian(damping=damping)
 
     # Compute full FIM using standard method for comparison
-    fim_computer = FIMComputer(compute_context=model_context)
+    fim_computer = FIMComputer(compute_context=fim_data_multi_layer)
     full_fim = fim_computer.estimate_hessian(damping=damping)
 
     start_idx = 0
-    for layer_name in fim_block_data_multi_layer[2]:
+    for layer_name in fim_data_multi_layer.layer_names:
         # extract block corresponding to layer
-        end_idx = next(iter(fim_block_data_multi_layer[0].values())).shape[1]  # type: ignore
+        end_idx = next(iter(fim_data_multi_layer.gradients.values())).shape[1]  # type: ignore
 
         block_fim_block = block_fim[
             start_idx : start_idx + end_idx, start_idx : start_idx + end_idx
@@ -223,10 +234,7 @@ def test_fim_block_computation_multi_layer(
 
 @pytest.mark.parametrize("config", ["linear"], indirect=True)
 def test_fim_block_hvp_ihvp_roundtrip_linear(
-    fim_block_data: Tuple[
-        CollectorActivationsGradients, CollectorActivationsGradients, Dict
-    ],
-    model_context: ModelContext,
+    fim_data: DataActivationsGradients,
 ):
     """
     Check HVP / IHVP consistency and round trips between
@@ -238,13 +246,13 @@ def test_fim_block_hvp_ihvp_roundtrip_linear(
     # ------------------------------------------------------------------
     # Setup computers
     # ------------------------------------------------------------------
-    block_fim = FIMBlockComputer(compute_context=fim_block_data)
-    full_fim = FIMComputer(compute_context=model_context)
+    block_fim = FIMBlockComputer(compute_context=fim_data)
+    full_fim = FIMComputer(compute_context=fim_data)
 
-    params_flat = model_context.params_flat
+    gradients_concatenated = full_fim.build_full_gradients()
 
-    v_ones = jnp.ones_like(params_flat)
-    v_rand = jax.random.normal(jax.random.PRNGKey(0), params_flat.shape)
+    v_ones = jnp.ones_like(gradients_concatenated)
+    v_rand = jax.random.normal(jax.random.PRNGKey(0), gradients_concatenated.shape)
 
     # ------------------------------------------------------------------
     # HVP consistency

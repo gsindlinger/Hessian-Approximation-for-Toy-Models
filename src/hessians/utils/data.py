@@ -88,3 +88,16 @@ class EKFACData(ApproximationData):
     mean_corrections_aggregated: Float = field(
         default=0.0
     )  # mean eigenvalue correction over all layers
+
+
+@dataclass
+class DataActivationsGradients(ApproximationData):
+    """
+    Data class to hold FIM related data.
+    """
+
+    activations: Dict[str, Float[Array, "..."]] = field(
+        default_factory=dict
+    )  # Only used for Block FIM
+    gradients: Dict[str, Float[Array, "..."]] = field(default_factory=dict)
+    layer_names: List[str] = field(default_factory=list)
