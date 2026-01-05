@@ -39,8 +39,13 @@ class EKFACApproximator(ApproximatorBase):
         # Note: We approximate the FIM using MCMC and by collecting gradients
         # and activations from two independent runs we try to reduce bias.
         # This is therefore the data from the first run which is used to compute the eigenvectors.
-        activations, gradients, layer_names = CollectorActivationsGradients.load(
+        collected_data = CollectorActivationsGradients.load(
             directory=self.collected_data_path
+        )
+        activations, gradients, layer_names = (
+            collected_data.activations,
+            collected_data.gradients,
+            collected_data.layer_names,
         )
 
         # Compute covariances of activations and gradients
@@ -62,8 +67,12 @@ class EKFACApproximator(ApproximatorBase):
         )
         # Note: For the eigenvalue corrections we have a different estimate which we want to obtain,
         # so we use data from a second independent run.
-        activations, gradients, _ = CollectorActivationsGradients.load(
+        collected_data = CollectorActivationsGradients.load(
             directory=self.collected_data_path_second
+        )
+        (activations, gradients) = (
+            collected_data.activations,
+            collected_data.gradients,
         )
         eigenvalue_corrections = self.compute_eigenvalue_corrections(
             activations,

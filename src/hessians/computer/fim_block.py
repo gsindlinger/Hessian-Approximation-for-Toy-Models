@@ -1,33 +1,16 @@
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import HessianEstimator
+from src.hessians.utils.data import DataActivationsGradients
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
 class FIMBlockComputer(HessianEstimator):
-    compute_context: Tuple[
-        Dict[str, Float[Array, "N I"]], Dict[str, Float[Array, "N O"]], List[str]
-    ]
-    """ Activations and gradients collected from the model. Complies with the tuple ordering of <code>CollectorActivationsGradients.load()</code> method."""
-
-    @property
-    def activations(self) -> Dict[str, Float[Array, "N I"]]:
-        """Maps the first entry of the compute_context tuple to activations."""
-        return self.compute_context[0]
-
-    @property
-    def gradients(self) -> Dict[str, Float[Array, "N O"]]:
-        """Maps the second entry of the compute_context tuple to gradients."""
-        return self.compute_context[1]
-
-    @property
-    def layer_names(self) -> List[str]:
-        """Maps the third entry of the compute_context tuple to layer names."""
-        return self.compute_context[2]
+    compute_context: DataActivationsGradients
 
     def estimate_hessian(
         self,
@@ -39,9 +22,13 @@ class FIMBlockComputer(HessianEstimator):
         damping = 0.0 if damping is None else damping
         return self._compute_fim_block(
             activations=[
-                self.activations[layer_name] for layer_name in self.layer_names
+                self.compute_context.activations[layer_name]
+                for layer_name in self.compute_context.layer_names
             ],
-            gradients=[self.gradients[layer_name] for layer_name in self.layer_names],
+            gradients=[
+                self.compute_context.gradients[layer_name]
+                for layer_name in self.compute_context.layer_names
+            ],
             damping=damping,
         )
 
@@ -56,9 +43,13 @@ class FIMBlockComputer(HessianEstimator):
         damping = 0.0 if damping is None else damping
         return self._compute_fim_block_hvp(
             activations=[
-                self.activations[layer_name] for layer_name in self.layer_names
+                self.compute_context.activations[layer_name]
+                for layer_name in self.compute_context.layer_names
             ],
-            gradients=[self.gradients[layer_name] for layer_name in self.layer_names],
+            gradients=[
+                self.compute_context.gradients[layer_name]
+                for layer_name in self.compute_context.layer_names
+            ],
             vectors=vectors,
             damping=damping,
         )
@@ -78,10 +69,12 @@ class FIMBlockComputer(HessianEstimator):
             comparison_matrix,
             self._compute_fim_block(
                 activations=[
-                    self.activations[layer_name] for layer_name in self.layer_names
+                    self.compute_context.activations[layer_name]
+                    for layer_name in self.compute_context.layer_names
                 ],
                 gradients=[
-                    self.gradients[layer_name] for layer_name in self.layer_names
+                    self.compute_context.gradients[layer_name]
+                    for layer_name in self.compute_context.layer_names
                 ],
                 damping=damping,
             ),
@@ -97,8 +90,14 @@ class FIMBlockComputer(HessianEstimator):
         """
         damping = 0.0 if damping is None else damping
         return self._compute_fim_block_ihvp(
-            activations=[self.activations[layer] for layer in self.layer_names],
-            gradients=[self.gradients[layer] for layer in self.layer_names],
+            activations=[
+                self.compute_context.activations[layer]
+                for layer in self.compute_context.layer_names
+            ],
+            gradients=[
+                self.compute_context.gradients[layer]
+                for layer in self.compute_context.layer_names
+            ],
             vectors=vectors,
             damping=damping,
         )

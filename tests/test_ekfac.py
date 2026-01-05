@@ -126,14 +126,15 @@ def ekfac_data(
         pass
 
     collector = CollectorActivationsGradients(
-        model=model_and_params[0], params=model_and_params[1]
+        model=model_and_params[0],
+        params=model_and_params[1],
+        loss_fn=cross_entropy_loss,
     )
 
     assert model_context.targets is not None, "ModelContext targets must not be None"
     collector.collect(
         inputs=model_context.inputs,
         targets=model_context.targets,
-        loss_fn=cross_entropy_loss,
         save_directory=collector_dir,
     )
 
@@ -161,14 +162,15 @@ def ekfac_data_batched(
         pass
 
     collector = CollectorActivationsGradients(
-        model=model_and_params[0], params=model_and_params[1]
+        model=model_and_params[0],
+        params=model_and_params[1],
+        loss_fn=cross_entropy_loss,
     )
 
     assert model_context.targets is not None, "ModelContext targets must not be None"
     collector.collect(
         inputs=model_context.inputs,
         targets=model_context.targets,
-        loss_fn=cross_entropy_loss,
         save_directory=collector_dir,
         batch_size=128,
     )
@@ -235,17 +237,15 @@ def test_ekfac_existence(
     assert base is not None, "Hessian approximation directory must be set in config"
     run1, run2 = base + "/run1", base + "/run2"
 
-    collector = CollectorActivationsGradients(model, params)
+    collector = CollectorActivationsGradients(model, params, loss_fn=cross_entropy_loss)
     collector.collect(
         inputs=data1.inputs,
         targets=data1.targets,
-        loss_fn=cross_entropy_loss,
         save_directory=run1,
     )
     collector.collect(
         inputs=data2.inputs,
         targets=data2.targets,
-        loss_fn=cross_entropy_loss,
         save_directory=run2,
     )
 
@@ -272,28 +272,33 @@ def test_gradient_consistency(
     """
     model, params = model_and_params
 
-    def loss_fn(p):
-        return cross_entropy_loss(
-            model.apply(p, dataset.inputs), dataset.targets, reduction="sum"
-        )
+    loss_fn = cross_entropy_loss
 
-    gt_grads = jax.grad(loss_fn)(params)
+    def loss_fn_apply(p):
+        return loss_fn(model.apply(p, dataset.inputs), dataset.targets, reduction="sum")
+
+    gt_grads = jax.grad(loss_fn_apply)(params)
 
     assert config.hessian_approximation.directory is not None, (
         "Hessian approximation directory must be set in config"
     )
     collector_dir = config.hessian_approximation.directory + "/collector"
-    collector = CollectorActivationsGradients(model, params)
+    collector = CollectorActivationsGradients(model, params, loss_fn=loss_fn)
     collector.collect(
         inputs=dataset.inputs,
         targets=dataset.targets,
-        loss_fn=cross_entropy_loss,
         save_directory=collector_dir,
     )
 
-    activations, gradients, _ = CollectorActivationsGradients.load(collector_dir)
+    collector_data = CollectorActivationsGradients.load(collector_dir)
+    activations, gradients, layer_names = (
+        collector_data.activations,
+        collector_data.gradients,
+        collector_data.layer_names,
+    )
 
-    for layer, gt in gt_grads["params"].items():
+    for i, (layer, gt) in enumerate(gt_grads["params"].items()):
+        assert layer == layer_names[i], "Layer names do not match"
         W_grad = gt["kernel"]
         a, g = activations[layer], gradients[layer]
 
@@ -337,8 +342,11 @@ def test_kfac_via_kron_equals_eigenvector_method(
     run1, run2 = base + "/run1", base + "/run2"
     ekfac_approximator = EKFACApproximator(run1, run2)
 
-    activations, gradients, layer_names = CollectorActivationsGradients.load(
-        directory=run1
+    collector_data = CollectorActivationsGradients.load(directory=run1)
+    activations, gradients, layer_names = (
+        collector_data.activations,
+        collector_data.gradients,
+        collector_data.layer_names,
     )
 
     covariances_activations, covariances_gradients = (
