@@ -212,12 +212,12 @@ def save_model_checkpoint(
     if not os.path.exists(directory):
         os.makedirs(directory)
 
-    # first save the model and metadata as json
-    with open(f"{directory}/model.json", "w") as f:
-        json.dump(model.serialize(), f, indent=4)
+    # first save the model and metadata as json as single json file
+    model_json = model.serialize()
     if metadata is not None:
-        with open(f"{directory}/metadata.json", "w") as f:
-            json.dump(metadata, f, indent=4)
+        model_json.update({METADATA_STR: metadata})
+    with open(f"{directory}/model.json", "w") as f:
+        json.dump(model_json, f, indent=4)
 
     try:
         # Use Flax serialization for better handling of PyTrees
@@ -246,6 +246,9 @@ def check_saved_model(directory: str, model: ApproximationModel) -> bool:
     with open(model_path, "r") as f:
         saved_model_data = json.load(f)
 
+    # remove metadata before comparison
+    saved_model_data.pop(METADATA_STR, None)
+
     return (
         os.path.exists(checkpoint_path_msgpack) or os.path.exists(checkpoint_path_pkl)
     ) and json.dumps(saved_model_data) == json.dumps(model.serialize())
@@ -267,19 +270,15 @@ def load_model_checkpoint(
     # Load model definition and compare with provided model
     with open(f"{directory}/model.json", "r") as f:
         model_data_serialized = json.load(f)
+        metadata = model_data_serialized.pop(METADATA_STR, None)
+        if not metadata:
+            metadata = {}
+
         provided_model_data = model.serialize()
         if json.dumps(model_data_serialized) != json.dumps(provided_model_data):
             raise ValueError(
                 "Model definition in checkpoint does not match the provided model."
             )
-
-    # Load metadata
-    try:
-        with open(f"{directory}/metadata.json", "r") as f:
-            metadata = json.load(f)
-    except FileNotFoundError:
-        metadata = {}
-        logging.info("No metadata found in checkpoint.")
 
     # Load parameters
     checkpoint_path_msgpack = os.path.join(directory, "checkpoint.msgpack")

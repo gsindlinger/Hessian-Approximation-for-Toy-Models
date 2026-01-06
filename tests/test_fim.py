@@ -6,7 +6,6 @@ from jax.random import PRNGKey
 
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.fim import FIMComputer
-from src.hessians.computer.hessian import HessianComputer
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import generate_pseudo_targets
 from src.utils.data.data import (
@@ -175,24 +174,6 @@ def test_fim_matrix_matches_reference(setup):
     F_ref = reference_fim_from_autodiff(
         setup["model_context_fim_reference"], damping=0.0
     )
-    hessian = HessianComputer(setup["model_context"]).compute_hessian(damping=0.0)
-
-    # plot heatmaps for debugging
-    import matplotlib.pyplot as plt
-
-    plt.subplot(1, 3, 1)
-    plt.title("FIM Collector")
-    plt.imshow(F_collector, cmap="viridis")
-    plt.colorbar()
-    plt.subplot(1, 3, 2)
-    plt.title("FIM Reference")
-    plt.imshow(F_ref, cmap="viridis")
-    plt.colorbar()
-    plt.subplot(1, 3, 3)
-    plt.title("Hessian Reference")
-    plt.imshow(hessian, cmap="viridis")
-    plt.colorbar()
-    plt.show()
 
     rel_err = FullMatrixMetric.RELATIVE_FROBENIUS.compute(F_collector, F_ref)
     assert rel_err < 1e-5, f"FIM relative error too large: {rel_err}"

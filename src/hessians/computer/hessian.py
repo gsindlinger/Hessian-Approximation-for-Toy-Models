@@ -123,6 +123,7 @@ class HessianComputer:
 
         H_full = H_full / X.shape[0]
 
+        H_full = 0.5 * (H_full + H_full.T)  # Ensure symmetry
         return H_full + damping * jnp.eye(H_full.shape[0])
 
     @staticmethod

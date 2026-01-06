@@ -82,7 +82,7 @@ def split_dim_for_swiglu(x: int) -> tuple[int, int, int]:
 
 
 def run_digits():
-    seed = 124
+    seed = 45
     timestamp = time.strftime("%Y%m%d-%H%M%S")
 
     logger.info("Starting run_digits")
@@ -118,8 +118,8 @@ def run_digits():
         8 * [64],
     ]
     optimizer_name = "adamw"
-    learning_rates = [1e-3, 3e-3, 1e-2]
-    weight_decays = [0.0, 0.01, 0.1, 0.5]
+    learning_rates = [5e-4, 1e-3, 2e-3, 1e-2]
+    weight_decays = [0.0, 1e-4, 1e-3, 1e-2]
 
     all_results = {
         "metadata": {
@@ -189,6 +189,7 @@ def run_digits():
             # -----------------------------------------------------------------
             logger.info(f"[HP SEARCH] Starting for {model_type}")
             best_val_loss = float("inf")
+            best_val_accuracy = 0.0
             best_model_name = None
 
             for lr in learning_rates:
@@ -238,6 +239,9 @@ def run_digits():
                         params=params,
                         directory=model_dir,
                         metadata={
+                            "learning_rate": lr,
+                            "weight_decay": wd,
+                            "seed": seed,
                             "train_loss": float(train_loss),
                             "val_loss": float(val_loss),
                             "val_accuracy": float(val_acc),
@@ -258,17 +262,25 @@ def run_digits():
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
                         best_model_name = model_name
+                        best_val_accuracy = val_acc
 
             logger.info(
                 f"[HP SEARCH] Best model for {model_type}: "
-                f"{best_model_name} (val_loss={best_val_loss:.6f})"
+                f"{best_model_name} (val_loss={best_val_loss:.6f}, val_accuracy={best_val_accuracy:.4f})"
             )
 
             experiment_result["hyperparameter_search_summary"] = {
                 "best_model_name": best_model_name,
                 "best_val_loss": float(best_val_loss),
+                "best_val_accuracy": float(best_val_accuracy),
             }
             all_results["best_models"].append(best_model_name)
+
+            if best_val_accuracy < 0.4:
+                logger.warning(
+                    f"[HESSIAN] Skipping {best_model_name} due to low accuracy"
+                )
+                continue
 
             # -----------------------------------------------------------------
             # Hessian analysis
