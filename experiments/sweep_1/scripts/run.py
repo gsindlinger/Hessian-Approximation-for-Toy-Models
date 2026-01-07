@@ -26,6 +26,7 @@ from src.utils.loss import cross_entropy_loss
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.mlp import MLP
+from src.utils.models.mlp_swiglu import MLPSwiGLU
 from src.utils.optimizers import optimizer
 from src.utils.train import (
     check_saved_model,
@@ -42,8 +43,6 @@ from src.utils.utils import get_peak_bytes_in_use, hash_data
 logger = logging.getLogger(__name__)
 
 jax.config.update("jax_debug_nans", True)
-# jax.config.update("jax_log_compiles", True)  # enable if you suspect recompiles
-
 
 # -----------------------------------------------------------------------------
 # utilities
@@ -83,7 +82,6 @@ def split_dim_for_swiglu(x: int) -> tuple[int, int, int]:
 def run_digits():
     seed = 45
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-
     logger.info("Starting run_digits")
     logger.info(f"Seed = {seed}")
 
@@ -106,15 +104,15 @@ def run_digits():
     # sweep config
     # -------------------------------------------------------------------------
     layer_settings = [
-        # [16],
-        # 4 * [16],
-        # 8 * [16],
-        # [32],
-        # 4 * [32],
-        # 8 * [32],
-        # [64],
-        # 4 * [64],
-        8 * [64],
+        [16],
+        4 * [16],
+        8 * [16],
+        [32],
+        4 * [32],
+        8 * [32],
+        [64],
+        4 * [64],
+        6 * [64],
     ]
     optimizer_name = "adamw"
     learning_rates = [5e-4, 1e-3, 2e-3, 1e-2]
@@ -157,17 +155,17 @@ def run_digits():
                 ),
                 hidden_layers,
             ),
-            # (
-            #     "MLPSwiGLU",
-            #     MLPSwiGLU(
-            #         input_dim=dataset.input_dim(),
-            #         output_dim=dataset.output_dim(),
-            #         hidden_dim=[split_dim_for_swiglu(d) for d in hidden_layers],
-            #         activation="swiglu",
-            #         seed=seed,
-            #     ),
-            #     [split_dim_for_swiglu(d) for d in hidden_layers],
-            # ),
+            (
+                "MLPSwiGLU",
+                MLPSwiGLU(
+                    input_dim=dataset.input_dim(),
+                    output_dim=dataset.output_dim(),
+                    hidden_dim=[split_dim_for_swiglu(d) for d in hidden_layers],
+                    activation="swiglu",
+                    seed=seed,
+                ),
+                [split_dim_for_swiglu(d) for d in hidden_layers],
+            ),
         ]
 
         for model_type, model, experiment_hidden_layers in models:

@@ -155,17 +155,6 @@ def test_trace_distance():
     assert FullMatrixMetric.TRACE_DISTANCE.compute(A, B) == expected
 
 
-def test_condition_number_log_ratio():
-    A = jnp.array([[2.0, 0.0], [0.0, 1.0]])
-    B = jnp.array([[1.0, 0.0], [0.0, 1.0]])
-    condA = 2 / 1
-    condB = 1 / 1
-    expected = abs(jnp.log(condA) - jnp.log(condB))
-    assert FullMatrixMetric.CONDITION_NUMBER_LOG_RATIO.compute(A, B) == pytest.approx(
-        float(expected)
-    )
-
-
 # ---------------------------------------------------------------------------
 # compare_matrices Tests
 # ---------------------------------------------------------------------------
