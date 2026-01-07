@@ -26,7 +26,6 @@ from src.utils.loss import cross_entropy_loss
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.mlp import MLP
-from src.utils.models.mlp_swiglu import MLPSwiGLU
 from src.utils.optimizers import optimizer
 from src.utils.train import (
     check_saved_model,
@@ -107,14 +106,14 @@ def run_digits():
     # sweep config
     # -------------------------------------------------------------------------
     layer_settings = [
-        [16],
-        4 * [16],
-        8 * [16],
-        [32],
-        4 * [32],
-        8 * [32],
-        [64],
-        4 * [64],
+        # [16],
+        # 4 * [16],
+        # 8 * [16],
+        # [32],
+        # 4 * [32],
+        # 8 * [32],
+        # [64],
+        # 4 * [64],
         8 * [64],
     ]
     optimizer_name = "adamw"
@@ -158,17 +157,17 @@ def run_digits():
                 ),
                 hidden_layers,
             ),
-            (
-                "MLPSwiGLU",
-                MLPSwiGLU(
-                    input_dim=dataset.input_dim(),
-                    output_dim=dataset.output_dim(),
-                    hidden_dim=[split_dim_for_swiglu(d) for d in hidden_layers],
-                    activation="swiglu",
-                    seed=seed,
-                ),
-                [split_dim_for_swiglu(d) for d in hidden_layers],
-            ),
+            # (
+            #     "MLPSwiGLU",
+            #     MLPSwiGLU(
+            #         input_dim=dataset.input_dim(),
+            #         output_dim=dataset.output_dim(),
+            #         hidden_dim=[split_dim_for_swiglu(d) for d in hidden_layers],
+            #         activation="swiglu",
+            #         seed=seed,
+            #     ),
+            #     [split_dim_for_swiglu(d) for d in hidden_layers],
+            # ),
         ]
 
         for model_type, model, experiment_hidden_layers in models:
