@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Dict, Literal, Optional
 
@@ -9,6 +10,8 @@ from jaxtyping import Array, Float
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.utils.data import EKFACData
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,6 +57,39 @@ class KFACComputer(HessianEstimator):
         Compare the (E)KFAC Hessian approximation to a given comparison matrix
         """
         Lambdas_unordered = self._compute_lambdas()
+
+        # Add validation
+        for layer in self.compute_context.layer_names:
+            act_eigvec = self.compute_context.activation_eigenvectors[layer]
+            grad_eigvec = self.compute_context.gradient_eigenvectors[layer]
+            lambdas = Lambdas_unordered[layer]
+
+            # Check for NaN/Inf
+            if (
+                jnp.any(jnp.isnan(act_eigvec))
+                or jnp.any(jnp.isnan(grad_eigvec))
+                or jnp.any(jnp.isnan(lambdas))
+            ):
+                logger.error(f"NaN detected in layer {layer} during comparison.")
+            if (
+                jnp.any(jnp.isinf(act_eigvec))
+                or jnp.any(jnp.isinf(grad_eigvec))
+                or jnp.any(jnp.isinf(lambdas))
+            ):
+                logger.error(f"Inf detected in layer {layer} during comparison.")
+
+            # Check dimensions
+            if act_eigvec.ndim != 2:
+                logger.error(
+                    f"Activation eigenvectors for layer {layer} do not have 2 dimensions."
+                )
+            if grad_eigvec.ndim != 2:
+                logger.error(
+                    f"Gradient eigenvectors for layer {layer} do not have 2 dimensions."
+                )
+            if lambdas.ndim != 2:
+                logger.error(f"Lambdas for layer {layer} do not have 2 dimensions.")
+
         return self._compare_hessian_estimates(
             activations_eigenvectors=[
                 self.compute_context.activation_eigenvectors[layer]
