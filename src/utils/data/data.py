@@ -64,6 +64,37 @@ class Dataset:
     def output_dim(self) -> int:
         pass
 
+    @abstractmethod
+    def train_test_split(
+        self, test_size: float = 0.2, seed: int = 42
+    ) -> tuple[Dataset, Dataset]:
+        pass
+
+    @classmethod
+    def load_from_inputs_and_targets_csv(
+        cls,
+        inputs_path: str | Path,
+        targets_path: str | Path,
+    ) -> Self:
+        """Load dataset from given input and target files. Assumes CSV format."""
+        # Throw error if files do not exist and / or are not CSV
+        inputs_path = Path(inputs_path)
+        targets_path = Path(targets_path)
+        if not inputs_path.exists() or not targets_path.exists():
+            raise FileNotFoundError(
+                f"Input file '{inputs_path}' or target file '{targets_path}' does not exist."
+            )
+        if inputs_path.suffix != ".csv" or targets_path.suffix != ".csv":
+            raise ValueError("Only CSV files are supported for loading datasets.")
+
+        inputs = pd.read_csv(inputs_path).values
+        targets = pd.read_csv(targets_path).values
+
+        return cls(
+            inputs=jnp.asarray(inputs, dtype=jnp.float32),
+            targets=jnp.asarray(targets, dtype=jnp.float32),
+        )
+
     @staticmethod
     def normalize_data(train_data, test_data) -> tuple[Array, Array]:
         """Standardize inputs to have zero mean and unit variance."""
@@ -285,7 +316,7 @@ class DownloadableDataset(Dataset, ABC):
 
 @dataclass
 class RandomRegressionDataset(RegressionDataset):
-    n_samples: int = field(default=100)
+    n_samples: int = field(default=1000)
     n_features: int = field(default=10)
     n_targets: int = field(default=1)
     noise: float = field(default=0.1)
@@ -311,11 +342,9 @@ class RandomRegressionDataset(RegressionDataset):
         if self.n_targets == 1 and len(self.targets.shape) == 1:
             self.targets = self.targets.reshape(-1, 1)
 
-    @override
     def input_dim(self) -> int:
         return self.n_features
 
-    @override
     def output_dim(self) -> int:
         return self.n_targets
 
@@ -354,26 +383,49 @@ class RandomClassificationDataset(ClassificationDataset):
 
 
 @dataclass
-class SklearnDigitsDataset(ClassificationDataset):
+class SklearnDigitsDataset(DownloadableDataset, ClassificationDataset):
     """
     sklearn.datasets.load_digits dataset.
     8x8 images (64 features) with pixel values in range 0-16, already flattened.
     """
 
-    normalize: bool = True
-
-    def __post_init__(self):
+    @classmethod
+    def download(cls) -> RawDataset:
         digits = load_digits()
 
-        X = digits.data.astype(jnp.float32)  # type: ignore
-        Y = digits.target.astype(jnp.int32)  # type: ignore
+        X = digits.data  # type: ignore
+        Y = digits.target  # type: ignore
 
-        # Normalize pixel values to [0, 1]
-        if self.normalize:
+        return RawDataset(X=X, Y=Y)
+
+    @staticmethod
+    def save(directory: Path, raw: RawDataset) -> None:
+        pd.DataFrame(raw.X).to_csv(directory / "X.csv", index=False)
+        pd.DataFrame(raw.Y).to_csv(directory / "Y.csv", index=False)
+
+    @staticmethod
+    def load_from_disk(directory: Path) -> RawDataset:
+        X = pd.read_csv(directory / "X.csv").values
+        Y = pd.read_csv(directory / "Y.csv").values.ravel()
+        return RawDataset(X=X, Y=Y)
+
+    @classmethod
+    def create_dataset_from_raw(cls, raw: RawDataset) -> Self:
+        X = raw.X.astype(jnp.float32)
+        Y = raw.Y.astype(jnp.int32)
+
+        # Handle missing values
+        X = np.nan_to_num(X, nan=0.0)
+
+        # Normalize pixels from [0, 16] to [0, 1] range
+
+        if X.max() > 1.0:
             X = X / 16.0
 
-        self.inputs = jnp.asarray(X, dtype=jnp.float32)
-        self.targets = jnp.asarray(Y, dtype=jnp.int32)
+        return cls(
+            inputs=jnp.asarray(X, dtype=jnp.float32),
+            targets=jnp.asarray(Y, dtype=jnp.int32),
+        )
 
     def input_dim(self) -> int:
         return 64
