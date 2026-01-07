@@ -1,0 +1,24 @@
+experiment_name: quick_test
+stage: both
+
+dataset:
+  path: data/digits
+
+training:
+  hyperparam_grid:
+    learning_rates:
+      - 0.001
+    weight_decays:
+      - 0.0
+
+  model_config:
+    layer_configs:
+      - hidden_dims:
+          - 64
+
+hessian:
+  computation_config:
+    computation_types:
+      - exact
+      - hvp
+      - ihvp
