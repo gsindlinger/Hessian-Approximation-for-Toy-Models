@@ -1,17 +1,30 @@
+from __future__ import annotations
+
+import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Dict, List, Optional, Tuple, Union
+
+from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
+from src.utils.metrics.vector_metrics import VectorMetric
 
 # -----------------------------------------------------------------------------
 # Enums for controlled choices
 # -----------------------------------------------------------------------------
 
 
+class LOSS_TYPE(str, Enum):
+    """Types of loss functions."""
+
+    MSE = "mse"
+    CROSS_ENTROPY = "cross_entropy"
+
+
 class ModelArchitecture(str, Enum):
     """Available model architectures."""
 
     MLP = "mlp"
-    MLP_SWIGLU = "mlp_swiglu"
+    MLPSWIGLU = "mlp_swiglu"
     LINEAR = "linear"
 
 
@@ -67,14 +80,27 @@ class Stage(str, Enum):
     BOTH = "both"
 
 
-# -----------------------------------------------------------------------------
-# Dataset Configuration
-# -----------------------------------------------------------------------------
+class Datasets(str, Enum):
+    """Available datasets."""
+
+    DIGITS = "digits"
+    MNIST = "mnist"
+    CIFAR10 = "cifar10"
+
+
+class VectorSamplingMethod(str, Enum):
+    """Methods for sampling vectors for HVP computation."""
+
+    GRADIENTS = "gradients"
+    RANDOM = "random"
 
 
 @dataclass
 class DatasetConfig:
     """Configuration for dataset loading and splitting."""
+
+    name: Datasets
+    """Name of the dataset to use."""
 
     path: str
     """Path to the dataset on disk."""
@@ -93,41 +119,64 @@ class DatasetConfig:
             raise ValueError(f"test_size must be in (0, 1), got {self.test_size}")
 
 
-# -----------------------------------------------------------------------------
-# Model Architecture Configuration
-# -----------------------------------------------------------------------------
-
-
 @dataclass
-class LayerConfig:
+class ModelConfig:
     """Configuration for a single layer stack."""
 
-    hidden_dims: list[int]
+    architecture: ModelArchitecture
+    """Model architecture type."""
+
+    hidden_dims: List[int] | List[Tuple[int, int, int]] | None
     """Hidden layer dimensions, e.g. [64, 64]."""
-
-    def __post_init__(self):
-        if not self.hidden_dims:
-            raise ValueError("hidden_dims cannot be empty")
-        if any(d <= 0 for d in self.hidden_dims):
-            raise ValueError("All hidden dimensions must be positive")
-
-
-@dataclass
-class ModelArchitectureConfig:
-    """Configuration for model architectures to train."""
-
-    architectures: list[ModelArchitecture] = field(
-        default_factory=lambda: [ModelArchitecture.MLP]
-    )
-    """Which model architectures to train."""
-
-    layer_configs: list[LayerConfig] = field(
-        default_factory=lambda: [LayerConfig([16])]
-    )
-    """Layer configurations to sweep over."""
 
     init_seed: int = 42
     """Random seed for model initialization."""
+
+    directory: str | None = None
+    """Directory to save or load the model."""
+
+    skip_existing: bool = True
+    """Whether to skip training if checkpoints already exist."""
+
+    loss: LOSS_TYPE = LOSS_TYPE.MSE
+    """Loss function to use for training the model."""
+
+    training_config: TrainingConfig | None = None
+    """Training configuration for the model, if applicable."""
+
+    def get_model_base_name(self) -> str:
+        # final directory name as model_key, i.e. {model_name}_{hash}
+        if self.directory is None:
+            raise ValueError("Model directory is None.")
+        model_key = os.path.basename(self.directory)
+        return model_key
+
+
+@dataclass
+class TrainingConfig:
+    """Configuration for model training."""
+
+    """Model architecture configuration."""
+    learning_rate: float = 1e-3
+    """Learning rate for the optimizer."""
+
+    weight_decay: float = 0.0
+    """Weight decay (L2 regularization) coefficient."""
+
+    optimizer: OptimizerType = OptimizerType.ADAMW
+    """Optimizer used for training."""
+
+    epochs: int = 500
+    """Number of training epochs."""
+
+    batch_size: int = 32
+    """Mini-batch size."""
+
+    def __post_init__(self):
+        if self.epochs <= 0:
+            raise ValueError("epochs must be positive")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
 
 
 # -----------------------------------------------------------------------------
@@ -142,26 +191,11 @@ class HyperparameterConfig:
     learning_rates: list[float] = field(default_factory=lambda: [1e-3])
     """Learning rates to use or sweep over."""
 
-    weight_decays: Optional[list[float]] = None
+    weight_decays: list[float] = field(default_factory=lambda: [0.0])
     """Weight decay values to use or sweep over.
     If None, weight decay is disabled (equivalent to [0.0])."""
 
     def __post_init__(self):
-        if self.learning_rates is None:
-            raise ValueError("learning_rates must be specified")
-
-        if not isinstance(self.learning_rates, list):
-            self.learning_rates = [self.learning_rates]
-
-        if self.weight_decays is None:
-            self.weight_decays = [0.0]
-        elif not isinstance(self.weight_decays, list):
-            self.weight_decays = [self.weight_decays]
-
-        if not self.learning_rates:
-            raise ValueError("learning_rates cannot be empty")
-        if not self.weight_decays:
-            raise ValueError("weight_decays cannot be empty")
         if any(lr <= 0 for lr in self.learning_rates):
             raise ValueError("All learning rates must be positive")
         if any(wd < 0 for wd in self.weight_decays):
@@ -169,62 +203,11 @@ class HyperparameterConfig:
 
     def is_grid_search(self) -> bool:
         """Return True if more than one hyperparameter configuration exists."""
-        return (
-            len(self.learning_rates) > 1
-            or self.weight_decays is not None
-            and len(self.weight_decays) > 1
-        )
+        return len(self.learning_rates) > 1 or len(self.weight_decays) > 1
 
     def num_configurations(self) -> int:
         """Return the total number of hyperparameter combinations."""
         return len(self.learning_rates) * len(self.weight_decays)
-
-
-# -----------------------------------------------------------------------------
-# Training Configuration
-# -----------------------------------------------------------------------------
-
-
-@dataclass
-class TrainingConfig:
-    """Configuration for model training."""
-
-    model_config: ModelArchitectureConfig = field(
-        default_factory=ModelArchitectureConfig
-    )
-    """Model architecture configuration."""
-
-    hyperparam_grid: HyperparameterConfig = field(default_factory=HyperparameterConfig)
-    """Hyperparameter grid for training."""
-
-    optimizer: OptimizerType = OptimizerType.ADAMW
-    """Optimizer used for training."""
-
-    epochs: int = 500
-    """Number of training epochs."""
-
-    batch_size: int = 32
-    """Mini-batch size."""
-
-    min_accuracy_threshold: float = 0.4
-    """Minimum validation accuracy required for Hessian analysis."""
-
-    model_output_dir: str = "experiments/models"
-    """Directory where trained models are saved."""
-
-    manifest_output_path: str = "experiments/training_manifest.json"
-    """Path where the training manifest JSON is written."""
-
-    skip_existing: bool = True
-    """Whether to skip training if checkpoints already exist."""
-
-    def __post_init__(self):
-        if self.epochs <= 0:
-            raise ValueError("epochs must be positive")
-        if self.batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-        if not 0.0 <= self.min_accuracy_threshold <= 1.0:
-            raise ValueError("min_accuracy_threshold must be in [0, 1]")
 
 
 # -----------------------------------------------------------------------------
@@ -274,56 +257,125 @@ class DampingConfig:
 class CollectorConfig:
     """Configuration for gradient and activation collection."""
 
-    num_gradient_samples: int = 1000
-    """Number of samples used for gradient estimation."""
-
-    num_pseudo_target_runs: int = 2
+    num_pseudo_target_runs: int = 1
     """Number of independent pseudo-target runs."""
 
-    pseudo_target_seeds: Optional[list[int]] = None
+    pseudo_target_seeds: List[int] = field(default_factory=lambda: [42])
     """Optional random seeds for pseudo-target generation."""
 
-    collector_output_dir: str = "experiments/collector"
-    """Directory for storing collected statistics."""
+    collector_output_dirs: List[str] = field(
+        default_factory=lambda: ["experiments/collector"]
+    )
+    """Directories for storing collected statistics."""
 
     try_load_cached: bool = True
     """Whether to reuse cached collector data if available."""
+
+    def __post_init__(self):
+        assert len(self.collector_output_dirs) == self.num_pseudo_target_runs, (
+            "Length of collector_output_dirs must match num_pseudo_target_runs"
+        )
+        if self.pseudo_target_seeds is not None:
+            if len(self.pseudo_target_seeds) != self.num_pseudo_target_runs:
+                raise ValueError(
+                    "Length of pseudo_target_seeds must match num_pseudo_target_runs"
+                )
+
+
+@dataclass
+class EKFACApproximatorConfig:
+    """Configuration specific to EKFAC approximator."""
+
+    directory: str = "experiments/ekfac"
+    """Directory to save or load EKFAC data."""
+
+    collector_dir_1: str = "experiments/collector/run1"
+    """Directory containing first set of collector statistics."""
+
+    collector_dir_2: str = "experiments/collector/run2"
+    """Directory containing second set of collector statistics."""
+
+
+@dataclass
+class ModelContextConfig:
+    """Configuration for model context used in Hessian computations."""
+
+    model_config: ModelConfig
+    """Model configuration."""
+
+    dataset_config: DatasetConfig
+    """Dataset configuration."""
 
 
 @dataclass
 class HessianComputationConfig:
     """Configuration specifying which Hessian computations to perform."""
 
-    approximators: list[HessianApproximator] = field(
-        default_factory=lambda: [
-            HessianApproximator.EKFAC,
-            HessianApproximator.KFAC,
-            HessianApproximator.GNH,
-        ]
-    )
-    """Hessian approximation methods to compute."""
+    approximator_configs: Dict[
+        HessianApproximator,
+        Union[EKFACApproximatorConfig, ModelContextConfig, CollectorConfig],
+    ] = field(default_factory=lambda: {})
+    """Types of Hessian computations to perform."""
 
-    comparison_references: list[ComparisonReference] = field(
-        default_factory=lambda: [ComparisonReference.EXACT, ComparisonReference.GNH]
+    comparison_references: Dict[HessianApproximator, ModelContextConfig] = field(
+        default_factory=lambda: {}
     )
     """Reference methods used for comparisons."""
 
-    computation_types: list[ComputationType] = field(
-        default_factory=lambda: [
-            ComputationType.MATRIX,
-            ComputationType.HVP,
-            ComputationType.IHVP,
-        ]
+    computation_types: Dict[
+        ComputationType, VectorAnalysisConfig | MatrixAnalysisConfig
+    ] = field(default_factory=lambda: {})
+
+    damping: float = 0.1
+    """Fixed damping value to use for Hessian computations."""
+
+    damping_strategy: DampingStrategy = DampingStrategy.AUTO_MEAN_EIGENVALUE
+    """Strategy for computing damping value."""
+
+    def __post_init__(self):
+        if self.damping_strategy in [
+            DampingStrategy.AUTO_MEAN_EIGENVALUE,
+            DampingStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
+        ] and not (
+            HessianApproximator.EKFAC in self.approximator_configs
+            or HessianApproximator.KFAC in self.approximator_configs
+        ):
+            raise ValueError(
+                "Damping strategy requires EKFAC or KFAC approximator to compute mean eigenvalue."
+            )
+
+
+@dataclass
+class VectorAnalysisConfig:
+    """Configuration for HVP analysis."""
+
+    num_samples: int = 1000
+    """Number of HVP samples to compute."""
+
+    sampling_method: VectorSamplingMethod = VectorSamplingMethod.GRADIENTS
+    """Method for sampling vectors for HVP / IHVP computation."""
+
+    seed: int = 42
+    """Random seed for vector sampling."""
+
+    metrics: List[VectorMetric] = field(
+        default_factory=lambda: VectorMetric.all_metrics()
     )
-    """Types of Hessian computations to perform."""
+    """Metrics to compute during Hessian vector analysis."""
+
+
+@dataclass
+class MatrixAnalysisConfig:
+    """Configuration for Hessian matrix analysis."""
+
+    metrics: List[FullMatrixMetric] = field(
+        default_factory=lambda: FullMatrixMetric.all_metrics()
+    )
 
 
 @dataclass
 class HessianAnalysisConfig:
     """Configuration for Hessian approximation and analysis."""
-
-    input_manifest_path: Optional[str] = None
-    """Path to a training manifest JSON file."""
 
     input_model_dir: Optional[str] = None
     """Path to a directory containing a single trained model."""
@@ -350,70 +402,3 @@ class HessianAnalysisConfig:
 
     analysis_seed: int = 42
     """Random seed for Hessian analysis."""
-
-    def __post_init__(self):
-        if self.input_manifest_path is None and self.input_model_dir is None:
-            raise ValueError(
-                "Either input_manifest_path or input_model_dir must be set"
-            )
-        if self.input_manifest_path and self.input_model_dir:
-            raise ValueError(
-                "Only one of input_manifest_path or input_model_dir allowed"
-            )
-
-
-# -----------------------------------------------------------------------------
-# Global Experiment Configuration
-# -----------------------------------------------------------------------------
-
-
-@dataclass
-class ExperimentConfig:
-    """Top-level configuration for training and Hessian experiments."""
-
-    stage: Stage = Stage.BOTH
-    """Which stage of the pipeline to execute."""
-
-    dataset: DatasetConfig = field(default_factory=lambda: DatasetConfig(path=""))
-    """Dataset configuration."""
-
-    training: Optional[TrainingConfig] = None
-    """Training configuration."""
-
-    hessian: Optional[HessianAnalysisConfig] = None
-    """Hessian analysis configuration."""
-
-    global_seed: int = 42
-    """Global random seed."""
-
-    experiment_name: str = "experiment"
-    """Human-readable experiment identifier."""
-
-    root_output_dir: str = "experiments"
-    """Root directory for all experiment outputs."""
-
-    verbose: bool = True
-    """Whether to enable verbose logging."""
-
-    def __post_init__(self):
-        if self.stage in [Stage.TRAIN, Stage.BOTH] and self.training is None:
-            raise ValueError("training config required")
-        if self.stage in [Stage.HESSIAN, Stage.BOTH] and self.hessian is None:
-            raise ValueError("hessian config required")
-        if not self.dataset.path:
-            raise ValueError("dataset.path must be specified")
-        if self.stage == Stage.BOTH and self.training and self.hessian:
-            if self.hessian.input_manifest_path is None:
-                self.hessian.input_manifest_path = self.training.manifest_output_path
-
-    def get_training_config(self) -> TrainingConfig:
-        """Return the training configuration."""
-        if self.training is None:
-            raise ValueError("Training config not available")
-        return self.training
-
-    def get_hessian_config(self) -> HessianAnalysisConfig:
-        """Return the Hessian analysis configuration."""
-        if self.hessian is None:
-            raise ValueError("Hessian config not available")
-        return self.hessian

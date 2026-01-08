@@ -11,7 +11,7 @@ This module handles:
 
 import logging
 import time
-from typing import Any, Callable
+from typing import Any, Callable, List, Tuple, cast
 
 from src.config import (
     ExperimentConfig,
@@ -63,14 +63,35 @@ def create_model(
 ):
     """Create a model instance based on architecture and layer configuration."""
     if architecture == ModelArchitecture.MLP:
+        assert isinstance(layer_config.hidden_dims, list) and all(
+            isinstance(x, int) for x in layer_config.hidden_dims
+        ), "Hidden dims must be a list of integers for MLP architecture"
+        hidden_dims = cast(List[int], layer_config.hidden_dims)
         return MLP(
             input_dim=input_dim,
             output_dim=output_dim,
-            hidden_dim=layer_config.hidden_dims,
+            hidden_dim=hidden_dims,
             seed=seed,
         )
     elif architecture == ModelArchitecture.MLP_SWIGLU:
-        swiglu_dims = [split_dim_for_swiglu(d) for d in layer_config.hidden_dims]
+        is_list_of_tuples = isinstance(layer_config.hidden_dims, list) and all(
+            isinstance(x, tuple) and len(x) == 3 and all(isinstance(i, int) for i in x)
+            for x in layer_config.hidden_dims
+        )
+        is_list_of_ints = isinstance(layer_config.hidden_dims, list) and all(
+            isinstance(x, int) for x in layer_config.hidden_dims
+        )
+        if not (is_list_of_tuples or is_list_of_ints):
+            raise ValueError(
+                "Hidden dims must be a list of integers or list of tuples for MLP_SWIGLU architecture"
+            )
+        if is_list_of_tuples:
+            swiglu_dims = cast(List[Tuple[int, int, int]], layer_config.hidden_dims)
+        else:
+            swiglu_dims = [
+                split_dim_for_swiglu(d)
+                for d in cast(List[int], layer_config.hidden_dims)
+            ]
         return MLPSwiGLU(
             input_dim=input_dim,
             output_dim=output_dim,
@@ -78,18 +99,6 @@ def create_model(
             activation="swiglu",
             seed=seed,
         )
-    else:
-        raise ValueError(f"Unknown architecture: {architecture}")
-
-
-def get_experiment_hidden_layers(
-    architecture: ModelArchitecture, layer_config: ModelConfig
-):
-    """Get the actual hidden layer configuration used in the model."""
-    if architecture == ModelArchitecture.MLP:
-        return layer_config.hidden_dims
-    elif architecture == ModelArchitecture.MLP_SWIGLU:
-        return [split_dim_for_swiglu(d) for d in layer_config.hidden_dims]
     else:
         raise ValueError(f"Unknown architecture: {architecture}")
 
@@ -120,7 +129,6 @@ def train_single_model(
     Returns:
         tuple of (params, train_loss, val_loss, val_accuracy)
     """
-
     # Check if model already exists
     if skip_if_exists and check_saved_model(model_dir, model=model):
         logger.info(f"[LOAD] Loading existing model: {model_name}")
@@ -180,7 +188,7 @@ def train_single_model(
 def run_hyperparameter_search(
     model,
     model_type: ModelArchitecture,
-    experiment_hidden_layers: list,
+    experiment_hidden_layers: List[int] | List[Tuple[int, int, int]],
     train_dataset: Dataset,
     val_dataset: Dataset,
     config: TrainingConfig,
@@ -216,7 +224,7 @@ def run_hyperparameter_search(
             model_dir = f"{model_output_dir}/{model_name}/"
 
             # Train model
-            params, train_loss, val_loss, val_accuracy = train_single_model(
+            _, train_loss, val_loss, val_accuracy = train_single_model(
                 model=model,
                 model_name=model_name,
                 model_dir=model_dir,
@@ -237,7 +245,7 @@ def run_hyperparameter_search(
                 model_name=model_name,
                 model_type=model_type,
                 model_hash=cfg_hash,
-                hidden_layers=experiment_hidden_layers,
+                hidden_layers=experiment_hidden_layers,  # type: ignore
                 num_params=model.num_params,
                 learning_rate=lr,
                 weight_decay=wd,
@@ -248,8 +256,6 @@ def run_hyperparameter_search(
                 val_loss=val_loss,
                 val_accuracy=val_accuracy,
                 model_dir=model_dir,
-                checkpoint_path=f"{model_dir}/checkpoint.pkl",
-                timestamp=time.strftime("%Y%m%d-%H%M%S"),
             )
 
             model_entries.append(entry)
@@ -344,9 +350,7 @@ def run_training_pipeline(config: ExperimentConfig) -> TrainingManifest:
                 seed=training_config.model_config.init_seed,
             )
 
-            experiment_hidden_layers = get_experiment_hidden_layers(
-                architecture, layer_config
-            )
+            experiment_hidden_layers = layer_config.hidden_dims
 
             logger.info(
                 f"Created {architecture.value} model "
@@ -354,6 +358,9 @@ def run_training_pipeline(config: ExperimentConfig) -> TrainingManifest:
             )
 
             # Run hyperparameter search
+            assert experiment_hidden_layers is not None, (
+                "Hidden layers must be specified for training"
+            )
             model_entries = run_hyperparameter_search(
                 model=model,
                 model_type=architecture,
