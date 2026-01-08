@@ -21,7 +21,7 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from typing_extensions import override
 from ucimlrepo import fetch_ucirepo
 
-from src.config import Datasets
+from src.config import DatasetEnum
 from src.utils.data.jax_dataloader import JAXDataLoader
 
 T = TypeVar("T", bound="DownloadableDataset")
@@ -283,7 +283,7 @@ class DownloadableDataset(Dataset, ABC):
 
     @staticmethod
     def load(
-        dataset: Datasets,
+        dataset: DatasetEnum,
         directory: Optional[str] = None,
         store_on_disk: bool = True,
     ) -> Dataset:
@@ -300,7 +300,7 @@ class DownloadableDataset(Dataset, ABC):
         Returns:
             A Dataset object created from the loaded or downloaded data.
         """
-        dataset_cls = DATASET_REGISTRY.get(dataset)
+        dataset_cls = DatasetRegistry.get_dataset(dataset)
         if dataset_cls is None:
             raise ValueError(f"Dataset '{dataset}' not found in registry.")
         if directory is not None:
@@ -681,8 +681,23 @@ class CIFAR10Dataset(OpenMLDataset):
     name = "CIFAR_10_small"
 
 
-DATASET_REGISTRY: dict[Datasets, Type[DownloadableDataset]] = {
-    Datasets.DIGITS: DigitsDataset,
-    Datasets.MNIST: MNISTDataset,
-    Datasets.CIFAR10: CIFAR10Dataset,
-}
+class DatasetRegistry:
+    """Registry for datasets."""
+
+    REGISTRY: dict[DatasetEnum, Type[DownloadableDataset]] = {
+        DatasetEnum.MNIST: MNISTDataset,
+        DatasetEnum.FASHION_MNIST: FashionMNISTDataset,
+        DatasetEnum.CIFAR10: CIFAR10Dataset,
+        DatasetEnum.SKLEARN_DIGITS: SklearnDigitsDataset,
+        DatasetEnum.ENERGY: EnergyDataset,
+        DatasetEnum.CONCRETE: ConcreteDataset,
+        DatasetEnum.CANCER: CancerDataset,
+        DatasetEnum.DIGITS: DigitsDataset,
+    }
+
+    @staticmethod
+    def get_dataset(name: DatasetEnum, *args, **kwargs) -> DownloadableDataset:
+        dataset_cls = DatasetRegistry.REGISTRY.get(name)
+        if dataset_cls is None:
+            raise ValueError(f"Unknown dataset: {name}")
+        return dataset_cls(*args, **kwargs)

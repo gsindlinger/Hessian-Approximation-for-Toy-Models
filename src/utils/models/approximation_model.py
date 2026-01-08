@@ -9,27 +9,13 @@ import jax.numpy as jnp
 from flax import linen as nn
 from jax.tree_util import tree_flatten_with_path
 
-from src.config import ModelArchitecture, ModelConfig
-from src.utils.models.linear_model import LinearModel
-from src.utils.models.mlp import MLP
-from src.utils.models.mlp_swiglu import MLPSwiGLU
-
 
 @dataclass
 class ApproximationModel(nn.Module):
     input_dim: int
     output_dim: int
+    hidden_dim: List[int]
     seed: int = 42
-
-    @staticmethod
-    def get_model(
-        model_config: ModelConfig, input_dim: int, output_dim: int, seed: int = 42
-    ) -> ApproximationModel:
-        model_cls = MODEL_REGISTRY[model_config.architecture]
-        hidden_layers_dict = asdict(model_config).get("hidden_dims", {})
-        return model_cls(
-            input_dim=input_dim, output_dim=output_dim, seed=seed, **hidden_layers_dict
-        )
 
     @classmethod
     def get_activation(cls, act_str: str) -> Callable:
@@ -97,10 +83,3 @@ class ApproximationModel(nn.Module):
         }
 
         return test_dict
-
-
-MODEL_REGISTRY: dict[ModelArchitecture, type[ApproximationModel]] = {
-    ModelArchitecture.MLP: MLP,
-    ModelArchitecture.MLPSWIGLU: MLPSwiGLU,
-    ModelArchitecture.LINEAR: LinearModel,
-}

@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 
-class VectorMetric(Enum):
+class VectorMetric(str, Enum):
     """Metrics for comparing (batched) HVP / IHVP result vectors."""
 
     ABSOLUTE_L2_DIFF = "absolute_l2_diff"  # ||v_1 - v_2||
