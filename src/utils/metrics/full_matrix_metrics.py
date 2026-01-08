@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 
-class FullMatrixMetric(Enum):
+class FullMatrixMetric(str, Enum):
     """Metrics for comparing full Hessian matrices."""
 
     # Element-wise norms

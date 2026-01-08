@@ -9,14 +9,6 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.config import HessianApproximator
-from src.hessians.computer.ekfac import EKFACComputer
-from src.hessians.computer.fim import FIMComputer
-from src.hessians.computer.fim_block import FIMBlockComputer
-from src.hessians.computer.gnh import GNHComputer
-from src.hessians.computer.hessian import HessianComputer
-from src.hessians.computer.hessian_block import BlockHessianComputer
-from src.hessians.computer.kfac import KFACComputer
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
@@ -264,14 +256,3 @@ class HessianEstimator(ABC):
 
         true_hessian = comparison_matrix + damping * jnp.eye(kfac_hessian.shape[0])
         return metric(true_hessian, kfac_hessian)
-
-
-HESSIAN_COMPUTER_REGISTRY: Dict[str, type[HessianEstimator | HessianComputer]] = {
-    HessianApproximator.KFAC: KFACComputer,
-    HessianApproximator.EKFAC: EKFACComputer,
-    HessianApproximator.GNH: GNHComputer,
-    HessianApproximator.FIM: FIMComputer,
-    HessianApproximator.BLOCK_FIM: FIMBlockComputer,
-    HessianApproximator.BLOCK_HESSIAN: BlockHessianComputer,
-    HessianApproximator.EXACT: HessianComputer,
-}

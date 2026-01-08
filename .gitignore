@@ -8,6 +8,7 @@
 *.msgpack
 *.npy
 *.npz
+data/**/logs/*
 data/**/*.json
 data/**/*.csv
 data/**/*.tsv
