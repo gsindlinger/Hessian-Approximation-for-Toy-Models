@@ -5,6 +5,7 @@ from typing import Dict, Tuple
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
+from src.config import DampingStrategy
 from src.hessians.utils.data import EKFACData
 
 from ..collector import (
@@ -153,3 +154,20 @@ class EKFACApproximator(ApproximatorBase):
         Expects x as a dict with a single key, e.g. 'activations' or 'gradients'."""
         x_item = next(iter(x.values()))
         return jnp.einsum("ni,nj->ij", x_item, x_item)
+
+    @staticmethod
+    def get_damping(
+        ekfac_data: EKFACData,
+        damping_strategy: DampingStrategy,
+        factor: float,
+    ) -> Float:
+        """Get damping value for a specific layer based on mean eigenvalues."""
+        match damping_strategy:
+            case DampingStrategy.FIXED:
+                return factor
+            case DampingStrategy.AUTO_MEAN_EIGENVALUE:
+                return ekfac_data.mean_eigenvalues_aggregated * factor
+            case DampingStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION:
+                return ekfac_data.mean_corrections_aggregated * factor
+            case _:
+                raise ValueError(f"Unknown damping strategy: {damping_strategy}")

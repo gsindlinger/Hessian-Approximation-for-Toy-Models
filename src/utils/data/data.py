@@ -21,6 +21,7 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from typing_extensions import override
 from ucimlrepo import fetch_ucirepo
 
+from src.config import Datasets
 from src.utils.data.jax_dataloader import JAXDataLoader
 
 T = TypeVar("T", bound="DownloadableDataset")
@@ -280,12 +281,12 @@ class DownloadableDataset(Dataset, ABC):
     @abstractmethod
     def create_dataset_from_raw(cls, raw: RawDataset) -> Self: ...
 
-    @classmethod
+    @staticmethod
     def load(
-        cls: Type[T],
+        dataset: Datasets,
         directory: Optional[str] = None,
         store_on_disk: bool = True,
-    ) -> T:
+    ) -> Dataset:
         """
         Load a dataset from disk or download it.
 
@@ -299,19 +300,22 @@ class DownloadableDataset(Dataset, ABC):
         Returns:
             A Dataset object created from the loaded or downloaded data.
         """
+        dataset_cls = DATASET_REGISTRY.get(dataset)
+        if dataset_cls is None:
+            raise ValueError(f"Dataset '{dataset}' not found in registry.")
         if directory is not None:
             path = Path(directory)
             if path.exists():
-                raw = cls.load_from_disk(path)
+                raw = dataset_cls.load_from_disk(path)
             else:
-                raw = cls.download()
+                raw = dataset_cls.download()
                 if store_on_disk:
                     path.mkdir(parents=True, exist_ok=True)
-                    cls.save(path, raw)
+                    dataset_cls.save(path, raw)
         else:
-            raw = cls.download()
+            raw = dataset_cls.download()
 
-        return cls.create_dataset_from_raw(raw)
+        return dataset_cls.create_dataset_from_raw(raw)
 
 
 @dataclass
@@ -675,3 +679,10 @@ class CIFAR10Dataset(OpenMLDataset):
     """CIFAR-10 - 32x32 color images, 10 classes."""
 
     name = "CIFAR_10_small"
+
+
+DATASET_REGISTRY: dict[Datasets, Type[DownloadableDataset]] = {
+    Datasets.DIGITS: DigitsDataset,
+    Datasets.MNIST: MNISTDataset,
+    Datasets.CIFAR10: CIFAR10Dataset,
+}

@@ -22,7 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float
 
-from src.config import Config
+from src.config import ModelConfig
 from src.hessians.utils.data import ApproximationData, EKFACData
 from src.utils.data.jax_dataloader import JAXDataLoader
 
@@ -37,8 +37,8 @@ class ApproximatorBase(ABC):
     """Path to previously collected data"""
 
     def build(
-        self, config: Config, save_directory: Optional[str]
-    ) -> Tuple[ApproximationData, Config]:
+        self, config: ModelConfig, save_directory: Optional[str]
+    ) -> Tuple[ApproximationData, ModelConfig]:
         """Build the Hessian approximation by computing the relevant components. Optionally saves the components and config to the specified directory."""
 
         logger.info(f"Start computing components for: {self.__class__.__name__}")
@@ -57,8 +57,14 @@ class ApproximatorBase(ABC):
         Each subclass must implement this method to populate self.data accordingly."""
         pass
 
+    def data_exists(self, directory: str) -> bool:
+        """Check if the data and config files exist in the specified directory."""
+        data_path = Path(directory) / "data.npz"
+        config_path = Path(directory) / "config.json"
+        return data_path.exists() and config_path.exists()
+
     def save_data(
-        self, directory: str, data: ApproximationData, config: Config
+        self, directory: str, data: ApproximationData, config: ModelConfig
     ) -> None:
         """Saves the components data and corresponding config to the specified directory."""
         save_dir = Path(directory)
@@ -106,14 +112,14 @@ class ApproximatorBase(ABC):
     @classmethod
     def load_data(
         cls: Type[ApproximatorBase], directory: str
-    ) -> Tuple[ApproximationData, Config]:
+    ) -> Tuple[ApproximationData, ModelConfig]:
         """Loads the components data and corresponding config from the specified directory."""
         load_dir = Path(directory)
 
         # Load config
         with open(load_dir / "config.json") as f:
             config_dict = json.load(f)
-        config = Config(**config_dict)
+        config = ModelConfig(**config_dict)
 
         # Load arrays
         loaded = np.load(load_dir / "data.npz")

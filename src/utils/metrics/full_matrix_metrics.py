@@ -161,19 +161,9 @@ class FullMatrixMetric(Enum):
     ) -> Float:
         return self.compute_fn()(matrix_1, matrix_2)
 
-
-# ----------------------------------------------------------
-# Metric groups
-# ----------------------------------------------------------
-
-MATRIX_METRICS = {
-    "comprehensive": [
-        FullMatrixMetric.RELATIVE_FROBENIUS,
-        FullMatrixMetric.COSINE_SIMILARITY,
-        FullMatrixMetric.TRACE_DISTANCE,
-    ],
-    "all_matrix": list(FullMatrixMetric),
-}
+    @staticmethod
+    def all_metrics() -> List["FullMatrixMetric"]:
+        return list(FullMatrixMetric)
 
 
 # ----------------------------------------------------------
@@ -185,7 +175,7 @@ def compare_matrices(
     matrix_1, matrix_2, metrics: List[FullMatrixMetric] | None = None
 ) -> Dict[str, float]:
     if metrics is None:
-        metrics = MATRIX_METRICS["comprehensive"]
+        metrics = FullMatrixMetric.all_metrics()
 
     results = {}
 

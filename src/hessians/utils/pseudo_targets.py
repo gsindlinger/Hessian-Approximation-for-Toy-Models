@@ -7,6 +7,7 @@ from flax import linen as nn
 from jax import flatten_util
 from jaxtyping import Array, Float, Int
 
+from src.config import VectorAnalysisConfig, VectorSamplingMethod
 from src.utils.loss import get_loss_name
 from src.utils.models.approximation_model import ApproximationModel
 
@@ -65,6 +66,33 @@ def _generate_regression_pseudo_targets(
     return preds + noise
 
 
+def sample_vectors(
+    vector_config: VectorAnalysisConfig,
+    model: ApproximationModel,
+    params: Dict,
+    inputs: Float[Array, "N features"],
+    targets: Float[Array, "N n_targets"],
+    loss_fn: Callable,
+) -> Float[Array, "n_vectors num_params"]:
+    n_vectors = vector_config.num_samples
+    if vector_config.sampling_method == VectorSamplingMethod.RANDOM:
+        raise NotImplementedError("Random sampling not implemented yet.")
+    elif vector_config.sampling_method == VectorSamplingMethod.GRADIENTS:
+        return sample_gradients(
+            model=model,
+            params=params,
+            inputs=inputs,
+            targets=targets,
+            loss_fn=loss_fn,
+            n_vectors=n_vectors,
+            rng_key=jax.random.PRNGKey(vector_config.seed),
+        )
+    else:
+        raise ValueError(
+            f"Unknown vector sampling method: {vector_config.sampling_method}"
+        )
+
+
 def sample_gradients(
     model: ApproximationModel,
     params: Dict,
@@ -73,7 +101,7 @@ def sample_gradients(
     loss_fn: Callable,
     n_vectors: int = 1,
     rng_key: PRNGKey | None = None,
-):
+) -> Float[Array, "n_vectors num_params"]:
     # assert that inputs and targets have a batch dimension and matching sizes
     assert inputs.shape[0] == targets.shape[0], (
         "Inputs and targets must have the same number of samples."
