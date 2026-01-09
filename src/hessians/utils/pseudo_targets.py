@@ -73,6 +73,7 @@ def sample_vectors(
     inputs: Float[Array, "N features"],
     targets: Float[Array, "N n_targets"],
     loss_fn: Callable,
+    seed: int = 42,
 ) -> Float[Array, "n_vectors num_params"]:
     n_vectors = vector_config.num_samples
     if vector_config.sampling_method == VectorSamplingMethod.RANDOM:
@@ -85,7 +86,7 @@ def sample_vectors(
             targets=targets,
             loss_fn=loss_fn,
             n_vectors=n_vectors,
-            rng_key=jax.random.PRNGKey(vector_config.seed),
+            rng_key=jax.random.PRNGKey(seed),
         )
     else:
         raise ValueError(

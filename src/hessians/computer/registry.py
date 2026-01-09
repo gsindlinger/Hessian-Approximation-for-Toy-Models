@@ -23,6 +23,7 @@ class HessianComputerRegistry:
         HessianApproximator.BLOCK_FIM: FIMBlockComputer,
         HessianApproximator.BLOCK_HESSIAN: BlockHessianComputer,
         HessianApproximator.EXACT: HessianComputer,
+        # TODO:
     }
 
     @staticmethod

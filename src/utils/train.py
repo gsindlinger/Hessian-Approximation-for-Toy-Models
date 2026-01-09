@@ -14,8 +14,10 @@ from flax import serialization
 from flax.training import train_state
 from tqdm import tqdm
 
+from src.config import ModelConfig
 from src.utils.data.jax_dataloader import JAXDataLoader
 from src.utils.models.approximation_model import ApproximationModel
+from src.utils.models.registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -43,32 +45,6 @@ def train_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn
     return state, loss_value
 
 
-@partial(jax.jit, static_argnums=(3,))
-def eval_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn):
-    """Single evaluation step"""
-    outputs = state.apply_fn(state.params, batch_data)
-    loss_value = loss_fn(outputs, batch_targets)
-    return loss_value
-
-
-def validate_model(
-    state: train_state.TrainState,
-    dataloader,
-    loss_fn,
-):
-    """Validate model on validation set."""
-    running_loss = 0.0
-    total_samples = 0
-
-    for batch_data, batch_targets in dataloader:
-        loss_value = eval_step(state, batch_data, batch_targets, loss_fn)
-        running_loss += loss_value * batch_data.shape[0]
-        total_samples += batch_data.shape[0]
-
-    val_loss = running_loss / total_samples
-    return val_loss
-
-
 def train_model(
     model: ApproximationModel,
     dataloader: JAXDataLoader,
@@ -86,7 +62,7 @@ def train_model(
 
     loss_history = []
 
-    for _ in tqdm(range(epochs)):
+    for epoch in tqdm(range(epochs)):
         running_loss = 0.0
         total_samples = 0
 
@@ -97,6 +73,8 @@ def train_model(
 
         epoch_loss = running_loss / total_samples
         loss_history.append(epoch_loss)
+        if epoch % 10 == 0 or epoch == epochs - 1:
+            logger.info(f"Epoch {epoch + 1}, Loss: {epoch_loss:.4f}")
 
     assert isinstance(state.params, Dict)
     return model, state.params, loss_history
@@ -124,7 +102,7 @@ def _evaluate(
     return loss_fn(outputs, targets)
 
 
-def evaluate(
+def evaluate_loss(
     model: ApproximationModel,
     params: Dict,
     inputs: jnp.ndarray,
@@ -132,7 +110,6 @@ def evaluate(
     loss_fn: Callable,
 ):
     """Evaluate model."""
-
     loss_value = _evaluate(model.apply, params, inputs, targets, loss_fn)
     return float(loss_value)
 
@@ -196,24 +173,27 @@ def batch_predict(model: ApproximationModel, params: Dict, x_batch):
     return single_predict(x_batch)
 
 
-MODEL_DEFINITIONS_STR = "model_definition"
 METADATA_STR = "metadata"
 
 
 def save_model_checkpoint(
+    model_config: ModelConfig,
     params: Dict,
-    model: ApproximationModel,
-    directory: str,
     metadata: Optional[Dict] = None,
 ) -> None:
     """Save model parameters using orbax for better compatibility."""
 
     # check wheter directory exists, if not create it
+    assert model_config.directory is not None, (
+        "Model directory must be specified in ModelConfig."
+    )
+    directory = model_config.directory
+
     if not os.path.exists(directory):
         os.makedirs(directory)
 
     # first save the model and metadata as json as single json file
-    model_json = model.serialize()
+    model_json = model_config.serialize()
     if metadata is not None:
         model_json.update({METADATA_STR: metadata})
     with open(f"{directory}/model.json", "w") as f:
@@ -233,7 +213,7 @@ def save_model_checkpoint(
             logger.error(f"Failed to save model parameters: {e}")
 
 
-def check_saved_model(directory: str, model: ApproximationModel) -> bool:
+def check_saved_model(directory: str) -> bool:
     """Check if a saved model exists with saved parameters."""
     model_path = os.path.join(directory, "model.json")
     checkpoint_path_msgpack = os.path.join(directory, "checkpoint.msgpack")
@@ -249,14 +229,16 @@ def check_saved_model(directory: str, model: ApproximationModel) -> bool:
     # remove metadata before comparison
     saved_model_data.pop(METADATA_STR, None)
 
+    model_config = ModelConfig.from_dict(saved_model_data)
+
     return (
         os.path.exists(checkpoint_path_msgpack) or os.path.exists(checkpoint_path_pkl)
-    ) and json.dumps(saved_model_data) == json.dumps(model.serialize())
+    ) and model_config is not None
 
 
 def load_model_checkpoint(
-    directory: str, model: ApproximationModel
-) -> Tuple[Dict, ApproximationModel, Dict]:
+    directory: str,
+) -> Tuple[Dict, ApproximationModel, ModelConfig, Dict]:
     """Load model and parameters from checkpoint directory.
     Returns:
         params: Model parameters as a PyTree.
@@ -264,7 +246,7 @@ def load_model_checkpoint(
         metadata: Additional metadata if available, else empty dict.
     """
 
-    if not check_saved_model(directory, model=model):
+    if not check_saved_model(directory):
         raise FileNotFoundError(f"No saved model found in directory: {directory}")
 
     # Load model definition and compare with provided model
@@ -274,11 +256,11 @@ def load_model_checkpoint(
         if not metadata:
             metadata = {}
 
-        provided_model_data = model.serialize()
-        if json.dumps(model_data_serialized) != json.dumps(provided_model_data):
-            raise ValueError(
-                "Model definition in checkpoint does not match the provided model."
-            )
+        model_config = ModelConfig.from_dict(model_data_serialized)
+
+        model = ModelRegistry.get_model(
+            model_config=model_config,
+        )
 
     # Load parameters
     checkpoint_path_msgpack = os.path.join(directory, "checkpoint.msgpack")
@@ -287,7 +269,7 @@ def load_model_checkpoint(
         with open(checkpoint_path_msgpack, "rb") as f:
             bytes_input = f.read()
         params = serialization.from_bytes(
-            model.init(jax.random.PRNGKey(model.seed), jnp.ones((1, model.input_dim))),
+            model.init(jax.random.PRNGKey(0), jnp.ones((1, model.input_dim))),
             bytes_input,
         )
     elif os.path.exists(checkpoint_path_pkl):
@@ -296,4 +278,4 @@ def load_model_checkpoint(
     else:
         raise FileNotFoundError("No checkpoint file found.")
 
-    return params, model, metadata
+    return params, model, model_config, metadata

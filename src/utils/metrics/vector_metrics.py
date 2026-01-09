@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 import jax
 import jax.numpy as jnp
@@ -129,6 +129,10 @@ class VectorMetric(str, Enum):
             raise ValueError(f"Unknown reduction: {reduction}")
 
     @staticmethod
-    def all_metrics() -> list["VectorMetric"]:
+    def all_metrics(
+        exclude: Optional[List["VectorMetric"]] = None,
+    ) -> list["VectorMetric"]:
         """Return a list of all available vector metrics."""
-        return list(VectorMetric)
+        if exclude is None:
+            exclude = []
+        return [metric for metric in VectorMetric if metric not in exclude]

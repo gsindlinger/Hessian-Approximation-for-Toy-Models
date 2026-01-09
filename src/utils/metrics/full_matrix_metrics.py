@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 import jax
 import jax.numpy as jnp
@@ -162,8 +162,12 @@ class FullMatrixMetric(str, Enum):
         return self.compute_fn()(matrix_1, matrix_2)
 
     @staticmethod
-    def all_metrics() -> List["FullMatrixMetric"]:
-        return list(FullMatrixMetric)
+    def all_metrics(
+        exclude: Optional[List["FullMatrixMetric"]] = None,
+    ) -> List["FullMatrixMetric"]:
+        if exclude is None:
+            exclude = []
+        return [metric for metric in FullMatrixMetric if metric not in exclude]
 
 
 # ----------------------------------------------------------

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
@@ -13,7 +13,7 @@ from src.utils.metrics.vector_metrics import VectorMetric
 # -----------------------------------------------------------------------------
 
 
-class LOSS_TYPE(str, Enum):
+class LossType(str, Enum):
     """Types of loss functions."""
 
     MSE = "mse"
@@ -104,7 +104,6 @@ class DatasetConfig:
     name: DatasetEnum
     path: str
     test_size: float = 0.1
-    split_seed: int = 42
     store_on_disk: bool = True
 
     def __post_init__(self):
@@ -135,17 +134,21 @@ class ModelConfig:
 
     # Model architecture
     architecture: ModelArchitecture
-    hidden_dim: List[int] | List[Tuple[int, int, int]] | None
-    loss: LOSS_TYPE = LOSS_TYPE.CROSS_ENTROPY
 
-    # Model initialization
-    init_seed: int = 42
+    # Model dimensions
+    input_dim: int = field(default=0)
+    hidden_dim: List[int] | List[Tuple[int, int, int]] | None = field(default=None)
+    output_dim: int = field(default=0)
+
+    # Loss function
+    loss: LossType = LossType.CROSS_ENTROPY
 
     # Training configuration (embedded)
     training: TrainingConfig = field(default_factory=TrainingConfig)
 
     # Storage
-    directory: str | None = None
+    directory: Optional[str] = None
+
     skip_existing: bool = True
 
     def get_model_base_name(self) -> str:
@@ -158,6 +161,24 @@ class ModelConfig:
         """Get a human-readable display name for the model."""
         return f"{self.architecture.value}_hidden{self.hidden_dim}"
 
+    def serialize(self) -> dict:
+        """Serialize the ModelConfig to a dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> ModelConfig:
+        data = dict(data)
+        if isinstance(data.get("architecture"), str):
+            data["architecture"] = ModelArchitecture(data["architecture"])
+
+        if isinstance(data.get("loss"), str):
+            data["loss"] = LossType(data["loss"])
+
+        if isinstance(data.get("training"), dict):
+            data["training"] = TrainingConfig(**data["training"])
+
+        return cls(**data)
+
 
 @dataclass
 class VectorAnalysisConfig:
@@ -165,7 +186,6 @@ class VectorAnalysisConfig:
 
     num_samples: int = 1000
     sampling_method: VectorSamplingMethod = VectorSamplingMethod.GRADIENTS
-    seed: int = 42
     metrics: List[VectorMetric] = field(
         default_factory=lambda: VectorMetric.all_metrics()
     )
@@ -206,27 +226,24 @@ class HessianAnalysisConfig:
     """Configuration for Hessian approximation and analysis."""
 
     # Analysis settings
-    accuracy_threshold: float = 0.40
     vector_config: VectorAnalysisConfig = field(default_factory=VectorAnalysisConfig)
     matrix_config: MatrixAnalysisConfig = field(default_factory=MatrixAnalysisConfig)
     computation_config: HessianComputationConfig = field(
         default_factory=HessianComputationConfig
     )
 
-    # Output directories
-    base_collector_dir: str = "experiments/collector"
-    base_ekfac_dir: str = "experiments/ekfac"
+    # Storage
     results_output_dir: str = "experiments/results"
 
 
 @dataclass
-class ExperimentConfig:
-    """Top-level experiment configuration."""
+class TrainingExperimentConfig:
+    """Top-level training experiment configuration (no Hessian analysis)."""
 
     # Experiment identification
-    experiment_name: str = "experiment"
-    seed: int = 42
+    experiment_name: str = "training_experiment"
     base_output_dir: str = "experiments"
+    seed: int = 42
 
     # Dataset
     dataset: DatasetConfig = field(
@@ -235,14 +252,12 @@ class ExperimentConfig:
         )
     )
 
-    # Models to train/analyze (list of individual model configs)
+    # Models to train (list of individual model configs)
     models: List[ModelConfig] = field(default_factory=list)
 
-    # Hessian analysis (optional - only if you want to run it)
-    run_hessian_analysis: bool = True
-    hessian_analysis: HessianAnalysisConfig = field(
-        default_factory=HessianAnalysisConfig
-    )
+    # Model selection criteria
+    selection_metric: str = "val_accuracy"  # or "val_loss"
+    selection_minimize: bool = False  # False for accuracy, True for loss
 
     def get_results_dir(self) -> str:
         return os.path.join(
@@ -262,3 +277,27 @@ class ExperimentConfig:
 
     def get_dataset_dir(self) -> str:
         return os.path.join(self.base_output_dir, self.experiment_name, "datasets")
+
+
+@dataclass
+class ExperimentConfig:
+    """Top-level experiment configuration."""
+
+    # Experiment identification
+    experiment_name: str = "experiment"
+    seed: int = 42
+
+    # Dataset
+    dataset: DatasetConfig = field(
+        default_factory=lambda: DatasetConfig(
+            name=DatasetEnum.DIGITS, path="experiments/data/datasets/digits"
+        )
+    )
+
+    # List of model_directories with model checkpoints and model definition
+    models: List[str] = field(default_factory=list)
+
+    # Which different approaches to compare and analyze
+    hessian_analysis: HessianAnalysisConfig = field(
+        default_factory=HessianAnalysisConfig
+    )
