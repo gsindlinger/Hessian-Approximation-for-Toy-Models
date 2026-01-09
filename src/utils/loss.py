@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import optax
 from jaxtyping import Array, Float
 
-from src.config import LOSS_TYPE
+from src.config import LossType
 
 
 @partial(jax.jit, static_argnames=("reduction",))
@@ -29,12 +29,12 @@ def cross_entropy_loss(pred, target, reduction="mean") -> Float:
         return optax.softmax_cross_entropy_with_integer_labels(pred, target).sum()
 
 
-def get_loss(loss_str: LOSS_TYPE) -> Callable:
+def get_loss(loss_str: LossType) -> Callable:
     """Return loss function."""
     match loss_str:
-        case LOSS_TYPE.MSE:
+        case LossType.MSE:
             return mse_loss
-        case LOSS_TYPE.CROSS_ENTROPY:
+        case LossType.CROSS_ENTROPY:
             return cross_entropy_loss
         case _:
             raise ValueError(f"Unknown loss function: {loss_str}")

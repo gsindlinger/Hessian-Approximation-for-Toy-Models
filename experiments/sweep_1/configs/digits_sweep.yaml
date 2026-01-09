@@ -1,0 +1,6251 @@
+base_output_dir: experiments/sweep_1/data/
+dataset:
+  name: digits
+  path: experiments/datasets/digits
+  store_on_disk: true
+  test_size: 0.1
+experiment_name: ''
+models:
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  - 16
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  - 32
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp
+  directory: null
+  hidden_dim:
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  - 64
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 128
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  - - 5
+    - 5
+    - 5
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  - - 10
+    - 10
+    - 10
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.0005
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.001
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.002
+    optimizer: adamw
+    weight_decay: 0.01
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.0001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.001
+- architecture: mlp_swiglu
+  directory: null
+  hidden_dim:
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  - - 21
+    - 21
+    - 21
+  input_dim: 64
+  loss: cross_entropy
+  output_dim: 10
+  skip_existing: true
+  training:
+    batch_size: 32
+    epochs: 500
+    learning_rate: 0.01
+    optimizer: adamw
+    weight_decay: 0.01
+seed: 42
+selection_metric: val_accuracy
+selection_minimize: false

@@ -17,14 +17,11 @@ class ModelRegistry:
     }
 
     @staticmethod
-    def get_model(
-        model_config: ModelConfig, input_dim: int, output_dim: int, seed: int = 42
-    ) -> ApproximationModel:
+    def get_model(model_config: ModelConfig) -> ApproximationModel:
         model_cls = ModelRegistry.REGISTRY[model_config.architecture]
         hidden_dim = asdict(model_config).get("hidden_dim", [])
         return model_cls(
-            input_dim=input_dim,
-            output_dim=output_dim,
+            input_dim=model_config.input_dim,
+            output_dim=model_config.output_dim,
             hidden_dim=hidden_dim,
-            seed=seed,
         )

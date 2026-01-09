@@ -1,0 +1,45 @@
+dataset:
+  name: digits
+  path: experiments/data/datasets/digits
+  store_on_disk: true
+  test_size: 0.1
+experiment_name: ''
+hessian_analysis:
+  computation_config:
+    approximators:
+    - kfac
+    - ekfac
+    - gnh
+    - fim
+    - block_fim
+    - block_hessian
+    comparison_references:
+    - exact
+    - gnh
+    computation_types:
+    - matrix
+    - hvp
+    - ihvp
+    damping: 0.1
+    damping_strategy: auto_mean_eigenvalue
+  matrix_config:
+    metrics:
+    - frobenius
+    - relative_frobenius
+    - spectral
+    - spectral_relative
+    - cosine_similarity
+    - trace_distance
+  results_output_dir: experiments/sweep_1/data/results/hessian_analysis
+  vector_config:
+    metrics:
+    - absolute_l2_diff
+    - relative_error
+    - cosine_similarity
+    - inner_product_diff
+    - relative_energy_diff
+    - inner_product_ratio
+    num_samples: 1000
+    sampling_method: gradients
+models: []
+seed: 42

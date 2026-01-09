@@ -4,7 +4,7 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterator, Optional, Self, Type, TypeVar
+from typing import Any, Iterator, Optional, Self, Tuple, Type, TypeVar
 
 import jax
 import numpy as np
@@ -71,41 +71,17 @@ class Dataset:
     ) -> tuple[Dataset, Dataset]:
         pass
 
-    @classmethod
-    def load_from_inputs_and_targets_csv(
-        cls,
-        inputs_path: str | Path,
-        targets_path: str | Path,
-    ) -> Self:
-        """Load dataset from given input and target files. Assumes CSV format."""
-        # Throw error if files do not exist and / or are not CSV
-        inputs_path = Path(inputs_path)
-        targets_path = Path(targets_path)
-        if not inputs_path.exists() or not targets_path.exists():
-            raise FileNotFoundError(
-                f"Input file '{inputs_path}' or target file '{targets_path}' does not exist."
-            )
-        if inputs_path.suffix != ".csv" or targets_path.suffix != ".csv":
-            raise ValueError("Only CSV files are supported for loading datasets.")
-
-        inputs = pd.read_csv(inputs_path).values
-        targets = pd.read_csv(targets_path).values
-
-        return cls(
-            inputs=jnp.asarray(inputs, dtype=jnp.float32),
-            targets=jnp.asarray(targets, dtype=jnp.float32),
-        )
-
     @staticmethod
-    def normalize_data(train_data, test_data) -> tuple[Array, Array]:
-        """Standardize inputs to have zero mean and unit variance."""
+    def normalize_data(train_data: Array, test_data: Array) -> Tuple[Array, Array]:
+        """Standardize inputs using StandardScaler."""
+
         scaler = StandardScaler()
-        normalized_train_inputs = scaler.fit_transform(train_data)
-        normalized_test_inputs = scaler.transform(test_data)
+        normalized_train_data = scaler.fit_transform(train_data)  # type: ignore
+        normalized_test_data = scaler.transform(test_data)
 
         return (
-            jnp.asarray(normalized_train_inputs, dtype=train_data.dtype),
-            jnp.asarray(normalized_test_inputs, dtype=test_data.dtype),
+            jnp.asarray(normalized_train_data, dtype=train_data.dtype),
+            jnp.asarray(normalized_test_data, dtype=test_data.dtype),
         )
 
     def get_k_fold_splits(
