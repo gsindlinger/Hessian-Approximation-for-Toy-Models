@@ -5,10 +5,10 @@ CONFIG_NAME="${1:-concrete_sweep}"  # default if not provided
 
 echo "Starting training sweep with config: $CONFIG_NAME"
 
-BEST_MODELS_PATH=$(uv run python -m experiments.sweep_1.scripts.train_models \
+BEST_MODELS_PATH=$(uv run python -m experiments.train_models \
     --config-name="$CONFIG_NAME" \
     --config-path=../configs \
-    hydra.run.dir=experiments/sweep_1/logs/training/$(date +%Y%m%d-%H%M%S) | \
+    hydra.run.dir=experiments/logs/training/$(date +%Y%m%d-%H%M%S) | \
     tee /dev/tty | sed -n 's/^BEST_MODELS_YAML=//p')
 
 if [ -z "$BEST_MODELS_PATH" ]; then
@@ -30,9 +30,9 @@ fi
 echo "Using NUM_SAMPLES=$NUM_SAMPLES"
 
 
-uv run python -m experiments.sweep_1.scripts.hessian_analysis \
+uv run python -m experiments.hessian_analysis \
     --config-name=hessian_analysis \
     --config-path=../configs \
-    hydra.run.dir=experiments/sweep_1/logs/hessian_analysis/$(date +%Y%m%d-%H%M%S) \
+    hydra.run.dir=experiments/logs/hessian_analysis/$(date +%Y%m%d-%H%M%S) \
     hessian_analysis.vector_config.num_samples="$NUM_SAMPLES" \
     +override_config="$BEST_MODELS_PATH"

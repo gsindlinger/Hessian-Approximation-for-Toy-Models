@@ -3,7 +3,7 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, TypeVar
 
 import jax
 import jax.numpy as jnp
@@ -17,9 +17,11 @@ from src.utils.models.approximation_model import ApproximationModel
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 
 @dataclass
-class CollectorBase(ABC):
+class CollectorBase(ABC, Generic[T]):
     """
     Base class for collecting activations and gradients via hooks.
     """
@@ -35,7 +37,7 @@ class CollectorBase(ABC):
         batch_size: Optional[int] = None,
         save_directory: Optional[str] = None,
         try_load: bool = False,
-    ) -> Any:
+    ) -> T:
         """
         Run the model with hooks to collect activations and gradients.
 
@@ -114,14 +116,14 @@ class CollectorBase(ABC):
 
     @staticmethod
     @abstractmethod
-    def load(load_path: str) -> Dict[str, Any]:
+    def load(load_path: str) -> T:
         """
         Load collected data from the specified path.
         """
         pass
 
     @abstractmethod
-    def teardown(self) -> Dict[str, Any]:
+    def teardown(self) -> T:
         """
         Function to be called after all data has been collected.
 

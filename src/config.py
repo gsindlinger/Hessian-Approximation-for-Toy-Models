@@ -37,7 +37,7 @@ class OptimizerType(str, Enum):
     SGD_SCHEDULE_COSINE = "sgd_schedule_cosine"
 
 
-class HessianApproximator(str, Enum):
+class HessianApproximationMethod(str, Enum):
     """Available Hessian approximation methods."""
 
     EXACT = "exact"
@@ -47,17 +47,20 @@ class HessianApproximator(str, Enum):
     FIM = "fim"
     BLOCK_FIM = "block_fim"
     BLOCK_HESSIAN = "block_hessian"
+    # TKFAC = "tkfac"
+    # TEKFAC = "tekfac"
 
     @staticmethod
-    def get_approximator_list_except_exact() -> List["HessianApproximator"]:
+    def get_approximator_list_except_exact() -> List[HessianApproximationMethod]:
         """Get a list of all available Hessian approximators (except EXACT)."""
+
+        exclude_list = {
+            HessianApproximationMethod.EXACT,
+        }
         return [
-            HessianApproximator.KFAC,
-            HessianApproximator.EKFAC,
-            HessianApproximator.GNH,
-            HessianApproximator.FIM,
-            HessianApproximator.BLOCK_FIM,
-            HessianApproximator.BLOCK_HESSIAN,
+            approximator
+            for approximator in HessianApproximationMethod
+            if approximator not in exclude_list
         ]
 
 
@@ -204,11 +207,14 @@ class MatrixAnalysisConfig:
 class HessianComputationConfig:
     """Configuration specifying which Hessian computations to perform."""
 
-    approximators: List[HessianApproximator] = field(
-        default_factory=lambda: HessianApproximator.get_approximator_list_except_exact()
+    approximators: List[HessianApproximationMethod] = field(
+        default_factory=lambda: HessianApproximationMethod.get_approximator_list_except_exact()
     )
-    comparison_references: List[HessianApproximator] = field(
-        default_factory=lambda: [HessianApproximator.EXACT, HessianApproximator.GNH]
+    comparison_references: List[HessianApproximationMethod] = field(
+        default_factory=lambda: [
+            HessianApproximationMethod.EXACT,
+            HessianApproximationMethod.GNH,
+        ]
     )
     computation_types: List[ComputationType] = field(
         default_factory=lambda: [

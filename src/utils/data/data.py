@@ -49,6 +49,9 @@ class Dataset:
 
     def replace_targets(self, new_targets: Array) -> Dataset:
         """Replace the targets of the dataset with new targets."""
+        assert new_targets.shape == self.targets.shape, (
+            "New targets must have the same shape as existing targets."
+        )
         return Dataset(
             inputs=self.inputs,
             targets=new_targets,

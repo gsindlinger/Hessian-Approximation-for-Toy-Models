@@ -1,7 +1,7 @@
 from collections.abc import Callable
-from typing import Dict
+from typing import Dict, Tuple
 
-from src.config import HessianApproximator
+from src.config import HessianApproximationMethod
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.fim import FIMComputer
@@ -10,25 +10,45 @@ from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.hessian_block import BlockHessianComputer
 from src.hessians.computer.kfac import KFACComputer
+from src.hessians.utils.data import DataActivationsGradients, ModelContext
 
 
 class HessianComputerRegistry:
     REGISTRY: Dict[
-        HessianApproximator, Callable[..., HessianEstimator | HessianComputer]
+        HessianApproximationMethod, Callable[..., HessianEstimator | HessianComputer]
     ] = {
-        HessianApproximator.KFAC: KFACComputer,
-        HessianApproximator.EKFAC: EKFACComputer,
-        HessianApproximator.GNH: GNHComputer,
-        HessianApproximator.FIM: FIMComputer,
-        HessianApproximator.BLOCK_FIM: FIMBlockComputer,
-        HessianApproximator.BLOCK_HESSIAN: BlockHessianComputer,
-        HessianApproximator.EXACT: HessianComputer,
-        # TODO:
+        HessianApproximationMethod.KFAC: KFACComputer,
+        HessianApproximationMethod.EKFAC: EKFACComputer,
+        HessianApproximationMethod.GNH: GNHComputer,
+        HessianApproximationMethod.FIM: FIMComputer,
+        HessianApproximationMethod.BLOCK_FIM: FIMBlockComputer,
+        HessianApproximationMethod.BLOCK_HESSIAN: BlockHessianComputer,
+        HessianApproximationMethod.EXACT: HessianComputer,
+        # HessianApproximator.TKFAC: EKFACComputer,
+        # HessianApproximator.TEKFAC: ETKFACComputer,
     }
 
     @staticmethod
     def get_computer(
-        approximator: HessianApproximator, *args, **kwargs
-    ) -> HessianEstimator:
+        approximator: HessianApproximationMethod,
+        compute_context: ModelContext
+        | Tuple[DataActivationsGradients, DataActivationsGradients],
+    ) -> HessianEstimator | HessianComputer:
         computer_cls = HessianComputerRegistry.REGISTRY[approximator]
-        return computer_cls(*args, **kwargs)  # type: ignore
+        return computer_cls(compute_context=compute_context)
+
+    @staticmethod
+    def get_compute_context(
+        approximator: HessianApproximationMethod,
+        collector_data: Tuple[DataActivationsGradients, DataActivationsGradients],
+        model_ctx: ModelContext,
+    ):
+        """Get the appropriate data for each approximator type."""
+        if approximator in [
+            HessianApproximationMethod.GNH,
+            HessianApproximationMethod.BLOCK_HESSIAN,
+            HessianApproximationMethod.EXACT,
+        ]:
+            return model_ctx
+        else:
+            return collector_data

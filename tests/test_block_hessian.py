@@ -1,20 +1,24 @@
-from typing import Dict, Tuple
+from typing import Callable, Dict, Tuple
 
 import jax
 import jax.numpy as jnp
 import pytest
 
-from src.config import Config, HessianApproximationConfig, ModelConfig
+from src.config import (
+    LossType,
+    ModelArchitecture,
+    ModelConfig,
+    OptimizerType,
+    TrainingConfig,
+)
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.hessian_block import BlockHessianComputer
-from src.hessians.utils.data import ModelContext
+from src.hessians.utils.data import BlockHessianData, ModelContext
 from src.utils.data.data import Dataset, RandomClassificationDataset
-from src.utils.data.jax_dataloader import JAXDataLoader
-from src.utils.loss import cross_entropy_loss
+from src.utils.loss import get_loss
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.models.linear_model import LinearModel
-from src.utils.models.mlp import MLP
+from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
 from src.utils.train import train_model
 
@@ -24,80 +28,86 @@ from src.utils.train import train_model
 
 
 @pytest.fixture(params=["linear", "multi_layer"], scope="session")
-def config(request):
-    hidden_dim = [] if request.param == "linear" else [10]
-    return Config(
-        dataset_path="random",
-        seed=123,
-        model=ModelConfig(
-            model_name="linear" if request.param == "linear" else "multi_layer",
-            metadata={"hidden_dim": hidden_dim},
+def config(request, tmp_path_factory):
+    """Create model configuration for testing."""
+    base = tmp_path_factory.mktemp(request.param)
+
+    # Set architecture and hidden dimensions based on parameter
+    if request.param == "linear":
+        architecture = ModelArchitecture.LINEAR
+        hidden_dim = []
+    else:
+        architecture = ModelArchitecture.MLP
+        hidden_dim = [10]
+
+    return ModelConfig(
+        architecture=architecture,
+        input_dim=10,  # Will be updated from dataset
+        hidden_dim=hidden_dim if hidden_dim else None,
+        output_dim=2,  # Will be updated from dataset
+        loss=LossType.CROSS_ENTROPY,
+        training=TrainingConfig(
+            learning_rate=1e-3,
+            optimizer=OptimizerType.SGD,
+            epochs=30,
+            batch_size=128,
         ),
-        hessian_approximation=HessianApproximationConfig(
-            method="BlockHessian",
-        ),
+        directory=str(base / "model"),
     )
 
 
 @pytest.fixture(scope="session")
-def dataset(config: Config) -> Dataset:
+def dataset() -> Dataset:
+    """Create a random classification dataset for testing."""
     return RandomClassificationDataset(
         n_samples=1000,
         n_features=10,
         n_informative=5,
         n_classes=2,
-        seed=config.seed,
+        seed=123,
     )
 
 
 @pytest.fixture(scope="session")
-def model_and_params(
-    config: Config, dataset: Dataset
-) -> Tuple[ApproximationModel, Dict]:
-    config.model.metadata = config.model.metadata or {}
-    hidden_dim = config.model.metadata["hidden_dim"]
-    assert hidden_dim is not None, "hidden_dim must be specified in config metadata"
+def model_params_loss(
+    config: ModelConfig, dataset: Dataset
+) -> Tuple[ApproximationModel, Dict, Callable]:
+    """Train a model and return it with its parameters and loss function."""
+    # Update dimensions from dataset
+    config.input_dim = dataset.input_dim()
+    config.output_dim = dataset.output_dim()
 
-    if config.model.model_name == "linear":
-        model = LinearModel(
-            input_dim=dataset.input_dim(),
-            output_dim=dataset.output_dim(),
-            hidden_dim=hidden_dim,
-            seed=config.seed,
-        )
-    else:
-        model = MLP(
-            input_dim=dataset.input_dim(),
-            output_dim=dataset.output_dim(),
-            hidden_dim=hidden_dim,
-            seed=config.seed,
-        )
+    # Get model from registry
+    model = ModelRegistry.get_model(model_config=config)
 
+    # Train the model
     model, params, _ = train_model(
         model,
-        dataset.get_dataloader(
-            batch_size=JAXDataLoader.get_batch_size(),
-            seed=config.seed,
+        dataset.get_dataloader(batch_size=config.training.batch_size, seed=123),
+        loss_fn=get_loss(config.loss),
+        optimizer=optimizer(
+            config.training.optimizer, lr=config.training.learning_rate
         ),
-        loss_fn=cross_entropy_loss,
-        optimizer=optimizer("sgd", lr=1e-3),
-        epochs=30,
+        epochs=config.training.epochs,
     )
 
-    return model, params
+    return model, params, get_loss(config.loss)
 
 
 @pytest.fixture(scope="session")
 def model_context(
-    dataset: Dataset,
-    model_and_params: Tuple[ApproximationModel, Dict],
+    dataset: Dataset, model_params_loss: Tuple[ApproximationModel, Dict, Callable]
 ) -> ModelContext:
-    model, params = model_and_params
+    """Create a ModelContext for Hessian computation."""
+    model, params, loss = model_params_loss
+
+    # For Hessian computation, we don't need pseudo targets
+    # ModelContext is created directly with the original dataset
     return ModelContext.create(
-        model=model,
         dataset=dataset,
+        model=model,
         params=params,
-        loss_fn=cross_entropy_loss,
+        loss_fn=loss,
     )
 
 
@@ -114,11 +124,10 @@ def test_block_hessian_computation(
     Block-diagonal Hessian must match the full Hessian
     for a linear model.
     """
-
     damping = 1e-6
 
-    block_hessian = BlockHessianComputer(model_context)
-    full_hessian = HessianComputer(model_context)
+    block_hessian = BlockHessianComputer(compute_context=model_context).build()
+    full_hessian = HessianComputer(compute_context=model_context)
 
     H_block = block_hessian.estimate_hessian(damping=damping)
     H_full = full_hessian.compute_hessian(damping=damping)
@@ -132,42 +141,50 @@ def test_block_hessian_computation(
 def test_block_hessian_computation_multi_layer(
     model_context: ModelContext,
 ):
+    """
+    Test that block-diagonal Hessian matches full Hessian block-by-block
+    for multi-layer models.
+    """
     damping = 1e-5
 
-    # Precompute
-    block_hessian = BlockHessianComputer(model_context)
-    full_hessian = HessianComputer(model_context)
+    # Compute Hessians
+    block_hessian = BlockHessianComputer(compute_context=model_context).build()
+    full_hessian = HessianComputer(compute_context=model_context)
 
     H_block = block_hessian.estimate_hessian(damping=damping)
     H_full = full_hessian.compute_hessian(damping=damping)
 
-    for block in block_hessian.blocks:
+    # Check each block matches
+    assert isinstance(block_hessian.precomputed_data, BlockHessianData), (
+        "Precomputed data should be of type BlockHessianData."
+    )
+    for block in block_hessian.precomputed_data.blocks:
         start, end = block
-        # extract block corresponding to layer
+        # Extract block corresponding to layer
         H_full_block = H_full[start:end, start:end]
         H_block_block = H_block[start:end, start:end]
 
         assert jnp.allclose(H_block_block, H_full_block, atol=1e-5), (
-            "Block-diagonal Hessian block does not match full Hessian block for multi-layer model."
+            f"Block-diagonal Hessian block [{start}:{end}] does not match "
+            f"full Hessian block for multi-layer model."
         )
 
 
 @pytest.mark.parametrize("config", ["linear"], indirect=True)
 def test_block_hessian_hvp_ihvp_roundtrip_linear(
-    config: Config,
     model_context: ModelContext,
 ):
     """
-    HVP / IHVP consistency and round-trip checks between
-    BlockHessianComputer and true HessianComputer.
+    Check HVP / IHVP consistency and round trips between
+    BlockHessianComputer and full HessianComputer for linear models.
     """
-    if config.model.metadata["hidden_dim"] != []:  # type: ignore
-        pytest.skip("Only applicable for linear model")
-
     damping = 1e-2
 
-    block_hessian = BlockHessianComputer(model_context)
-    full_hessian = HessianComputer(model_context)
+    # ------------------------------------------------------------------
+    # Setup computers
+    # ------------------------------------------------------------------
+    block_hessian = BlockHessianComputer(compute_context=model_context).build()
+    full_hessian = HessianComputer(compute_context=model_context)
 
     params_flat = model_context.params_flat
     v_ones = jnp.ones_like(params_flat)
@@ -208,7 +225,7 @@ def test_block_hessian_hvp_ihvp_roundtrip_linear(
     )
 
     # ------------------------------------------------------------------
-    # Round-trip sanity: H(H^{-1} v) ≈ v
+    # Round-trip sanity check:  H(H^{-1} v) ≈ v
     # ------------------------------------------------------------------
     roundtrip_block = block_hessian.estimate_hvp(ihvp_block_r, damping=damping)
     roundtrip_full = full_hessian.compute_hvp(ihvp_full_r, damping=damping)

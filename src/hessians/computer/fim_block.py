@@ -4,15 +4,12 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.hessians.computer.computer import HessianEstimator
-from src.hessians.utils.data import DataActivationsGradients
+from src.hessians.computer.computer import CollectorBasedHessianEstimator
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
-class FIMBlockComputer(HessianEstimator):
-    compute_context: DataActivationsGradients
-
-    def estimate_hessian(
+class FIMBlockComputer(CollectorBasedHessianEstimator):
+    def _estimate_hessian(
         self,
         damping: Optional[Float] = None,
     ) -> Float[Array, "n_params n_params"]:
@@ -22,17 +19,17 @@ class FIMBlockComputer(HessianEstimator):
         damping = 0.0 if damping is None else damping
         return self._compute_fim_block(
             activations=[
-                self.compute_context.activations[layer_name]
-                for layer_name in self.compute_context.layer_names
+                self.compute_context[0].activations[layer_name]
+                for layer_name in self.compute_context[0].layer_names
             ],
             gradients=[
-                self.compute_context.gradients[layer_name]
-                for layer_name in self.compute_context.layer_names
+                self.compute_context[0].gradients[layer_name]
+                for layer_name in self.compute_context[0].layer_names
             ],
             damping=damping,
         )
 
-    def estimate_hvp(
+    def _estimate_hvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
@@ -43,18 +40,18 @@ class FIMBlockComputer(HessianEstimator):
         damping = 0.0 if damping is None else damping
         return self._compute_fim_block_hvp(
             activations=[
-                self.compute_context.activations[layer_name]
-                for layer_name in self.compute_context.layer_names
+                self.compute_context[0].activations[layer_name]
+                for layer_name in self.compute_context[0].layer_names
             ],
             gradients=[
-                self.compute_context.gradients[layer_name]
-                for layer_name in self.compute_context.layer_names
+                self.compute_context[0].gradients[layer_name]
+                for layer_name in self.compute_context[0].layer_names
             ],
             vectors=vectors,
             damping=damping,
         )
 
-    def compare_full_hessian_estimates(
+    def _compare_full_hessian_estimates(
         self,
         comparison_matrix: Float[Array, "n_params n_params"],
         damping: Optional[Float] = None,
@@ -69,18 +66,18 @@ class FIMBlockComputer(HessianEstimator):
             comparison_matrix,
             self._compute_fim_block(
                 activations=[
-                    self.compute_context.activations[layer_name]
-                    for layer_name in self.compute_context.layer_names
+                    self.compute_context[0].activations[layer_name]
+                    for layer_name in self.compute_context[0].layer_names
                 ],
                 gradients=[
-                    self.compute_context.gradients[layer_name]
-                    for layer_name in self.compute_context.layer_names
+                    self.compute_context[0].gradients[layer_name]
+                    for layer_name in self.compute_context[0].layer_names
                 ],
                 damping=damping,
             ),
         )
 
-    def estimate_ihvp(
+    def _estimate_ihvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
@@ -91,12 +88,12 @@ class FIMBlockComputer(HessianEstimator):
         damping = 0.0 if damping is None else damping
         return self._compute_fim_block_ihvp(
             activations=[
-                self.compute_context.activations[layer]
-                for layer in self.compute_context.layer_names
+                self.compute_context[0].activations[layer]
+                for layer in self.compute_context[0].layer_names
             ],
             gradients=[
-                self.compute_context.gradients[layer]
-                for layer in self.compute_context.layer_names
+                self.compute_context[0].gradients[layer]
+                for layer in self.compute_context[0].layer_names
             ],
             vectors=vectors,
             damping=damping,

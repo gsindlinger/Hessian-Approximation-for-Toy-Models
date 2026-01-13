@@ -1,7 +1,73 @@
 """
 Training-only script that trains models and selects best performers.
 
+This script trains multiple model configurations with different hyperparameters,
+evaluates their performance, and selects the best model for each architecture
+based on validation metrics. It outputs results in both JSON (full training log)
+and YAML (best models only) formats for downstream analysis.
+
 Uses TrainingExperimentConfig instead of full ExperimentConfig.
+
+Usage:
+    # Basic run with default config (must include the configs of the models to train)
+    python -m experiments.train_models \
+        --config-name=training_experiment \
+        --config-path=../configs
+    
+    # Run specific training sweep (e.g., a predefined sweep for the CONCRETE dataset)
+    python -m experiments.train_models \
+        --config-name=concrete_sweep \
+        --config-path=../configs
+    
+    # Override individual parts of the config from command line, e.g., dataset & seed
+    python -m experiments.train_models \
+        --config-name=training_experiment \
+        --config-path=../configs \
+        dataset.name=CONCRETE \
+        dataset.path=experiments/data/datasets/concrete \
+        seed=42
+    
+    # Capture output in shell pipeline (for automation)
+    BEST_MODELS=$(python -m experiments.train_models \
+        --config-name=concrete_sweep \
+        --config-path=../configs | \
+        sed -n 's/^BEST_MODELS_YAML=//p')
+    
+Model Selection:
+    Models are grouped by architecture and structure (architecture + hidden_dim).
+    Within each group, the model with the best validation metric is selected.
+    
+    For classification (CROSS_ENTROPY loss):
+        - Default metric: val_accuracy (higher is better)
+        - Alternative: val_loss (lower is better)
+    
+    For regression (MSE loss):
+        - Default metric: val_loss (lower is better)
+
+Output Files:
+    1. Full training results (JSON):
+       experiments/results/<experiment_name>/training/<timestamp>.json
+       Contains all trained models with their metrics and hyperparameters
+    
+    2. Best models (YAML):
+       experiments /results/<experiment_name>/best_models/<timestamp>.yaml
+       Contains only the best model paths for each architecture group
+       Format compatible with hessian_analysis.py's override_config parameter
+    
+    3. Model checkpoints:
+       experiments/results/<experiment_name>/models/<model_name>_<hash>/
+       Contains checkpoint.msgpack, model.json for each model
+
+Shell Output:
+    The script prints "BEST_MODELS_YAML=<path>" to stdout for pipeline capture.
+    This path can be parsed and passed to subsequent analysis scripts.
+
+Notes:
+    - Input/output data is normalized for regression tasks (MSE loss)
+    - Model directories are generated using config hash for reproducibility
+    - Models can be skipped if already trained (set skip_existing=true)
+    - Hydra manages logging; use hydra.run.dir to specify log location
+    - Each model is assigned a unique directory based on its config hash
 """
 
 import json
@@ -17,11 +83,11 @@ import yaml
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 
-from experiments.sweep_1.scripts.config_builder import (
+from experiments.config_builder import (
     normalize_for_yaml,
     register_enum_representers,
 )
-from experiments.sweep_1.scripts.utils import cleanup_memory, to_dataclass
+from experiments.utils import cleanup_memory, to_dataclass
 from src.config import LossType, ModelConfig, TrainingExperimentConfig
 from src.utils.data.data import Dataset, DownloadableDataset
 from src.utils.loss import get_loss
@@ -70,9 +136,10 @@ def train_single_model(
     model_config: ModelConfig,
     dataset: Dataset,
     seed: int,
+    test_size: float,
 ) -> Dict:
     """Train a single model and return its results."""
-    train_ds, val_ds = dataset.train_test_split(test_size=0.1, seed=seed)
+    train_ds, val_ds = dataset.train_test_split(test_size=test_size, seed=seed)
     train_inputs, train_targets = train_ds.inputs, train_ds.targets
     val_inputs, val_targets = val_ds.inputs, val_ds.targets
 
@@ -274,7 +341,12 @@ def main(cfg: DictConfig):
         )
         logger.info(f"{'=' * 70}")
 
-        result = train_single_model(model_config, dataset, config.seed)
+        result = train_single_model(
+            model_config=model_config,
+            dataset=dataset,
+            seed=config.seed,
+            test_size=config.dataset.test_size,
+        )
         training_results.append(result)
 
     # Summary of all results

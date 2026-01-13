@@ -7,14 +7,14 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.hessians.computer.computer import HessianEstimator
+from src.hessians.computer.computer import ModelBasedHessianEstimator
 from src.hessians.utils.data import ModelContext
 from src.utils.loss import get_loss_name
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
 @dataclass
-class GNHComputer(HessianEstimator):
+class GNHComputer(ModelBasedHessianEstimator):
     """
     Gauss-Newton Hessian approximation.
 
@@ -29,9 +29,7 @@ class GNHComputer(HessianEstimator):
     GNH is always positive semi-definite, unlike the full Hessian.
     """
 
-    compute_context: ModelContext
-
-    def estimate_hessian(
+    def _estimate_hessian(
         self,
         damping: Optional[Float] = None,
     ) -> jnp.ndarray:
@@ -47,7 +45,7 @@ class GNHComputer(HessianEstimator):
         else:
             return self._compute_gnh(self.compute_context, damping)
 
-    def compare_full_hessian_estimates(
+    def _compare_full_hessian_estimates(
         self,
         comparison_matrix: Float[Array, "n_params n_params"],
         damping: Optional[Float] = None,
@@ -63,7 +61,7 @@ class GNHComputer(HessianEstimator):
             self._compute_gnh(self.compute_context, damping),
         )
 
-    def estimate_hvp(
+    def _estimate_hvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
@@ -84,7 +82,7 @@ class GNHComputer(HessianEstimator):
         )
         return result_2D.squeeze(0) if is_single else result_2D
 
-    def estimate_ihvp(
+    def _estimate_ihvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,

@@ -1,22 +1,26 @@
-from typing import Dict, Tuple
+from typing import Callable, Dict, Tuple
 
 import jax
 import jax.numpy as jnp
 import pytest
 
-from src.config import Config, HessianApproximationConfig, ModelConfig
+from src.config import (
+    LossType,
+    ModelArchitecture,
+    ModelConfig,
+    OptimizerType,
+    TrainingConfig,
+)
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.computer.fim_block import FIMBlockComputer
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
-from src.hessians.utils.pseudo_targets import generate_pseudo_targets
+from src.hessians.utils.pseudo_targets import generate_pseudo_targets, sample_gradients
 from src.utils.data.data import Dataset, RandomClassificationDataset
-from src.utils.data.jax_dataloader import JAXDataLoader
-from src.utils.loss import cross_entropy_loss
+from src.utils.loss import cross_entropy_loss, get_loss
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.models.linear_model import LinearModel
-from src.utils.models.mlp import MLP
+from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
 from src.utils.train import train_model
 
@@ -27,172 +31,184 @@ from src.utils.train import train_model
 
 @pytest.fixture(params=["linear", "multi_layer"], scope="session")
 def config(request, tmp_path_factory):
+    """Create model configuration for testing."""
     base = tmp_path_factory.mktemp(request.param)
 
-    hidden_dim = [] if request.param == "linear" else [10]
+    # Set architecture and hidden dimensions based on parameter
+    if request.param == "linear":
+        architecture = ModelArchitecture.LINEAR
+        hidden_dim = []
+    else:
+        architecture = ModelArchitecture.MLP
+        hidden_dim = [10]
 
-    return Config(
-        dataset_path="random",
-        seed=123,
-        model=ModelConfig(
-            model_name="test",
-            directory=str(base / "model"),
-            metadata={
-                "hidden_dim": hidden_dim,
-                "activation": "relu" if request.param == "multi_layer" else None,
-            },
+    return ModelConfig(
+        architecture=architecture,
+        input_dim=-1,  # Will be updated from dataset
+        hidden_dim=hidden_dim if hidden_dim else None,
+        output_dim=-1,  # Will be updated from dataset
+        loss=LossType.CROSS_ENTROPY,
+        training=TrainingConfig(
+            learning_rate=1e-3,
+            optimizer=OptimizerType.SGD,
+            epochs=30,
+            batch_size=128,
         ),
-        hessian_approximation=HessianApproximationConfig(
-            method="EKFAC",
-            directory=str(base / "fim_block"),
-        ),
+        directory=str(base / "model"),
     )
 
 
 @pytest.fixture(scope="session")
-def dataset(config: Config) -> Dataset:
+def dataset() -> Dataset:
+    """Create a random classification dataset for testing."""
     return RandomClassificationDataset(
         n_samples=1000,
         n_features=10,
         n_informative=5,
         n_classes=2,
-        seed=config.seed,
+        seed=123,
     )
 
 
 @pytest.fixture(scope="session")
-def model_and_params(
-    config: Config, dataset: Dataset
-) -> Tuple[ApproximationModel, Dict]:
-    config.model.metadata = config.model.metadata or {}
-    hidden_dim = config.model.metadata["hidden_dim"]
+def model_params_loss(
+    config: ModelConfig, dataset: Dataset
+) -> Tuple[ApproximationModel, Dict, Callable]:
+    """Train a model and return it with its parameters."""
+    # Update dimensions from dataset
+    config.input_dim = dataset.input_dim()
+    config.output_dim = dataset.output_dim()
 
-    model = LinearModel(
-        input_dim=dataset.input_dim(),
-        output_dim=dataset.output_dim(),
-        hidden_dim=hidden_dim,
-        seed=config.seed,
-    )
+    # Get model from registry
+    model = ModelRegistry.get_model(model_config=config)
 
+    # Train the model
     model, params, _ = train_model(
         model,
-        dataset.get_dataloader(
-            batch_size=JAXDataLoader.get_batch_size(), seed=config.seed
+        dataset.get_dataloader(batch_size=config.training.batch_size, seed=123),
+        loss_fn=get_loss(config.loss),
+        optimizer=optimizer(
+            config.training.optimizer, lr=config.training.learning_rate
         ),
-        loss_fn=cross_entropy_loss,
-        optimizer=optimizer("sgd", lr=1e-3),
-        epochs=30,
+        epochs=config.training.epochs,
     )
 
-    return model, params
+    return model, params, get_loss(config.loss)
 
 
 @pytest.fixture(scope="session")
 def model_context(
-    dataset: Dataset, model_and_params: Tuple[ApproximationModel, Dict]
+    dataset: Dataset, model_params_loss: Tuple[ApproximationModel, Dict, Callable]
 ) -> ModelContext:
-    model, params = model_and_params
+    """Create a ModelContext with pseudo targets."""
+    model, params, loss = model_params_loss
 
     pseudo_targets = generate_pseudo_targets(
         model=model,
         params=params,
         inputs=dataset.inputs,
-        loss_fn=cross_entropy_loss,
+        loss_fn=loss,
         rng_key=jax.random.PRNGKey(seed=0),
     )
     return ModelContext.create(
         dataset=dataset.replace_targets(pseudo_targets),
         model=model,
         params=params,
-        loss_fn=cross_entropy_loss,
+        loss_fn=loss,
     )
+
+
+def _collect_fim_data(
+    config: ModelConfig,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    model_context: ModelContext,
+    suffix: str = "",
+) -> DataActivationsGradients:
+    """Helper function to collect FIM data with optional directory suffix."""
+    base = config.directory
+    assert base is not None, "Model directory must be set in config"
+
+    collector_dir = f"{base}/collector{suffix}"
+
+    def load_data():
+        return CollectorActivationsGradients.load(collector_dir)
+
+    collector_data: DataActivationsGradients | None = None
+
+    try:
+        collector_data = load_data()
+    except (ValueError, FileNotFoundError):
+        pass
+
+    if collector_data is None:
+        model, params, loss = model_params_loss
+        collector = CollectorActivationsGradients(
+            model=model,
+            params=params,
+            loss_fn=loss,
+        )
+
+        assert model_context.targets is not None, (
+            "ModelContext targets must not be None"
+        )
+
+        collector_data = collector.collect(
+            inputs=model_context.inputs,
+            targets=model_context.targets,
+            save_directory=collector_dir,
+            try_load=True,
+        )
+
+        assert collector_data is not None, "Failed to collect FIM data."
+
+    return collector_data
 
 
 @pytest.fixture(scope="session")
 def fim_data(
-    config: Config, model_and_params: Tuple[MLP, Dict], model_context: ModelContext
-):
-    base = config.hessian_approximation.directory
-    assert base is not None, "Hessian approximation directory must be set in config"
-
-    collector_data: DataActivationsGradients | None = None
-
-    def load_data():
-        return CollectorActivationsGradients.load(base)
-
-    try:
-        collector_data = load_data()
-    except (ValueError, FileNotFoundError):
-        pass
-
-    collector = CollectorActivationsGradients(
-        model=model_and_params[0],
-        params=model_and_params[1],
-        loss_fn=cross_entropy_loss,
-    )
-
-    assert model_context.targets is not None, "ModelContext targets must not be None"
-
-    collector.collect(
-        inputs=model_context.inputs,
-        targets=model_context.targets,
-        save_directory=base,
-    )
-
-    if collector_data is None:
-        collector_data = load_data()
-    return collector_data
+    config: ModelConfig,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    model_context: ModelContext,
+) -> DataActivationsGradients:
+    """Collect FIM data for model (used by linear tests)."""
+    return _collect_fim_data(config, model_params_loss, model_context)
 
 
 @pytest.fixture(scope="session")
 def fim_data_multi_layer(
-    config: Config, model_and_params: Tuple[MLP, Dict], model_context: ModelContext
-):
-    base = config.hessian_approximation.directory + "_multi_layer"  # type: ignore
-    assert base is not None, "Hessian approximation directory must be set in config"
-
-    def load_data():
-        return CollectorActivationsGradients.load(base)
-
-    collector_data: DataActivationsGradients | None = None
-
-    try:
-        collector_data = load_data()
-    except (ValueError, FileNotFoundError):
-        pass
-
-    collector = CollectorActivationsGradients(
-        model=model_and_params[0],
-        params=model_and_params[1],
-        loss_fn=cross_entropy_loss,
+    config: ModelConfig,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    model_context: ModelContext,
+) -> DataActivationsGradients:
+    """Collect FIM data for multi-layer model."""
+    return _collect_fim_data(
+        config, model_params_loss, model_context, suffix="_multi_layer"
     )
 
-    assert model_context.targets is not None, "ModelContext targets must not be None"
 
-    collector.collect(
-        inputs=model_context.inputs,
-        targets=model_context.targets,
-        save_directory=base,
-    )
-
-    if collector_data is None:
-        collector_data = load_data()
-
-    return collector_data
+# ---------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("config", ["linear"], indirect=True)
 def test_fim_block_computation(
     fim_data: DataActivationsGradients,
 ):
+    """Test that FIM block approximation matches full FIM for linear models."""
     damping = 1e-5
 
     # Compute FIM block using FIMBlockComputer
-    block_fim_computer = FIMBlockComputer(compute_context=fim_data)
+    block_fim_computer = FIMBlockComputer(
+        compute_context=(fim_data, DataActivationsGradients())
+    ).build()
+
     block_fim = block_fim_computer.estimate_hessian(damping=damping)
 
     # Compute full FIM using standard method for comparison
-    fim_computer = FIMComputer(compute_context=fim_data)
+    fim_computer = FIMComputer(
+        compute_context=(fim_data, DataActivationsGradients())
+    ).build()
     full_fim = fim_computer.estimate_hessian(damping=damping)
 
     assert jnp.allclose(block_fim, full_fim, atol=1e-5), (
@@ -204,19 +220,24 @@ def test_fim_block_computation(
 def test_fim_block_computation_multi_layer(
     fim_data_multi_layer: DataActivationsGradients,
 ):
+    """Test that FIM block approximation matches full FIM block-by-block for multi-layer models."""
     damping = 1e-5
 
     # Compute FIM block using FIMBlockComputer
-    block_fim_computer = FIMBlockComputer(compute_context=fim_data_multi_layer)
+    block_fim_computer = FIMBlockComputer(
+        compute_context=(fim_data_multi_layer, DataActivationsGradients())
+    ).build()
     block_fim = block_fim_computer.estimate_hessian(damping=damping)
 
     # Compute full FIM using standard method for comparison
-    fim_computer = FIMComputer(compute_context=fim_data_multi_layer)
+    fim_computer = FIMComputer(
+        compute_context=(fim_data_multi_layer, DataActivationsGradients())
+    ).build()
     full_fim = fim_computer.estimate_hessian(damping=damping)
 
     start_idx = 0
     for layer_name in fim_data_multi_layer.layer_names:
-        # extract block corresponding to layer
+        # Extract block corresponding to layer
         end_idx = next(iter(fim_data_multi_layer.gradients.values())).shape[1]  # type: ignore
 
         block_fim_block = block_fim[
@@ -235,21 +256,32 @@ def test_fim_block_computation_multi_layer(
 @pytest.mark.parametrize("config", ["linear"], indirect=True)
 def test_fim_block_hvp_ihvp_roundtrip_linear(
     fim_data: DataActivationsGradients,
+    model_params_loss: Tuple[ApproximationModel, Dict],
+    dataset: Dataset,
 ):
     """
     Check HVP / IHVP consistency and round trips between
     FIMBlockComputer and full FIMComputer for linear models.
     """
-
     damping = 1e-2
 
     # ------------------------------------------------------------------
     # Setup computers
     # ------------------------------------------------------------------
-    block_fim = FIMBlockComputer(compute_context=fim_data)
-    full_fim = FIMComputer(compute_context=fim_data)
+    block_fim = FIMBlockComputer(
+        compute_context=(fim_data, DataActivationsGradients())
+    ).build()
+    full_fim = FIMComputer(
+        compute_context=(fim_data, DataActivationsGradients())
+    ).build()
 
-    gradients_concatenated = full_fim.build_full_gradients()
+    gradients_concatenated = sample_gradients(
+        model=model_params_loss[0],
+        params=model_params_loss[1],
+        inputs=dataset.inputs,
+        targets=dataset.targets,
+        loss_fn=cross_entropy_loss,
+    )
 
     v_ones = jnp.ones_like(gradients_concatenated)
     v_rand = jax.random.normal(jax.random.PRNGKey(0), gradients_concatenated.shape)
@@ -257,15 +289,15 @@ def test_fim_block_hvp_ihvp_roundtrip_linear(
     # ------------------------------------------------------------------
     # HVP consistency
     # ------------------------------------------------------------------
-    hvp_block = block_fim.estimate_hvp(v_ones, damping=damping)
-    hvp_full = full_fim.estimate_hvp(v_ones, damping=damping)
+    hvp_block = block_fim._estimate_hvp(v_ones, damping=damping)
+    hvp_full = full_fim._estimate_hvp(v_ones, damping=damping)
 
     assert VectorMetric.RELATIVE_ERROR.compute(hvp_block, hvp_full) < 1e-4, (
         "Block FIM HVP does not match full FIM HVP (ones vector)"
     )
 
-    hvp_block_r = block_fim.estimate_hvp(v_rand, damping=damping)
-    hvp_full_r = full_fim.estimate_hvp(v_rand, damping=damping)
+    hvp_block_r = block_fim._estimate_hvp(v_rand, damping=damping)
+    hvp_full_r = full_fim._estimate_hvp(v_rand, damping=damping)
 
     assert VectorMetric.RELATIVE_ERROR.compute(hvp_block_r, hvp_full_r) < 1e-4, (
         "Block FIM HVP does not match full FIM HVP (random vector)"
@@ -274,21 +306,25 @@ def test_fim_block_hvp_ihvp_roundtrip_linear(
     # ------------------------------------------------------------------
     # IHVP consistency
     # ------------------------------------------------------------------
-    ihvp_block = block_fim.estimate_ihvp(v_ones, damping=damping)
-    ihvp_full = full_fim.estimate_ihvp(v_ones, damping=damping)
+    ihvp_block = block_fim._estimate_ihvp(v_ones, damping=damping)
+    ihvp_full = full_fim._estimate_ihvp(v_ones, damping=damping)
 
     assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block, ihvp_full) < 1e-4, (
         "Block FIM IHVP does not match full FIM IHVP (ones vector)"
     )
 
-    ihvp_block_r = block_fim.estimate_ihvp(v_rand, damping=damping)
-    ihvp_full_r = full_fim.estimate_ihvp(v_rand, damping=damping)
+    ihvp_block_r = block_fim._estimate_ihvp(v_rand, damping=damping)
+    ihvp_full_r = full_fim._estimate_ihvp(v_rand, damping=damping)
+
+    assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block_r, ihvp_full_r) < 1e-4, (
+        "Block FIM IHVP does not match full FIM IHVP (random vector)"
+    )
 
     # ------------------------------------------------------------------
-    # Round-trip sanity check: H(H^{-1} v) ≈ v
+    # Round-trip sanity check:  H(H^{-1} v) ≈ v
     # ------------------------------------------------------------------
-    roundtrip_block = block_fim.estimate_hvp(ihvp_block_r, damping=damping)
-    roundtrip_full = full_fim.estimate_hvp(ihvp_full_r, damping=damping)
+    roundtrip_block = block_fim._estimate_hvp(ihvp_block_r, damping=damping)
+    roundtrip_full = full_fim._estimate_hvp(ihvp_full_r, damping=damping)
 
     assert VectorMetric.RELATIVE_ERROR.compute(roundtrip_block, v_rand) < 1e-4, (
         "Block FIM round-trip H(H^{-1}v) failed"

@@ -18,7 +18,7 @@ class MLP(ApproximationModel):
     Note: Assumes for simplicity no bias in the layers.
     """
 
-    hidden_dim: list[int] = field(default_factory=list)
+    hidden_dim: list[int] | None = field(default_factory=list)
     activation: str = "relu"
 
     @nn.compact
@@ -29,9 +29,10 @@ class MLP(ApproximationModel):
         Returns the logits of the model.
         """
         act_fn = self.get_activation(self.activation)
-        for i, h in enumerate(self.hidden_dim):
-            x = nn.Dense(h, use_bias=False, name=f"linear_{i}")(x)
-            x = act_fn(x)
+        if self.hidden_dim is not None:
+            for i, h in enumerate(self.hidden_dim):
+                x = nn.Dense(h, use_bias=False, name=f"linear_{i}")(x)
+                x = act_fn(x)
         final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
         return final_logits
 
@@ -55,18 +56,19 @@ class MLP(ApproximationModel):
         activations = x
         act_fn = self.get_activation(self.activation)
 
-        for i, h in enumerate(self.hidden_dim):
-            layer_module = nn.Dense(features=h, use_bias=False, name=f"linear_{i}")
-            layer_params = self.variables["params"][f"linear_{i}"]
+        if self.hidden_dim is not None:
+            for i, h in enumerate(self.hidden_dim):
+                layer_module = nn.Dense(features=h, use_bias=False, name=f"linear_{i}")
+                layer_params = self.variables["params"][f"linear_{i}"]
 
-            activations = layer_wrapper_vjp(
-                lambda p, a: pure_apply_fn(layer_module, p, a),
-                layer_params,
-                activations,
-                f"linear_{i}",
-                collector,
-            )
-            activations = act_fn(activations)
+                activations = layer_wrapper_vjp(
+                    lambda p, a: pure_apply_fn(layer_module, p, a),
+                    layer_params,
+                    activations,
+                    f"linear_{i}",
+                    collector,
+                )
+                activations = act_fn(activations)
 
         output_module = nn.Dense(
             features=self.output_dim, use_bias=False, name="output"

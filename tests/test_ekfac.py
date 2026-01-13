@@ -1,30 +1,33 @@
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 import pytest
 from jax import flatten_util
 from jax.random import PRNGKey
-from jaxtyping import Float
 
-from src.config import Config, HessianApproximationConfig, ModelConfig
-from src.hessians.approximator.ekfac import EKFACApproximator
+from src.config import (
+    LossType,
+    ModelArchitecture,
+    ModelConfig,
+    OptimizerType,
+    TrainingConfig,
+)
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.kfac import KFACComputer
-from src.hessians.utils.data import EKFACData, ModelContext
+from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import (
     generate_pseudo_targets,
     sample_gradients,
 )
 from src.utils.data.data import Dataset, RandomClassificationDataset
-from src.utils.data.jax_dataloader import JAXDataLoader
-from src.utils.loss import cross_entropy_loss
-from src.utils.models.linear_model import LinearModel
-from src.utils.models.mlp import MLP
+from src.utils.loss import get_loss
+from src.utils.models.approximation_model import ApproximationModel
+from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
 from src.utils.train import train_model
 
@@ -35,152 +38,165 @@ from src.utils.train import train_model
 
 @pytest.fixture(params=["linear", "multi_layer"], scope="session")
 def config(request, tmp_path_factory):
+    """Create model configuration for testing."""
     base = tmp_path_factory.mktemp(request.param)
 
-    hidden_dim = [] if request.param == "linear" else [5]
+    if request.param == "linear":
+        architecture = ModelArchitecture.LINEAR
+        hidden_dim = []
+    else:
+        architecture = ModelArchitecture.MLP
+        hidden_dim = [5]
 
-    return Config(
-        dataset_path="random",
-        seed=123,
-        model=ModelConfig(
-            model_name="test",
-            directory=str(base / "model"),
-            metadata={"hidden_dim": hidden_dim, "activation": "relu"},
+    return ModelConfig(
+        architecture=architecture,
+        input_dim=10,  # Will be updated from dataset
+        hidden_dim=hidden_dim if hidden_dim else None,
+        output_dim=2,  # Will be updated from dataset
+        loss=LossType.CROSS_ENTROPY,
+        training=TrainingConfig(
+            learning_rate=1e-3,
+            optimizer=OptimizerType.SGD,
+            epochs=30,
+            batch_size=128,
         ),
-        hessian_approximation=HessianApproximationConfig(
-            method="EKFAC",
-            directory=str(base / "hessian"),
-        ),
+        directory=str(base / "model"),
     )
 
 
 @pytest.fixture(scope="session")
-def dataset(config: Config) -> Dataset:
+def dataset() -> Dataset:
+    """Create a random classification dataset for testing."""
     return RandomClassificationDataset(
         n_samples=1000,
         n_features=10,
         n_informative=5,
         n_classes=2,
-        seed=config.seed,
+        seed=123,
     )
 
 
 @pytest.fixture(scope="session")
-def model_and_params(config: Config, dataset: Dataset):
-    config.model.metadata = config.model.metadata or {}
-    hidden_dim = config.model.metadata["hidden_dim"]
+def model_params_loss(
+    config: ModelConfig, dataset: Dataset
+) -> Tuple[ApproximationModel, Dict, Callable]:
+    """Train a model and return it with its parameters and loss function."""
+    # Update dimensions from dataset
+    config.input_dim = dataset.input_dim()
+    config.output_dim = dataset.output_dim()
 
-    if hidden_dim:
-        model = MLP(
-            input_dim=dataset.input_dim(),
-            output_dim=dataset.output_dim(),
-            hidden_dim=hidden_dim,
-            activation="relu",
-            seed=config.seed,
-        )
-    else:
-        model = LinearModel(
-            input_dim=dataset.input_dim(),
-            output_dim=dataset.output_dim(),
-            hidden_dim=[],
-            seed=config.seed,
-        )
+    # Get model from registry
+    model = ModelRegistry.get_model(model_config=config)
 
+    # Train the model
     model, params, _ = train_model(
         model,
-        dataset.get_dataloader(
-            batch_size=JAXDataLoader.get_batch_size(), seed=config.seed
+        dataset.get_dataloader(batch_size=config.training.batch_size, seed=123),
+        loss_fn=get_loss(config.loss),
+        optimizer=optimizer(
+            config.training.optimizer, lr=config.training.learning_rate
         ),
-        loss_fn=cross_entropy_loss,
-        optimizer=optimizer("sgd", lr=1e-3),
-        epochs=30,
+        epochs=config.training.epochs,
     )
 
-    return model, params
+    return model, params, get_loss(config.loss)
 
 
 @pytest.fixture(scope="session")
-def model_context(dataset: Dataset, model_and_params: Tuple[MLP, Dict]):
-    model, params = model_and_params
+def model_context(
+    dataset: Dataset, model_params_loss: Tuple[ApproximationModel, Dict, Callable]
+) -> ModelContext:
+    """Create a ModelContext for Hessian computation."""
+    model, params, loss = model_params_loss
+
     return ModelContext.create(
         dataset=dataset,
         model=model,
         params=params,
-        loss_fn=cross_entropy_loss,
+        loss_fn=loss,
+    )
+
+
+def _collector_data(
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    config: ModelConfig,
+    dataset: Dataset,
+    run_suffix: str,
+    batch_size: Optional[int] = None,
+    use_pseudo_targets: bool = True,
+) -> Tuple[DataActivationsGradients, DataActivationsGradients]:
+    """Collect EK-FAC data with two runs."""
+    model, params, loss = model_params_loss
+
+    base_dir = config.directory
+    assert base_dir is not None, "Model directory must be set"
+
+    run1_dir = f"{base_dir}/ekfac{run_suffix}/run1"
+    run2_dir = f"{base_dir}/ekfac{run_suffix}/run2"
+
+    collector_data = []
+
+    # Generate pseudo targets for each run
+    for run_idx, run_dir in enumerate([run1_dir, run2_dir]):
+        if use_pseudo_targets:
+            targets = generate_pseudo_targets(
+                model=model,
+                inputs=dataset.inputs,
+                params=params,
+                loss_fn=loss,
+                rng_key=PRNGKey(run_idx),
+            )
+        else:
+            targets = dataset.targets
+
+        collector = CollectorActivationsGradients(
+            model=model,
+            params=params,
+            loss_fn=loss,
+        )
+
+        collector_data_temp = collector.collect(
+            inputs=dataset.inputs,
+            targets=targets,
+            save_directory=run_dir,
+            batch_size=batch_size,
+            try_load=True,
+        )
+
+        collector_data.append(collector_data_temp)
+
+    return tuple(collector_data)
+
+
+@pytest.fixture(scope="session")
+def collector_data_single(
+    config: ModelConfig,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    dataset: Dataset,
+) -> Tuple[DataActivationsGradients, DataActivationsGradients]:
+    """Collect EK-FAC data (single batch collection)."""
+    return _collector_data(
+        config=config,
+        model_params_loss=model_params_loss,
+        dataset=dataset,
+        run_suffix="_single",
     )
 
 
 @pytest.fixture(scope="session")
-def ekfac_data(
-    config: Config, model_and_params: Tuple[MLP, Dict], model_context: ModelContext
-):
-    base = config.hessian_approximation.directory
-    assert base is not None, "Hessian approximation directory must be set in config"
-    collector_dir = base + "/collector_ekfac_single"
-
-    # if directory already exists, skip collection
-    try:
-        EKFACApproximator.load_data(base)
-        return EKFACApproximator.load_data(base)[0]
-    except FileNotFoundError:
-        pass
-
-    collector = CollectorActivationsGradients(
-        model=model_and_params[0],
-        params=model_and_params[1],
-        loss_fn=cross_entropy_loss,
-    )
-
-    assert model_context.targets is not None, "ModelContext targets must not be None"
-    collector.collect(
-        inputs=model_context.inputs,
-        targets=model_context.targets,
-        save_directory=collector_dir,
-    )
-
-    ekfac_approximator = EKFACApproximator(collector_dir, collector_dir)
-    ekfac_approximator.build(config, base)
-    ekfac_data, _ = EKFACApproximator.load_data(base)
-
-    assert isinstance(ekfac_data, EKFACData)
-    return ekfac_data
-
-
-@pytest.fixture(scope="session")
-def ekfac_data_batched(
-    config: Config, model_and_params: Tuple[MLP, Dict], model_context: ModelContext
-):
-    base = config.hessian_approximation.directory
-    assert base is not None, "Hessian approximation directory must be set in config"
-    collector_dir = base + "/collector_ekfac_batched"
-
-    # if directory already exists, skip collection
-    try:
-        EKFACApproximator.load_data(base)
-        return EKFACApproximator.load_data(base)[0]
-    except FileNotFoundError:
-        pass
-
-    collector = CollectorActivationsGradients(
-        model=model_and_params[0],
-        params=model_and_params[1],
-        loss_fn=cross_entropy_loss,
-    )
-
-    assert model_context.targets is not None, "ModelContext targets must not be None"
-    collector.collect(
-        inputs=model_context.inputs,
-        targets=model_context.targets,
-        save_directory=collector_dir,
+def collector_data_batched(
+    config: ModelConfig,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    dataset: Dataset,
+) -> Tuple[DataActivationsGradients, DataActivationsGradients]:
+    """Collect EK-FAC data (batched collection)."""
+    return _collector_data(
+        config=config,
+        model_params_loss=model_params_loss,
+        dataset=dataset,
+        run_suffix="_batched",
         batch_size=128,
     )
-
-    ekfac_approximator = EKFACApproximator(collector_dir, collector_dir)
-    ekfac_approximator.build(config, base)
-    ekfac_data, _ = EKFACApproximator.load_data(base)
-
-    assert isinstance(ekfac_data, EKFACData)
-    return ekfac_data
 
 
 # ---------------------------------------------------------------------
@@ -189,7 +205,7 @@ def ekfac_data_batched(
 
 
 def compute_full_implicit_matrices(
-    computer: HessianEstimator, dim: int, damping: Optional[Float]
+    computer: HessianEstimator, dim: int, damping: float
 ):
     """Helper method to compute full Hessian and Inverse Hessian matrices by applying hvp / ihvp estimation to basis vectors."""
     hvp_cols, ihvp_cols = [], []
@@ -206,59 +222,31 @@ def compute_full_implicit_matrices(
 
 
 def test_ekfac_existence(
-    config: Config, model_and_params: Tuple[MLP, Dict], dataset: Dataset
+    config: ModelConfig,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    dataset: Dataset,
 ):
-    """Test if Hessian approximation can be computed without errors.
-    Replicates the proper application scenario with pseudo-targets.
+    """Test if EKFAC Hessian approximation can be computed without errors."""
 
-    This test also ensures that the data is loaded initially"""
-    model, params = model_and_params
-
-    data1 = dataset.replace_targets(
-        generate_pseudo_targets(
-            model=model,
-            inputs=dataset.inputs,
-            params=params,
-            loss_fn=cross_entropy_loss,
-            rng_key=PRNGKey(0),
-        )
-    )
-    data2 = dataset.replace_targets(
-        generate_pseudo_targets(
-            model=model,
-            inputs=dataset.inputs,
-            params=params,
-            loss_fn=cross_entropy_loss,
-            rng_key=PRNGKey(1),
-        )
+    collector_data = _collector_data(
+        config=config,
+        model_params_loss=model_params_loss,
+        dataset=dataset,
+        run_suffix="_existence_test",
     )
 
-    base = config.hessian_approximation.directory
-    assert base is not None, "Hessian approximation directory must be set in config"
-    run1, run2 = base + "/run1", base + "/run2"
-
-    collector = CollectorActivationsGradients(model, params, loss_fn=cross_entropy_loss)
-    collector.collect(
-        inputs=data1.inputs,
-        targets=data1.targets,
-        save_directory=run1,
-    )
-    collector.collect(
-        inputs=data2.inputs,
-        targets=data2.targets,
-        save_directory=run2,
+    ekfac_computer = EKFACComputer(compute_context=collector_data).build(
+        base_directory=config.directory
     )
 
-    EKFACApproximator(run1, run2).build(config, base)
-    ekfac_data, _ = EKFACApproximator.load_data(base)
-
-    assert isinstance(ekfac_data, EKFACData)
-    H = EKFACComputer(ekfac_data).estimate_hessian(damping=1e-3)
+    H = ekfac_computer.estimate_hessian(damping=1e-3)
     assert jnp.isfinite(H).all()
 
 
 def test_gradient_consistency(
-    config: Config, model_and_params: Tuple[MLP, Dict], dataset: Dataset
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    config: ModelConfig,
+    dataset: Dataset,
 ):
     """
     Verify E-KFAC collector vs true gradients (sanity test).
@@ -270,32 +258,24 @@ def test_gradient_consistency(
         - a_{l-1} = activations of the previous layer
         - s_l = preactivation gradients = ∇_{W_l a_{l-1}} log p(y | x; θ)
     """
-    model, params = model_and_params
+    model, params, loss = model_params_loss
 
-    loss_fn = cross_entropy_loss
+    collector_data_single = _collector_data(
+        config=config,
+        model_params_loss=model_params_loss,
+        dataset=dataset,
+        run_suffix="_gradient_consistency",
+        use_pseudo_targets=False,
+    )
 
     def loss_fn_apply(p):
-        return loss_fn(model.apply(p, dataset.inputs), dataset.targets, reduction="sum")
+        return loss(model.apply(p, dataset.inputs), dataset.targets, reduction="sum")
 
     gt_grads = jax.grad(loss_fn_apply)(params)
 
-    assert config.hessian_approximation.directory is not None, (
-        "Hessian approximation directory must be set in config"
-    )
-    collector_dir = config.hessian_approximation.directory + "/collector"
-    collector = CollectorActivationsGradients(model, params, loss_fn=loss_fn)
-    collector.collect(
-        inputs=dataset.inputs,
-        targets=dataset.targets,
-        save_directory=collector_dir,
-    )
-
-    collector_data = CollectorActivationsGradients.load(collector_dir)
-    activations, gradients, layer_names = (
-        collector_data.activations,
-        collector_data.gradients,
-        collector_data.layer_names,
-    )
+    activations = collector_data_single[0].activations
+    gradients = collector_data_single[0].gradients
+    layer_names = collector_data_single[0].layer_names
 
     for i, (layer, gt) in enumerate(gt_grads["params"].items()):
         assert layer == layer_names[i], "Layer names do not match"
@@ -310,52 +290,51 @@ def test_gradient_consistency(
 
 
 def test_kfac_hessian(
-    config: Config,
     model_context: ModelContext,
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """Test whether K-FAC Hessian can be computed without errors and matches dimensions of other methods."""
     damping = 0.1
-    H = HessianComputer(model_context).compute_hessian(damping=damping)
-    G = GNHComputer(model_context).estimate_hessian(damping=damping)
 
-    base = config.hessian_approximation.directory
-    assert base is not None, "Hessian approximation directory must be set in config"
-
-    ekfac_data = EKFACApproximator.load_data(base)[0]
-
-    assert isinstance(ekfac_data, EKFACData)
-    K = KFACComputer(ekfac_data).estimate_hessian(damping=damping)
+    H = HessianComputer(compute_context=model_context).compute_hessian(damping=damping)
+    G = (
+        GNHComputer(compute_context=model_context)
+        .build()
+        .estimate_hessian(damping=damping)
+    )
+    K = (
+        KFACComputer(compute_context=collector_data_single)
+        .build()
+        .estimate_hessian(damping=damping)
+    )
 
     assert H.shape == G.shape == K.shape
 
 
 def test_kfac_via_kron_equals_eigenvector_method(
-    config: Config, ekfac_data: EKFACData, model_context: ModelContext
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """This test verifies that the K-FAC Hessian computed via the Kronecker product of the covariances directly equals
-    the K-FAC Hessian computed via the eigenvector method implemented in KFACComputer.
+    the K-FAC Hessian computed via the eigenvector method implemented in KFACComputer."""
 
-    It can also easily extend to compare with the true hessian in order to check whether the order A kron G vs. G kron A is correct.
-    """
-    base = config.hessian_approximation.directory
-    assert base is not None, "Hessian approximation directory must be set in config"
-    run1, run2 = base + "/run1", base + "/run2"
-    ekfac_approximator = EKFACApproximator(run1, run2)
-
-    collector_data = CollectorActivationsGradients.load(directory=run1)
     activations, gradients, layer_names = (
-        collector_data.activations,
-        collector_data.gradients,
-        collector_data.layer_names,
+        collector_data_single[0].activations,
+        collector_data_single[0].gradients,
+        collector_data_single[0].layer_names,
     )
 
-    covariances_activations, covariances_gradients = (
-        ekfac_approximator.compute_covariances(
-            activations=activations, gradients=gradients
-        )
-    )
+    # Compute covariances manually
+    covariances_activations = {}
+    covariances_gradients = {}
 
-    # compute hessian by the block diagonal hessian of the kronecker product of the covariances
+    for layer in layer_names:
+        a = activations[layer]
+        g = gradients[layer]
+
+        covariances_activations[layer] = (a.T @ a) / a.shape[0]
+        covariances_gradients[layer] = (g.T @ g) / g.shape[0]
+
+    # Compute hessian by the block diagonal hessian of the kronecker product of the covariances
     H_kron_blocks = {}
     for layer in layer_names:
         A_cov = covariances_activations[layer]
@@ -364,11 +343,9 @@ def test_kfac_via_kron_equals_eigenvector_method(
 
     kron_comparison_method_H = jax.scipy.linalg.block_diag(*H_kron_blocks.values())
 
-    # compute hessian by the eigenvector method
-    eigenvector_method = KFACComputer(ekfac_data)
-    eigenvector_method_H = eigenvector_method.estimate_hessian(
-        damping=0.0
-    )  # to ensure everything is computed
+    # Use the
+    eigenvector_method = KFACComputer(compute_context=collector_data_single).build()
+    eigenvector_method_H = eigenvector_method.estimate_hessian(damping=0.0)
 
     assert jnp.allclose(
         kron_comparison_method_H,
@@ -376,87 +353,93 @@ def test_kfac_via_kron_equals_eigenvector_method(
         atol=1e-5,
     )
 
-    # Optionally, compare with true hessian if desired
-    # true_hessian_H = HessianComputer(model_context).compute_hessian(damping=0.0)
 
-    # import matplotlib.pyplot as plt
-
-    # plt.figure(figsize=(12, 4))
-    # plt.subplot(1, 3, 1)
-    # plt.title("Kron Comparison Method H")
-    # plt.imshow(kron_comparison_method_H, cmap="viridis")
-    # plt.colorbar()
-    # plt.subplot(1, 3, 2)
-    # plt.title("Eigenvector Method H")
-    # plt.imshow(eigenvector_method_H, cmap="viridis")
-    # plt.colorbar()
-    # plt.subplot(1, 3, 3)
-    # plt.title("True Hessian H")
-    # plt.imshow(true_hessian_H, cmap="viridis")
-    # plt.colorbar()
-    # plt.tight_layout()
-    # plt.show()
-
-
-def test_ekfac_hessian(model_context: ModelContext, ekfac_data: EKFACData):
+def test_ekfac_hessian(
+    model_context: ModelContext,
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
+):
+    """Test whether EK-FAC Hessian can be computed and matches dimensions."""
     damping = 0.1
 
-    H = HessianComputer(model_context).compute_hessian(damping=damping)
-    G = GNHComputer(model_context).estimate_hessian(damping=damping)
-
-    E = EKFACComputer(ekfac_data).estimate_hessian(damping=damping)
+    H = HessianComputer(compute_context=model_context).compute_hessian(damping=damping)
+    G = (
+        GNHComputer(compute_context=model_context)
+        .build()
+        .estimate_hessian(damping=damping)
+    )
+    E = (
+        EKFACComputer(compute_context=collector_data_single)
+        .build()
+        .estimate_hessian(damping=damping)
+    )
 
     assert H.shape == G.shape == E.shape
 
 
 def test_collector_batched_vs_single_consistency(
-    ekfac_data: EKFACData,
-    ekfac_data_batched: EKFACData,
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
+    collector_data_batched: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """Test whether EK-FAC data collected with different batch sizes is consistent."""
-    for layer in ekfac_data.layer_names:
-        A_single = ekfac_data.activation_eigenvectors[layer]
-        G_single = ekfac_data.gradient_eigenvectors[layer]
-        L_single = ekfac_data.eigenvalue_corrections[layer]
 
-        A_batched = ekfac_data_batched.activation_eigenvectors[layer]
-        G_batched = ekfac_data_batched.gradient_eigenvectors[layer]
-        L_batched = ekfac_data_batched.eigenvalue_corrections[layer]
+    ekfac_computer = EKFACComputer(
+        compute_context=(collector_data_single[0], collector_data_single[1])
+    ).build()
+
+    ekfac_computer_batched = EKFACComputer(
+        compute_context=(collector_data_batched[0], collector_data_batched[1])
+    ).build()
+
+    assert isinstance(ekfac_computer, EKFACComputer)
+    assert isinstance(ekfac_computer_batched, EKFACComputer)
+
+    for layer in ekfac_computer.compute_context[0].layer_names:
+        A_single = ekfac_computer.precomputed_data.activation_eigenvectors[layer]
+        G_single = ekfac_computer.precomputed_data.gradient_eigenvectors[layer]
+        L_single = ekfac_computer.precomputed_data.eigenvalue_corrections[layer]
+
+        A_batched = ekfac_computer_batched.precomputed_data.activation_eigenvectors[
+            layer
+        ]
+        G_batched = ekfac_computer_batched.precomputed_data.gradient_eigenvectors[layer]
+        L_batched = ekfac_computer_batched.precomputed_data.eigenvalue_corrections[
+            layer
+        ]
 
         assert jnp.allclose(A_single, A_batched, rtol=1e-6, atol=1e-5)
         assert jnp.allclose(G_single, G_batched, rtol=1e-6, atol=1e-5)
         assert jnp.allclose(L_single, L_batched, rtol=1e-6, atol=1e-5)
 
-    # compute end to end hessian and compare
+    # Compute end to end hessian and compare
     damping = 0.1
-    comp_single = EKFACComputer(ekfac_data)
-    comp_batched = EKFACComputer(ekfac_data_batched)
 
-    H_single = comp_single.estimate_hessian(damping)
-    H_batched = comp_batched.estimate_hessian(damping)
+    H_single = ekfac_computer.estimate_hessian(damping)
+    H_batched = ekfac_computer_batched.estimate_hessian(damping)
 
     assert jnp.allclose(H_single, H_batched, rtol=1e-6, atol=1e-5)
 
 
 def test_ekfac_hvp_ihvp_consistency(
     model_context: ModelContext,
-    model_and_params: Tuple[MLP, Dict],
-    ekfac_data: EKFACData,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """
     Test whether the HVP and IHVP implementations are consistent
     in the sense of comparing it with multiplication of the full hessian / inverse hessian with the test vector.
     """
-    comp = EKFACComputer(ekfac_data)
+    comp = EKFACComputer(compute_context=collector_data_single).build()
+    assert isinstance(comp, EKFACComputer)
     damping = 0.1
 
+    model, params, loss = model_params_loss
     assert model_context.targets is not None, "ModelContext targets must not be None"
     v = sample_gradients(
-        model=model_and_params[0],
-        params=model_and_params[1],
+        model=model,
+        params=params,
         inputs=model_context.inputs,
         targets=model_context.targets,
-        loss_fn=cross_entropy_loss,
+        loss_fn=loss,
         rng_key=PRNGKey(0),
         n_vectors=1,
     )[0]
@@ -474,21 +457,24 @@ def test_ekfac_hvp_ihvp_consistency(
 
 def test_kfac_hvp_ihvp_consistency(
     model_context: ModelContext,
-    model_and_params: Tuple[MLP, Dict],
-    ekfac_data: EKFACData,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """Test whether the HVP and IHVP implementations are consistent
     in the sense of comparing it with multiplication of the full hessian / inverse hessian with the test vector."""
-    comp = KFACComputer(ekfac_data)
+    comp = KFACComputer(compute_context=collector_data_single).build()
+    assert isinstance(comp, KFACComputer)
     damping = 0.1
 
     assert model_context.targets is not None, "ModelContext targets must not be None"
+
+    model, params, loss = model_params_loss
     v = sample_gradients(
-        model=model_and_params[0],
-        params=model_and_params[1],
+        model=model,
+        params=params,
         inputs=model_context.inputs,
         targets=model_context.targets,
-        loss_fn=cross_entropy_loss,
+        loss_fn=loss,
         rng_key=PRNGKey(1),
         n_vectors=1,
     )[0]
@@ -505,13 +491,16 @@ def test_kfac_hvp_ihvp_consistency(
 
 
 def test_ekfac_explicit_vs_implicit_equivalence(
-    model_and_params: Tuple[MLP, Dict], ekfac_data: EKFACData
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """Test whether the EK-FAC Hessian explicit computation matches the implicit computation via HVPs / IHVPs on basis vectors."""
-    comp = EKFACComputer(ekfac_data)
+    comp = EKFACComputer(compute_context=collector_data_single).build()
+    assert isinstance(comp, EKFACComputer)
     damping = 0.1
 
-    dim = flatten_util.ravel_pytree(model_and_params[1])[0].shape[0]
+    _, params, _ = model_params_loss
+    dim = flatten_util.ravel_pytree(params)[0].shape[0]
 
     H = comp.estimate_hessian(damping)
     Hinv = comp.estimate_inverse_hessian(damping)
@@ -522,13 +511,16 @@ def test_ekfac_explicit_vs_implicit_equivalence(
 
 
 def test_kfac_explicit_vs_implicit_equivalence(
-    model_and_params: Tuple[MLP, Dict], ekfac_data: EKFACData
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """Test whether the K-FAC Hessian explicit computation matches the implicit computation via HVPs / IHVPs on basis vectors."""
-    comp = KFACComputer(ekfac_data)
+    comp = KFACComputer(compute_context=collector_data_single).build()
+    assert isinstance(comp, KFACComputer)
     damping = 0.1
 
-    dim = flatten_util.ravel_pytree(model_and_params[1])[0].shape[0]
+    _, params, _ = model_params_loss
+    dim = flatten_util.ravel_pytree(params)[0].shape[0]
 
     H = comp.estimate_hessian(damping)
     Hinv = comp.estimate_inverse_hessian(damping)
@@ -541,20 +533,22 @@ def test_kfac_explicit_vs_implicit_equivalence(
 
 def test_ekfac_ihvp_batched_shape_and_finiteness(
     model_context: ModelContext,
-    model_and_params: Tuple[MLP, Dict],
-    ekfac_data: EKFACData,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """Test whether EK-FAC IHVP with batched vectors works and produces finite outputs of correct shape."""
-    comp = EKFACComputer(ekfac_data)
+    comp = EKFACComputer(compute_context=collector_data_single).build()
+    assert isinstance(comp, EKFACComputer)
     damping = 0.1
 
+    model, params, loss = model_params_loss
     assert model_context.targets is not None, "ModelContext targets must not be None"
     V = sample_gradients(
-        model=model_and_params[0],
-        params=model_and_params[1],
+        model=model,
+        params=params,
         inputs=model_context.inputs,
         targets=model_context.targets,
-        loss_fn=cross_entropy_loss,
+        loss_fn=loss,
         rng_key=PRNGKey(2),
         n_vectors=5,
     )
@@ -567,20 +561,21 @@ def test_ekfac_ihvp_batched_shape_and_finiteness(
 
 def test_ekfac_ihvp_batched_vs_single_consistency(
     model_context: ModelContext,
-    model_and_params: Tuple[MLP, Dict],
-    ekfac_data: EKFACData,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """Test whether EK-FAC IHVP with batched vectors is consistent with single vector IHVP computation."""
-    comp = EKFACComputer(ekfac_data)
+    comp = EKFACComputer(compute_context=collector_data_single).build()
     damping = 0.1
 
+    model, params, loss = model_params_loss
     assert model_context.targets is not None, "ModelContext targets must not be None"
     V = sample_gradients(
-        model=model_and_params[0],
-        params=model_and_params[1],
+        model=model,
+        params=params,
         inputs=model_context.inputs,
         targets=model_context.targets,
-        loss_fn=cross_entropy_loss,
+        loss_fn=loss,
         rng_key=PRNGKey(3),
         n_vectors=4,
     )
@@ -593,25 +588,23 @@ def test_ekfac_ihvp_batched_vs_single_consistency(
 
 
 def test_ekfac_ihvp_hessian_roundtrip_batched(
-    config: Config, model_context: ModelContext, model_and_params: Tuple[MLP, Dict]
+    model_context: ModelContext,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    collector_data_single: Tuple[DataActivationsGradients, DataActivationsGradients],
 ):
     """Test whether EK-FAC IHVP with batched vectors is consistent in the sense of comparing it with multiplication of the full hessian / inverse hessian with the test vector."""
-    base = config.hessian_approximation.directory
-    assert base is not None
+    comp = EKFACComputer(compute_context=collector_data_single).build()
+    assert isinstance(comp, EKFACComputer)
 
-    ekfac_data = EKFACApproximator.load_data(base)[0]
-    assert isinstance(ekfac_data, EKFACData)
-
-    comp = EKFACComputer(ekfac_data)
+    model, params, loss = model_params_loss
     damping = 0.1
-
     assert model_context.targets is not None, "ModelContext targets must not be None"
     V = sample_gradients(
-        model=model_and_params[0],
-        params=model_and_params[1],
+        model=model,
+        params=params,
         inputs=model_context.inputs,
         targets=model_context.targets,
-        loss_fn=cross_entropy_loss,
+        loss_fn=loss,
         rng_key=PRNGKey(4),
         n_vectors=5,
     )
