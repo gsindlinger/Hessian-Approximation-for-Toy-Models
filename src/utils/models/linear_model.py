@@ -18,7 +18,7 @@ class LinearModel(ApproximationModel):
     Note: Assumes for simplicity no bias in the layers.
     """
 
-    hidden_dim: list[int] = field(default_factory=list)
+    hidden_dim: list[int] | None = field(default_factory=list)
 
     @nn.compact
     def __call__(
@@ -27,8 +27,9 @@ class LinearModel(ApproximationModel):
         """Forward pass of the Linear model.
         Returns the logits of the model.
         """
-        for i, h in enumerate(self.hidden_dim):
-            x = nn.Dense(h, use_bias=False, name=f"linear_{i}")(x)
+        if self.hidden_dim is not None:
+            for i, h in enumerate(self.hidden_dim):
+                x = nn.Dense(h, use_bias=False, name=f"linear_{i}")(x)
         final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
         return final_logits
 
@@ -50,9 +51,10 @@ class LinearModel(ApproximationModel):
 
         activations = x
 
-        for i, h in enumerate(self.hidden_dim):
-            layer_module = nn.Dense(features=h, use_bias=False, name=f"linear_{i}")
-            layer_params = self.variables["params"][f"linear_{i}"]
+        if self.hidden_dim is not None:
+            for i, h in enumerate(self.hidden_dim):
+                layer_module = nn.Dense(features=h, use_bias=False, name=f"linear_{i}")
+                layer_params = self.variables["params"][f"linear_{i}"]
 
             activations = layer_wrapper_vjp(
                 lambda p, a: pure_apply_fn(layer_module, p, a),

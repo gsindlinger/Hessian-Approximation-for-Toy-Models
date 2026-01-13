@@ -4,7 +4,40 @@ Standalone Hessian analysis script.
 Loads pre-trained models and performs Hessian approximation comparisons.
 Can override models from command line with models_file parameter.
 
-Usage: TODO
+Usage:
+    # Basic run with config specified in ../configs/hessian_analysis.yaml 
+    # (must include the model directories to analyze)
+    python -m experiments.hessian_analysis \\
+        --config-name=hessian_analysis \\
+        --config-path=../configs
+    
+    # Run with specific models from training output
+    python -m experiments.hessian_analysis \\
+        --config-name=hessian_analysis \\
+        --config-path=../configs \\
+        +override_config=path/to/best_models.yaml
+    
+    # Override individual config parameters, e.g., number of samples for vector analysis
+    python -m experiments.hessian_analysis \\
+        --config-name=hessian_analysis \\
+        --config-path=../configs \\
+        hessian_analysis.vector_config.num_samples=500 \\
+        +override_config=experiments/outputs/models/best_models_20240115.yaml
+    
+    # Custom output directory and log location
+    python -m experiments.hessian_analysis \\
+        --config-name=hessian_analysis \\
+        --config-path=../configs \\
+        hydra.run.dir=experiments/logs/hessian_analysis/$(date +%Y%m%d-%H%M%S) \\
+        hessian_analysis.results_output_dir=custom/output/path \\
+        +override_config=path/to/models.yaml
+
+
+Notes:
+    - The override_config parameter expects a YAML file with model paths, dataset config, and seed
+    - Vector config (num_samples) can be adjusted based on dataset size
+    - Hydra manages logging; use hydra.run.dir to specify log output location
+    - Results are saved as timestamped JSON files in hessian_analysis.results_output_dir
 """
 
 import json
@@ -12,14 +45,15 @@ import logging
 import os
 import time
 from dataclasses import asdict
-from typing import Dict, List
+from typing import Dict, Tuple
 
 import hydra
 from hydra.core.config_store import ConfigStore
 from jax.random import PRNGKey
+from jaxtyping import Array, Float
 from omegaconf import DictConfig, OmegaConf
 
-from experiments.sweep_1.scripts.utils import (
+from experiments.utils import (
     block_tree,
     cleanup_memory,
     load_experiment_override_from_yaml,
@@ -29,16 +63,15 @@ from src.config import (
     ComputationType,
     ExperimentConfig,
     HessianAnalysisConfig,
-    HessianApproximator,
     LossType,
     ModelConfig,
 )
-from src.hessians.approximator.ekfac import EKFACApproximator
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator
+from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.registry import HessianComputerRegistry
-from src.hessians.utils.data import EKFACData, ModelContext
+from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import generate_pseudo_targets, sample_vectors
 from src.utils.data.data import Dataset, DownloadableDataset
 from src.utils.loss import get_loss
@@ -50,19 +83,17 @@ cs = ConfigStore.instance()
 cs.store(name="hessian_experiment", node=ExperimentConfig)
 
 
-def collect_approximation_data(
+def collect_data(
     model,
     params,
     model_config: ModelConfig,
     dataset: Dataset,
-    collector_dirs: List[str],
-    ekfac_dir: str,
+    collector_dirs: Tuple[str, str],
     hessian_config: HessianAnalysisConfig,
     seed: int,
 ):
     """Prepare all data needed for Hessian analysis."""
-    train_ds, _ = dataset.train_test_split(test_size=0.1, seed=seed)
-    train_inputs, train_targets = train_ds.inputs, train_ds.targets
+    train_inputs, train_targets = dataset.inputs, dataset.targets
     loss_fn = get_loss(model_config.loss)
 
     # Sample gradient vectors
@@ -89,6 +120,7 @@ def collect_approximation_data(
     cleanup_memory("gradient_sampling")
 
     # Collect Activation & Gradients (2 runs)
+    collected_data_list = []
     logger.info("[HESSIAN] Collecting Activations & Gradients")
     for run_idx, collector_dir in enumerate(collector_dirs):
         run_seed = seed + run_idx
@@ -107,27 +139,22 @@ def collect_approximation_data(
         collector = CollectorActivationsGradients(
             model=model, params=params, loss_fn=loss_fn
         )
-        collector.collect(
-            inputs=collector_data.inputs,
-            targets=collector_data.targets,
-            save_directory=collector_dir,
-            try_load=True,
+        collected_data_list.append(
+            collector.collect(
+                inputs=collector_data.inputs,
+                targets=collector_data.targets,
+                save_directory=collector_dir,
+                try_load=True,
+            )
         )
         cleanup_memory(f"collection_run_{run_idx}")
 
-    # Build/Load EKFAC
-    logger.info("[HESSIAN] Building EKFAC approximation")
-    ekfac = EKFACApproximator(collector_dirs[0], collector_dirs[1])
+    assert len(collected_data_list) == 2, "Expected 2 runs of collected data."
 
-    if not ekfac.data_exists(ekfac_dir):
-        ekfac.build(config=model_config, save_directory=ekfac_dir)
-
-    ekfac_data, _ = EKFACApproximator.load_data(ekfac_dir)
-    assert isinstance(ekfac_data, EKFACData)
-    cleanup_memory("ekfac_build")
-
-    # Load collector data
-    collector_single_data = CollectorActivationsGradients.load(collector_dirs[0])
+    collected_data: Tuple[DataActivationsGradients, DataActivationsGradients] = (
+        collected_data_list[0],
+        collected_data_list[1],
+    )
 
     # Create model context
     model_ctx = ModelContext.create(
@@ -137,46 +164,34 @@ def collect_approximation_data(
         loss_fn=loss_fn,
     )
 
-    return grads_1, grads_2, ekfac_data, collector_single_data, model_ctx
+    return grads_1, grads_2, collected_data, model_ctx
 
 
-def get_approximator_data(
-    approximator: HessianApproximator,
-    ekfac_data,
-    collector_data,
-    model_ctx,
-):
-    """Get the appropriate data for each approximator type."""
-    if approximator in [HessianApproximator.FIM, HessianApproximator.BLOCK_FIM]:
-        return collector_data
-    elif approximator in [HessianApproximator.EKFAC, HessianApproximator.KFAC]:
-        return ekfac_data
-    elif approximator in [
-        HessianApproximator.GNH,
-        HessianApproximator.BLOCK_HESSIAN,
-        HessianApproximator.EXACT,
-    ]:
-        return model_ctx
-    else:
-        raise ValueError(f"Unsupported approximator: {approximator}")
-
-
-def compute_hessian_comparisons(
+def compute_hessian_comparison_for_single_model(
     hessian_config: HessianAnalysisConfig,
-    ekfac_data,
-    collector_data,
-    model_ctx,
-    grads_1,
-    grads_2,
-    damping: float,
+    collector_data: Tuple[DataActivationsGradients, DataActivationsGradients],
+    model_ctx: ModelContext,
+    grads_1: Float[Array, "*batch_size n_params"],
+    grads_2: Float[Array, "*batch_size n_params"],
+    model_directory: str,
 ) -> Dict:
     """Compute all Hessian comparisons specified in the config."""
     results = {
-        "damping": float(damping),
         "matrix_comparisons": {},
         "hvp_comparisons": {},
         "ihvp_comparisons": {},
     }
+
+    # Use EKFAC as base for damping selection
+    ekfac_computer = EKFACComputer(compute_context=collector_data)
+    ekfac_computer.build(base_directory=model_directory)
+    damping = EKFACComputer.get_damping(
+        ekfac_data=ekfac_computer.precomputed_data,
+        damping_strategy=hessian_config.computation_config.damping_strategy,
+        factor=hessian_config.computation_config.damping,
+    )
+    logger.info(f"[HESSIAN] Using damping: {damping:.6f}")
+    results.setdefault("damping", damping)
 
     comp_config = hessian_config.computation_config
 
@@ -184,12 +199,14 @@ def compute_hessian_comparisons(
     for reference_approx in comp_config.comparison_references:
         logger.info(f"[HESSIAN] Using {reference_approx.value} as reference")
 
-        reference_data = get_approximator_data(
-            reference_approx, ekfac_data, collector_data, model_ctx
+        reference_data = HessianComputerRegistry.get_compute_context(
+            reference_approx, collector_data, model_ctx
         )
         reference_computer = HessianComputerRegistry.get_computer(
             reference_approx, reference_data
         )
+        if isinstance(reference_computer, HessianEstimator):
+            reference_computer.build(base_directory=model_directory)
 
         # Matrix comparisons
         if ComputationType.MATRIX in comp_config.computation_types:
@@ -212,12 +229,20 @@ def compute_hessian_comparisons(
                 logger.info(
                     f"[HESSIAN] Comparing {reference_approx.value} vs {approx.value} (matrix)"
                 )
-                approx_data = get_approximator_data(
-                    approx, ekfac_data, collector_data, model_ctx
+                approx_data = HessianComputerRegistry.get_compute_context(
+                    approximator=approx,
+                    collector_data=collector_data,
+                    model_ctx=model_ctx,
                 )
                 approx_computer = HessianComputerRegistry.get_computer(
                     approx, approx_data
                 )
+                if isinstance(approx_computer, HessianEstimator):
+                    approx_computer.build(base_directory=model_directory)
+                else:
+                    raise RuntimeError(
+                        "Matrix comparisons require HessianEstimator, don't use exact Hessian as approximation method."
+                    )
 
                 for metric in hessian_config.matrix_config.metrics:
                     results["matrix_comparisons"].setdefault(metric.value, {})
@@ -259,8 +284,10 @@ def compute_hessian_comparisons(
                 logger.info(
                     f"[HESSIAN] Comparing {reference_approx.value} vs {approx.value} (HVP)"
                 )
-                approx_data = get_approximator_data(
-                    approx, ekfac_data, collector_data, model_ctx
+                approx_data = HessianComputerRegistry.get_compute_context(
+                    approximator=approx,
+                    collector_data=collector_data,
+                    model_ctx=model_ctx,
                 )
                 approx_computer = HessianComputerRegistry.get_computer(
                     approx, approx_data
@@ -269,6 +296,7 @@ def compute_hessian_comparisons(
                 assert isinstance(approx_computer, HessianEstimator), (
                     "HVP comparisons require HessianEstimator"
                 )
+                approx_computer.build(base_directory=model_directory)
 
                 approx_hvp = block_tree(
                     approx_computer.estimate_hvp(grads_1, damping),
@@ -312,8 +340,10 @@ def compute_hessian_comparisons(
                 logger.info(
                     f"[HESSIAN] Comparing {reference_approx.value} vs {approx.value} (IHVP)"
                 )
-                approx_data = get_approximator_data(
-                    approx, ekfac_data, collector_data, model_ctx
+                approx_data = HessianComputerRegistry.get_compute_context(
+                    approximator=approx,
+                    collector_data=collector_data,
+                    model_ctx=model_ctx,
                 )
                 approx_computer = HessianComputerRegistry.get_computer(
                     approx, approx_data
@@ -322,6 +352,7 @@ def compute_hessian_comparisons(
                 assert isinstance(approx_computer, HessianEstimator), (
                     "IHVP comparisons require HessianEstimator"
                 )
+                approx_computer.build(base_directory=model_directory)
 
                 approx_ihvp = block_tree(
                     approx_computer.estimate_ihvp(grads_1, damping),
@@ -374,39 +405,28 @@ def analyze_single_model(
     assert model_config.directory is not None, (
         "directory must be set in model_config for Hessian analysis."
     )
-    grads_1, grads_2, ekfac_data, collector_data, model_ctx = (
-        collect_approximation_data(
-            model=model,
-            params=params,
-            model_config=model_config,
-            dataset=dataset,
-            collector_dirs=[
-                os.path.join(model_config.directory, "collector", f"run_{i + 1}")
-                for i, _ in enumerate(range(2))
-            ],
-            ekfac_dir=os.path.join(model_config.directory, "ekfac"),
-            hessian_config=hessian_config,
-            seed=seed,
-        )
-    )
 
-    # Compute damping
-    damping = EKFACApproximator.get_damping(
-        ekfac_data,
-        hessian_config.computation_config.damping_strategy,
-        hessian_config.computation_config.damping,
+    grads_1, grads_2, collector_data, model_ctx = collect_data(
+        model=model,
+        params=params,
+        model_config=model_config,
+        dataset=dataset,
+        collector_dirs=(
+            os.path.join(model_config.directory, "collector", "run_1"),
+            os.path.join(model_config.directory, "collector", "run_2"),
+        ),
+        hessian_config=hessian_config,
+        seed=seed,
     )
-    logger.info(f"[HESSIAN] Damping: {damping:.6e}")
 
     # Run comparisons
-    hessian_results = compute_hessian_comparisons(
+    hessian_results = compute_hessian_comparison_for_single_model(
         hessian_config,
-        ekfac_data,
         collector_data,
         model_ctx,
         grads_1,
         grads_2,
-        damping,
+        model_directory,
     )
 
     return {
@@ -463,6 +483,10 @@ def main(cfg: DictConfig) -> Dict:
         directory=config.dataset.path,
         store_on_disk=config.dataset.store_on_disk,
     )
+    dataset, _ = dataset.train_test_split(
+        test_size=config.dataset.test_size, seed=config.seed
+    )
+
     logger.info(f"Loaded dataset: {config.dataset.name.value}")
 
     # Run Hessian analysis

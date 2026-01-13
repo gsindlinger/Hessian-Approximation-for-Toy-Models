@@ -19,7 +19,7 @@ class MLPSwiGLU(ApproximationModel):
     Note: Assumes for simplicity no bias in the layers.
     """
 
-    hidden_dim: List[Tuple[int, int, int]] = field(default_factory=list)
+    hidden_dim: List[Tuple[int, int, int]] | None = field(default_factory=list)
     activation: str = "swiglu"
 
     def __post_init__(self) -> None:
@@ -33,13 +33,14 @@ class MLPSwiGLU(ApproximationModel):
         """Forward pass of the MLP model with SwiGLU activations.
         Returns the logits of the model.
         """
-        for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
-            x = SwiGLU(
-                up_dim=up_dim,
-                gate_dim=gate_dim,
-                down_dim=down_dim,
-                name=f"swiglu_{i}",
-            )(x)
+        if self.hidden_dim is not None:
+            for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
+                x = SwiGLU(
+                    up_dim=up_dim,
+                    gate_dim=gate_dim,
+                    down_dim=down_dim,
+                    name=f"swiglu_{i}",
+                )(x)
 
         # Final output layer
         final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
@@ -65,23 +66,24 @@ class MLPSwiGLU(ApproximationModel):
 
         activations = x
 
-        for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
-            swiglu_module = SwiGLU(
-                up_dim=up_dim,
-                gate_dim=gate_dim,
-                down_dim=down_dim,
-                name=f"swiglu_{i}",
-            )
-            swiglu_params = self.variables["params"][f"swiglu_{i}"]
+        if self.hidden_dim is not None:
+            for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
+                swiglu_module = SwiGLU(
+                    up_dim=up_dim,
+                    gate_dim=gate_dim,
+                    down_dim=down_dim,
+                    name=f"swiglu_{i}",
+                )
+                swiglu_params = self.variables["params"][f"swiglu_{i}"]
 
-            # Use the SwiGLU's collector_apply method
-            activations = swiglu_module.apply(
-                {"params": swiglu_params},
-                activations,
-                collector,
-                prefix=f"swiglu_{i}",
-                method=swiglu_module.collector_apply,
-            )
+                # Use the SwiGLU's collector_apply method
+                activations = swiglu_module.apply(
+                    {"params": swiglu_params},
+                    activations,
+                    collector,
+                    prefix=f"swiglu_{i}",
+                    method=swiglu_module.collector_apply,
+                )
 
         # Final output layer
         output_module = nn.Dense(

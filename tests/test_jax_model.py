@@ -1,12 +1,22 @@
+from typing import Tuple
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
+from src.utils.models.approximation_model import ApproximationModel
 
+from src.config import (
+    LossType,
+    ModelArchitecture,
+    ModelConfig,
+    OptimizerType,
+    TrainingConfig,
+)
 from src.utils.data.data import Dataset, RandomRegressionDataset
-from src.utils.loss import mse_loss
-from src.utils.models.linear_model import LinearModel
+from src.utils.loss import get_loss
+from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
 from src.utils.train import train_model
 
@@ -15,10 +25,42 @@ class TestLinearRegression:
     """Tests for basic linear regression implementations."""
 
     @pytest.fixture(params=["simple_regression", "multi_feature_regression"])
-    def dataset(self, request):
-        seed = 0
+    def config(self, request, tmp_path_factory):
+        """Create model configuration for testing."""
+        base = tmp_path_factory.mktemp(request.param)
 
         if request.param == "simple_regression":
+            n_features = 1
+        else:
+            n_features = 10
+
+        model_config = ModelConfig(
+            architecture=ModelArchitecture.LINEAR,
+            input_dim=n_features,
+            hidden_dim=None,
+            output_dim=1,
+            loss=LossType.MSE,
+            training=TrainingConfig(
+                learning_rate=0.01,
+                optimizer=OptimizerType.ADAMW,
+                epochs=200,
+                batch_size=1,
+            ),
+            directory=str(base / "model"),
+        )
+
+        return {
+            "model_config": model_config,
+            "n_features": n_features,
+        }
+
+    @pytest.fixture
+    def dataset(self, config):
+        """Create a random regression dataset for testing."""
+        seed = 0
+        n_features = config["n_features"]
+
+        if n_features == 1:
             return RandomRegressionDataset(
                 n_samples=100,
                 n_features=1,
@@ -36,20 +78,30 @@ class TestLinearRegression:
             )
 
     @pytest.fixture
-    def model_and_params(self, dataset: Dataset):
-        model = LinearModel(
-            input_dim=dataset.input_dim(),
-            output_dim=dataset.output_dim(),
-            hidden_dim=[],
-            seed=0,
-        )
+    def model_and_params(
+        self, config, dataset: Dataset
+    ) -> Tuple[ApproximationModel, dict, Dataset]:
+        """Train a model and return it with its parameters and dataset."""
+        model_config = config["model_config"]
 
+        # Verify dimensions match
+        assert model_config.input_dim == dataset.input_dim()
+        assert model_config.output_dim == dataset.output_dim()
+
+        # Get model from registry
+        model = ModelRegistry.get_model(model_config=model_config)
+
+        # Train the model
         model, params, _ = train_model(
             model,
-            dataset.get_dataloader(batch_size=1, seed=0, shuffle=True),
-            loss_fn=mse_loss,
-            optimizer=optimizer("adamw", lr=0.01),
-            epochs=200,
+            dataset.get_dataloader(
+                batch_size=model_config.training.batch_size, seed=0, shuffle=True
+            ),
+            loss_fn=get_loss(model_config.loss),
+            optimizer=optimizer(
+                model_config.training.optimizer, lr=model_config.training.learning_rate
+            ),
+            epochs=model_config.training.epochs,
         )
 
         return model, params, dataset
@@ -84,4 +136,4 @@ class TestLinearRegression:
             np.asarray(y_pred_sklearn),
         )
 
-        assert mse < 0.1, f"MSE between JAX and sklearn is too large: {mse}"
+        assert mse < 0.1, f"MSE between JAX and sklearn is too large: {mse:. 6f}"

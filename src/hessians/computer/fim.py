@@ -1,17 +1,17 @@
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.hessians.computer.computer import HessianEstimator
-from src.hessians.utils.data import DataActivationsGradients
+from src.hessians.computer.computer import CollectorBasedHessianEstimator
+from src.hessians.utils.data import DataActivationsGradients, FIMData
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
 @dataclass
-class FIMComputer(HessianEstimator):
+class FIMComputer(CollectorBasedHessianEstimator):
     """
     Fisher Information Matrix approximation.
 
@@ -21,14 +21,17 @@ class FIMComputer(HessianEstimator):
     Use previously collected gradients to compute the FIM using its outer product.
     """
 
-    compute_context: DataActivationsGradients
+    precomputed_data: FIMData = field(default_factory=FIMData)
 
-    def build_full_gradients(self) -> Float[Array, "n_samples n_params"]:
+    @staticmethod
+    def _build(
+        compute_context: Tuple[DataActivationsGradients, DataActivationsGradients],
+    ) -> FIMData:
         grads_per_layer = []
 
-        for layer in self.compute_context.layer_names:
-            a = self.compute_context.activations[layer]  # (N, I_l)
-            g = self.compute_context.gradients[layer]  # (N, O_l)
+        for layer in compute_context[0].layer_names:
+            a = compute_context[0].activations[layer]  # (N, I_l)
+            g = compute_context[0].gradients[layer]  # (N, O_l)
 
             # Per-layer parameter gradients
             # (N, I_l, O_l) -> (N, I_l * O_l)
@@ -36,21 +39,21 @@ class FIMComputer(HessianEstimator):
             grads_per_layer.append(G_l)
 
         # (N, n_params)
-        return jnp.concatenate(grads_per_layer, axis=1)
+        return FIMData(per_sample_grads=jnp.concatenate(grads_per_layer, axis=1))
 
-    def estimate_hessian(
+    def _estimate_hessian(
         self,
         damping: Optional[Float] = None,
     ) -> jnp.ndarray:
         """
         Compute the Fisher Information Matrix from pre-collected gradients.
         """
-        gradients = self.build_full_gradients()
+        gradients = self.precomputed_data.per_sample_grads
         damping = 0.0 if damping is None else damping
 
         return self._compute_fim(gradients, damping)
 
-    def compare_full_hessian_estimates(
+    def _compare_full_hessian_estimates(
         self,
         comparison_matrix: Float[Array, "n_params n_params"],
         damping: Optional[Float] = None,
@@ -59,7 +62,7 @@ class FIMComputer(HessianEstimator):
         """
         Compare the Fisher Information Matrix with another Hessian matrix using the specified metric.
         """
-        gradients = self.build_full_gradients()
+        gradients = self.precomputed_data.per_sample_grads
         damping = 0.0 if damping is None else damping
 
         return metric.compute_fn()(
@@ -90,7 +93,7 @@ class FIMComputer(HessianEstimator):
         fim += damping * jnp.eye(n_params, dtype=fim.dtype)
         return fim
 
-    def estimate_hvp(
+    def _estimate_hvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
@@ -98,7 +101,7 @@ class FIMComputer(HessianEstimator):
         """
         Compute the Fisher-vector product (FVP) from pre-collected gradients.
         """
-        gradients = self.build_full_gradients()
+        gradients = self.precomputed_data.per_sample_grads
         damping = 0.0 if damping is None else damping
 
         # Normalize to 2D: add batch dimension if needed
@@ -109,7 +112,7 @@ class FIMComputer(HessianEstimator):
         result = self._compute_fvp(gradients, vectors_2D, damping)
         return result.squeeze(0) if is_single else result
 
-    def estimate_ihvp(
+    def _estimate_ihvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
@@ -117,7 +120,7 @@ class FIMComputer(HessianEstimator):
         """
         Compute the inverse Fisher-vector product (IFVP) using direct solve.
         """
-        gradients = self.build_full_gradients()
+        gradients = self.precomputed_data.per_sample_grads
         damping = 0.0 if damping is None else damping
 
         # Normalize to 2D: add batch dimension if needed

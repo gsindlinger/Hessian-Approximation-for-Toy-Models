@@ -4,6 +4,7 @@ Uses the TrainingExperimentConfig instead of full ExperimentConfig.
 """
 
 import logging
+import os
 from dataclasses import asdict
 from typing import List
 
@@ -17,7 +18,7 @@ from src.config import (
     DatasetEnum,
     ExperimentConfig,
     HessianAnalysisConfig,
-    HessianApproximator,
+    HessianApproximationMethod,
     HessianComputationConfig,
     LossType,
     MatrixAnalysisConfig,
@@ -183,7 +184,7 @@ def digits_sweep_simple():
     config = TrainingExperimentConfig(
         experiment_name="debug_sweep",
         seed=42,
-        base_output_dir="experiments/sweep_1/data/",
+        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.DIGITS,
             path="experiments/datasets/digits",
@@ -262,7 +263,7 @@ def digits_sweep():
     config = TrainingExperimentConfig(
         experiment_name="",
         seed=42,
-        base_output_dir="experiments/sweep_1/data/",
+        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.DIGITS,
             path="experiments/datasets/digits",
@@ -351,7 +352,7 @@ def concrete_sweep():
     config = TrainingExperimentConfig(
         experiment_name="",
         seed=42,
-        base_output_dir="experiments/sweep_1/data/",
+        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.CONCRETE,
             path="experiments/datasets/concrete",
@@ -509,7 +510,7 @@ def register_enum_representers():
     yaml.add_representer(OptimizerType, enum_representer)
     yaml.add_representer(LossType, enum_representer)
     yaml.add_representer(DatasetEnum, enum_representer)
-    yaml.add_representer(HessianApproximator, enum_representer)
+    yaml.add_representer(HessianApproximationMethod, enum_representer)
     yaml.add_representer(ComputationType, enum_representer)
     yaml.add_representer(DampingStrategy, enum_representer)
     yaml.add_representer(VectorSamplingMethod, enum_representer)
@@ -536,18 +537,18 @@ def hessian_analysis_sweep():
             computation_config=HessianComputationConfig(
                 damping=0.1,
                 damping_strategy=DampingStrategy.AUTO_MEAN_EIGENVALUE,
-                approximators=HessianApproximator.get_approximator_list_except_exact(),
+                approximators=HessianApproximationMethod.get_approximator_list_except_exact(),
                 computation_types=[
                     ComputationType.MATRIX,
                     ComputationType.HVP,
                     ComputationType.IHVP,
                 ],
                 comparison_references=[
-                    HessianApproximator.EXACT,
-                    HessianApproximator.GNH,
+                    HessianApproximationMethod.EXACT,
+                    HessianApproximationMethod.GNH,
                 ],
             ),
-            results_output_dir="experiments/sweep_1/data/results/hessian_analysis",
+            results_output_dir="experiments/data/results/hessian_analysis",
         ),
     )
     return config
@@ -578,32 +579,26 @@ if __name__ == "__main__":
     match args.type:
         case "digits":
             config = digits_sweep()
-            output_path = "experiments/sweep_1/configs/digits_sweep.yaml"
+            output_path = "experiments/configs/digits_sweep.yaml"
         case "digits_simple":
             config = digits_sweep_simple()
-            output_path = (
-                "experiments/sweep_1/scripts/debug_scripts/configs/digits_simple.yaml"
-            )
+            output_path = "experiments/debug_scripts/configs/digits_simple.yaml"
 
         case "hessian":
             config = hessian_analysis_sweep()
-            output_path = "experiments/sweep_1/configs/hessian_analysis.yaml"
+            output_path = "experiments/configs/hessian_analysis.yaml"
         case "concrete":
             config = concrete_sweep()
-            output_path = "experiments/sweep_1/configs/concrete_sweep.yaml"
+            output_path = "experiments/configs/concrete_sweep.yaml"
         case "concrete_simple":
             config = sweep_concrete_simple()
-            output_path = (
-                "experiments/sweep_1/scripts/debug_scripts/configs/concrete_simple.yaml"
-            )
+            output_path = "experiments/debug_scripts/configs/concrete_simple.yaml"
         case "energy":
             config = sweep_energy()
-            output_path = "experiments/sweep_1/configs/energy_sweep.yaml"
+            output_path = "experiments/configs/energy_sweep.yaml"
         case "energy_simple":
             config = sweep_energy_simple()
-            output_path = (
-                "experiments/sweep_1/scripts/debug_scripts/configs/energy_simple.yaml"
-            )
+            output_path = "experiments/debug_scripts/configs/energy_simple.yaml"
         case _:
             raise ValueError(f"Unknown config type: {args.type}")
 
@@ -612,6 +607,7 @@ if __name__ == "__main__":
 
     register_enum_representers()
 
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as f:
         yaml.dump(
             normalize_for_yaml(asdict(config)),

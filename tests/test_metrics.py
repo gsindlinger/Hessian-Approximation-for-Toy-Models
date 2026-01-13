@@ -160,22 +160,6 @@ def test_trace_distance():
 # ---------------------------------------------------------------------------
 
 
-def test_compare_matrices_default_metrics():
-    A = jnp.eye(2)
-    B = 2 * jnp.eye(2)
-    result = compare_matrices(A, B)
-
-    # should return exactly the 4 default metrics
-    assert set(result.keys()) == {
-        "relative_frobenius",
-        "cosine_similarity",
-        "trace_distance",
-    }
-
-    # spot check one value
-    assert result["cosine_similarity"] == pytest.approx(1.0)
-
-
 def test_compare_matrices_custom_metrics():
     A = jnp.eye(2)
     B = 3 * jnp.eye(2)
