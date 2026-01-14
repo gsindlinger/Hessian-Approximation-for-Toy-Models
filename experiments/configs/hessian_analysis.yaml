@@ -30,7 +30,7 @@ hessian_analysis:
     - spectral_relative
     - cosine_similarity
     - trace_distance
-  results_output_dir: experiments/sweep_1/data/results/hessian_analysis
+  results_output_dir: experiments/data/results/hessian_analysis
   vector_config:
     metrics:
     - absolute_l2_diff

@@ -428,11 +428,11 @@ def main(cfg: DictConfig):
         model_config: ModelConfig = r["model_config"]
 
         # Create a copy of the model config dict and add Hessian paths
-        model_config_dict = asdict(model_config)
+        model_directory = asdict(model_config)
         if model_config.loss == LossType.CROSS_ENTROPY:
             best_models_for_hessian.append(
                 {
-                    "model_config": model_config_dict,
+                    "model_config": model_directory,
                     "val_loss": r["val_loss"],
                     "val_accuracy": r["val_accuracy"],
                     "num_parameters": r["num_parameters"],
@@ -441,7 +441,7 @@ def main(cfg: DictConfig):
         else:
             best_models_for_hessian.append(
                 {
-                    "model_config": model_config_dict,
+                    "model_config": model_directory,
                     "val_loss": r["val_loss"],
                     "num_parameters": r["num_parameters"],
                 }
@@ -453,8 +453,8 @@ def main(cfg: DictConfig):
     # Prepare model configs for YAML (just the model_config part)
     models_for_yaml = []
     for r in best_models:
-        model_config_dict = model_config.directory
-        models_for_yaml.append(model_config_dict)
+        model_directory = r["model_directory"]
+        models_for_yaml.append(model_directory)
 
     os.makedirs(os.path.dirname(best_models_yaml), exist_ok=True)
     register_enum_representers()

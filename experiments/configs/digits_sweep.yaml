@@ -1,4 +1,4 @@
-base_output_dir: experiments/sweep_1/data/
+base_output_dir: experiments/data/
 dataset:
   name: digits
   path: experiments/datasets/digits

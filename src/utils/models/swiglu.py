@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Callable
+
 import jax.nn as jnn
 from flax import linen as nn
 from jaxtyping import Array, Float
@@ -19,6 +21,8 @@ class SwiGLU(nn.Module):
     gate_dim: int
     down_dim: int
 
+    init_fn: Callable = nn.initializers.xavier_uniform()
+
     def __post_init__(self) -> None:
         super().__post_init__()
         assert self.up_dim == self.gate_dim, (
@@ -36,12 +40,14 @@ class SwiGLU(nn.Module):
             self.gate_dim,
             use_bias=False,
             name="W_gate",
+            kernel_init=self.init_fn,
         )(x)
 
         up = nn.Dense(
             self.up_dim,
             use_bias=False,
             name="W_up",
+            kernel_init=self.init_fn,
         )(x)
 
         gated = jnn.silu(gate) * up
@@ -50,6 +56,7 @@ class SwiGLU(nn.Module):
             self.down_dim,
             use_bias=False,
             name="W_down",
+            kernel_init=self.init_fn,
         )(gated)
 
         return out
@@ -75,7 +82,9 @@ class SwiGLU(nn.Module):
             return module.apply({"params": params}, activations)
 
         # Gate branch
-        gate_module = nn.Dense(self.gate_dim, use_bias=False, name="W_gate")
+        gate_module = nn.Dense(
+            self.gate_dim, use_bias=False, name="W_gate", kernel_init=self.init_fn
+        )
         gate_params = self.variables["params"]["W_gate"]
         gate = layer_wrapper_vjp(
             lambda p, a: pure_apply_fn(gate_module, p, a),
@@ -86,7 +95,9 @@ class SwiGLU(nn.Module):
         )
 
         # Up branch
-        up_module = nn.Dense(self.up_dim, use_bias=False, name="W_up")
+        up_module = nn.Dense(
+            self.up_dim, use_bias=False, name="W_up", kernel_init=self.init_fn
+        )
         up_params = self.variables["params"]["W_up"]
         up = layer_wrapper_vjp(
             lambda p, a: pure_apply_fn(up_module, p, a),
@@ -100,7 +111,9 @@ class SwiGLU(nn.Module):
         gated = jnn.silu(gate) * up
 
         # Down projection
-        down_module = nn.Dense(self.down_dim, use_bias=False, name="W_down")
+        down_module = nn.Dense(
+            self.down_dim, use_bias=False, name="W_down", kernel_init=self.init_fn
+        )
         down_params = self.variables["params"]["W_down"]
         out = layer_wrapper_vjp(
             lambda p, a: pure_apply_fn(down_module, p, a),

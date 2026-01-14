@@ -158,7 +158,10 @@ def print_device_memory_stats(label=""):
 
 
 def get_peak_bytes_in_use():
-    """Get peak bytes in use across all JAX devices."""
+    """
+    Get peak bytes in use across all JAX devices.
+    Returns the peak memory in GB.
+    """
     total_peak = 0
     for device in jax.devices():
         try:

@@ -130,7 +130,7 @@ def cleanup_memory(stage: str | None = None):
     """Force garbage collection and clear JAX caches."""
     gc.collect()
     jax.clear_caches()
-    msg = f"[MEMORY] peak_bytes={get_peak_bytes_in_use()}"
+    msg = f"[MEMORY] peak_bytes={get_peak_bytes_in_use():.2f} GB"
     if stage:
         msg = f"[MEMORY] after {stage}: {msg}"
     logger.info(msg)

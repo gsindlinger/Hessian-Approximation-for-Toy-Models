@@ -40,9 +40,12 @@ def train_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn
         return loss_fn(outputs, batch_targets)
 
     loss_value, grads = jax.value_and_grad(loss_fn_wrapper)(state.params)
+    # Check gradient norms
+    grad_norm = optax.global_norm(grads)
+
     state = state.apply_gradients(grads=grads)
 
-    return state, loss_value
+    return state, loss_value, grad_norm
 
 
 def train_model(
@@ -67,14 +70,22 @@ def train_model(
         total_samples = 0
 
         for batch_data, batch_targets in dataloader:
-            state, loss_value = train_step(state, batch_data, batch_targets, loss_fn)
+            state, loss_value, grad_norm = train_step(
+                state, batch_data, batch_targets, loss_fn
+            )
+            if grad_norm < 1e-6:
+                logger.warning(
+                    f"Gradient norm is very small ({grad_norm}). Possible vanishing gradients."
+                )
             running_loss += float(loss_value) * batch_data.shape[0]
             total_samples += batch_data.shape[0]
 
         epoch_loss = running_loss / total_samples
         loss_history.append(epoch_loss)
-        if epoch % 10 == 0 or epoch == epochs - 1:
-            logger.info(f"Epoch {epoch + 1}, Loss: {epoch_loss:.4f}")
+        if epoch % 50 == 0 or epoch == epochs - 1:
+            logger.info(
+                f"Epoch {epoch + 1}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"
+            )
 
     assert isinstance(state.params, Dict)
     return model, state.params, loss_history

@@ -244,23 +244,21 @@ def compute_hessian_comparison_for_single_model(
                         "Matrix comparisons require HessianEstimator, don't use exact Hessian as approximation method."
                     )
 
+                # Compute approximate Hessian
+                approx_hessian = approx_computer.estimate_hessian(damping=damping)
+
+                # Evaluate metrics
                 for metric in hessian_config.matrix_config.metrics:
                     results["matrix_comparisons"].setdefault(metric.value, {})
                     results["matrix_comparisons"][metric.value].setdefault(
                         reference_approx.value, {}
                     )
-
-                    assert isinstance(approx_computer, HessianEstimator), (
-                        "Matrix comparisons require HessianEstimator"
-                    )
-                    score = approx_computer.compare_full_hessian_estimates(
-                        ref_hessian, damping, metric
-                    )
+                    score = metric.compute(ref_hessian, approx_hessian)
                     results["matrix_comparisons"][metric.value][reference_approx.value][
                         approx.value
                     ] = float(score)
 
-            del ref_hessian
+            del ref_hessian, approx_hessian
             cleanup_memory(f"{reference_approx.value}_matrix")
 
         # HVP comparisons
