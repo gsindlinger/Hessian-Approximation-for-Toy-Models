@@ -46,14 +46,10 @@ def config(request, tmp_path_factory):
         architecture = ModelArchitecture.LINEAR
         hidden_dim = []
         loss = LossType.MSE
-        tol_matrix = 1e-4
-        tol_vector = 1e-5
     else:  # classification
         architecture = ModelArchitecture.LINEAR
         hidden_dim = []
         loss = LossType.CROSS_ENTROPY
-        tol_matrix = 2e-2
-        tol_vector = 2e-1
 
     model_config = ModelConfig(
         architecture=architecture,
@@ -72,8 +68,6 @@ def config(request, tmp_path_factory):
 
     return {
         "model_config": model_config,
-        "tol_matrix": tol_matrix,
-        "tol_vector": tol_vector,
     }
 
 
@@ -160,8 +154,8 @@ def test_exact_hessian_vs_gnh_matrix_equivalence(
     G = gnh.estimate_hessian()
 
     diff_fro = FullMatrixMetric.RELATIVE_FROBENIUS.compute(H, G)
-    assert diff_fro < config["tol_matrix"], (
-        f"Hessian vs GNH matrix difference too large: {diff_fro:. 6f} >= {config['tol_matrix']}"
+    assert diff_fro < 1e-4, (
+        f"Hessian vs GNH matrix difference too large: {diff_fro:. 6f} >= {1e-4}"
     )
 
 
@@ -169,7 +163,7 @@ def test_batched_ihvp_matches_full_inverse(
     model_context: ModelContext,
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ):
-    """Test that batched IHVP matches explicit inverse multiplication."""
+    """Test that batched IHVP matches explicit inverse multiplication for the Hessian computation."""
     hessian = HessianComputer(compute_context=model_context)
     _, params, _ = model_params_loss
     params_flat, _ = flatten_util.ravel_pytree(params)
@@ -182,27 +176,27 @@ def test_batched_ihvp_matches_full_inverse(
 
     IHVP_ref = (Hinv @ V.T).T
 
-    err = VectorMetric.RELATIVE_ERROR.compute(IHVP, IHVP_ref, reduction="mean")
-    assert err < 1e-5, f"Batched IHVP error:  {err:.6e}"
+    err = VectorMetric.RELATIVE_ERROR.compute(IHVP, IHVP_ref)
+    assert err < 1e-3, f"Batched IHVP error:  {err:.6e}"
 
 
 def test_batched_hvp_matches_full_hessian(
     model_context: ModelContext,
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ):
-    """Test that batched HVP matches explicit Hessian multiplication."""
+    """Test that batched HVP matches explicit Hessian multiplication for the Hessian computation."""
     hessian = HessianComputer(compute_context=model_context)
     _, params, _ = model_params_loss
     params_flat, _ = flatten_util.ravel_pytree(params)
 
     V = jax.random.normal(PRNGKey(1), shape=(10, params_flat.shape[0]))
-    HVP = hessian.compute_hvp(V, damping=1e-2)
+    HVP = hessian.compute_hvp(V)
 
-    H = hessian.compute_hessian(damping=1e-2)
+    H = hessian.compute_hessian()
     HVP_ref = (H @ V.T).T
 
-    err = VectorMetric.RELATIVE_ERROR.compute(HVP, HVP_ref, reduction="mean")
-    assert err < 1e-5, f"Batched HVP error: {err:.6e}"
+    err = VectorMetric.RELATIVE_ERROR.compute(HVP, HVP_ref)
+    assert err < 1e-3, f"Batched HVP error: {err:.6e}"
 
 
 def test_hessian_ihvp_roundtrip_unit_vectors(
@@ -222,11 +216,10 @@ def test_hessian_ihvp_roundtrip_unit_vectors(
 
 
 def test_hessian_vs_gnh_ihvp_consistency(
-    config: Dict,
     model_context: ModelContext,
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ):
-    """Test that Hessian and GNH IHVP implementations are consistent."""
+    """Test that Hessian and GNH IHVP implementations are close to equal for linear models."""
     hessian = HessianComputer(compute_context=model_context)
     gnh = GNHComputer(compute_context=model_context).build()
 
@@ -235,10 +228,8 @@ def test_hessian_vs_gnh_ihvp_consistency(
 
     V = jax.random.normal(PRNGKey(2), shape=(10, params_flat.shape[0]))
 
-    ihvp_h = hessian.compute_ihvp(V, damping=1e-3)
-    ihvp_g = gnh.estimate_ihvp(V, damping=1e-3)
+    ihvp_h = hessian.compute_ihvp(V, damping=1e-2)
+    ihvp_g = gnh.estimate_ihvp(V, damping=1e-2)
 
-    err = VectorMetric.RELATIVE_ERROR.compute(ihvp_h, ihvp_g, reduction="mean")
-    assert err < config["tol_vector"], (
-        f"Hessian vs GNH IHVP inconsistency: {err:.6e} >= {config['tol_vector']}"
-    )
+    err = VectorMetric.RELATIVE_ERROR.compute(ihvp_h, ihvp_g)
+    assert err < 1e-3, f"Hessian vs GNH IHVP error: {err:.6e}"

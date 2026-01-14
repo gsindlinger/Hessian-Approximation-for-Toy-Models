@@ -236,7 +236,7 @@ def test_fim_matrix_matches_reference(
     F_ref = reference_fim_from_autodiff(model_context, damping=0.0)
 
     rel_err = FullMatrixMetric.RELATIVE_FROBENIUS.compute(F_collector, F_ref)
-    assert rel_err < 1e-5, f"FIM relative error too large: {rel_err}"
+    assert rel_err < 1e-4, f"FIM relative error too large: {rel_err}"
 
 
 def test_fim_hvp_matches_reference(

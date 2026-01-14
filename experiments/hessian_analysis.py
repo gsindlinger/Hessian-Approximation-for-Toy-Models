@@ -56,6 +56,7 @@ from omegaconf import DictConfig, OmegaConf
 from experiments.utils import (
     block_tree,
     cleanup_memory,
+    json_safe,
     load_experiment_override_from_yaml,
     to_dataclass,
 )
@@ -244,21 +245,22 @@ def compute_hessian_comparison_for_single_model(
                         "Matrix comparisons require HessianEstimator, don't use exact Hessian as approximation method."
                     )
 
-                # Compute approximate Hessian
-                approx_hessian = approx_computer.estimate_hessian(damping=damping)
-
                 # Evaluate metrics
                 for metric in hessian_config.matrix_config.metrics:
                     results["matrix_comparisons"].setdefault(metric.value, {})
                     results["matrix_comparisons"][metric.value].setdefault(
                         reference_approx.value, {}
                     )
-                    score = metric.compute(ref_hessian, approx_hessian)
+                    score = approx_computer._compare_full_hessian_estimates(
+                        comparison_matrix=ref_hessian,
+                        damping=damping,
+                        metric=metric,
+                    )
                     results["matrix_comparisons"][metric.value][reference_approx.value][
                         approx.value
                     ] = float(score)
 
-            del ref_hessian, approx_hessian
+            del ref_hessian
             cleanup_memory(f"{reference_approx.value}_matrix")
 
         # HVP comparisons
@@ -323,12 +325,12 @@ def compute_hessian_comparison_for_single_model(
 
             if isinstance(reference_computer, HessianComputer):
                 ref_ihvp = block_tree(
-                    reference_computer.compute_ihvp(grads_1, damping=damping),
+                    reference_computer.compute_ihvp(grads_1, damping=max(damping, 1e-6)),
                     f"{reference_approx.value}_ihvp",
                 )
             elif isinstance(reference_computer, HessianEstimator):
                 ref_ihvp = block_tree(
-                    reference_computer.estimate_ihvp(grads_1, damping),
+                    reference_computer.estimate_ihvp(grads_1, damping=max(damping, 1e-6)),
                     f"{reference_approx.value}_ihvp",
                 )
 
@@ -353,7 +355,7 @@ def compute_hessian_comparison_for_single_model(
                 approx_computer.build(base_directory=model_directory)
 
                 approx_ihvp = block_tree(
-                    approx_computer.estimate_ihvp(grads_1, damping),
+                    approx_computer.estimate_ihvp(grads_1, damping=max(damping, 1e-6)),
                     f"{approx.value}_ihvp",
                 )
 
@@ -523,7 +525,7 @@ def main(cfg: DictConfig) -> Dict:
     }
 
     with open(output_file, "w") as f:
-        json.dump(full_results, f, indent=2)
+        json.dump(full_results, f, indent=2, default=json_safe)
 
     logger.info(f"{'=' * 70}")
     logger.info("Hessian Analysis Complete!")
