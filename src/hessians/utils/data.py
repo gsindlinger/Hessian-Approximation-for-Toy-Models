@@ -218,7 +218,7 @@ class ETKFACData(ApproximationData):
 
     @classmethod
     def name(cls) -> str:
-        return "etkfac_data"
+        return "ekfac_data"
 
 
 @dataclass
