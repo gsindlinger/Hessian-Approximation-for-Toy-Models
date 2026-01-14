@@ -1,0 +1,65 @@
+{
+  "uci_id": 242,
+  "name": "Energy Efficiency",
+  "repository_url": "https://archive.ics.uci.edu/dataset/242/energy+efficiency",
+  "data_url": "https://archive.ics.uci.edu/static/public/242/data.csv",
+  "abstract": "This study looked into assessing the heating load and cooling load requirements of buildings (that is, energy efficiency) as a function of building parameters.",
+  "area": "Computer Science",
+  "tasks": [
+    "Classification",
+    "Regression"
+  ],
+  "characteristics": [
+    "Multivariate"
+  ],
+  "num_instances": 768,
+  "num_features": 8,
+  "feature_types": [
+    "Integer",
+    "Real"
+  ],
+  "demographics": [],
+  "target_col": [
+    "Y1",
+    "Y2"
+  ],
+  "index_col": null,
+  "has_missing_values": "no",
+  "missing_values_symbol": null,
+  "year_of_dataset_creation": 2012,
+  "last_updated": "Mon Feb 26 2024",
+  "dataset_doi": "10.24432/C51307",
+  "creators": [
+    "Athanasios Tsanas",
+    "Angeliki Xifara"
+  ],
+  "intro_paper": {
+    "ID": 379,
+    "type": "NATIVE",
+    "title": "Accurate quantitative estimation of energy performance of residential buildings using statistical machine learning tools",
+    "authors": "A. Tsanas, Angeliki Xifara",
+    "venue": "Energy and Buildings, vol. 49",
+    "year": 2012,
+    "journal": null,
+    "DOI": null,
+    "URL": "https://www.semanticscholar.org/paper/Accurate-quantitative-estimation-of-energy-of-using-Tsanas-Xifara/719e65379c5959141180a45f540f707d583b8ce2",
+    "sha": null,
+    "corpus": null,
+    "arxiv": null,
+    "mag": null,
+    "acl": null,
+    "pmid": null,
+    "pmcid": null
+  },
+  "additional_info": {
+    "summary": "We perform energy analysis using 12 different building shapes simulated in Ecotect. The buildings differ with respect to the glazing area, the glazing area distribution, and the orientation, amongst other parameters. We simulate various settings as functions of the afore-mentioned characteristics to obtain 768 building shapes. The dataset comprises 768 samples and 8 features, aiming to predict two real valued responses. It can also be used as a multi-class classification problem if the response is rounded to the nearest integer.",
+    "purpose": null,
+    "funded_by": null,
+    "instances_represent": null,
+    "recommended_data_splits": null,
+    "sensitive_data": null,
+    "preprocessing_description": null,
+    "variable_info": "The dataset contains eight attributes (or features, denoted by X1...X8) and two responses (or outcomes, denoted by y1 and y2). The aim is to use the eight features to predict each of the two responses.\r\n\r\nSpecifically:\r\nX1\tRelative Compactness\r\nX2\tSurface Area\r\nX3\tWall Area\r\nX4\tRoof Area\r\nX5\tOverall Height\r\nX6\tOrientation\r\nX7\tGlazing Area\r\nX8\tGlazing Area Distribution\r\ny1\tHeating Load\r\ny2\tCooling Load",
+    "citation": null
+  }
+}

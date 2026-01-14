@@ -4,12 +4,14 @@ from typing import Dict, Tuple
 from src.config import HessianApproximationMethod
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
+from src.hessians.computer.etkfac import ETKFACComputer
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.computer.fim_block import FIMBlockComputer
 from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.hessian_block import BlockHessianComputer
 from src.hessians.computer.kfac import KFACComputer
+from src.hessians.computer.tkfac import TKFACComputer
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 
 
@@ -24,8 +26,8 @@ class HessianComputerRegistry:
         HessianApproximationMethod.BLOCK_FIM: FIMBlockComputer,
         HessianApproximationMethod.BLOCK_HESSIAN: BlockHessianComputer,
         HessianApproximationMethod.EXACT: HessianComputer,
-        # HessianApproximator.TKFAC: EKFACComputer,
-        # HessianApproximator.TEKFAC: ETKFACComputer,
+        # HessianApproximationMethod.TKFAC: TKFACComputer,
+        # HessianApproximationMethod.ETKFAC: ETKFACComputer,
     }
 
     @staticmethod

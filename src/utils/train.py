@@ -73,7 +73,7 @@ def train_model(
             state, loss_value, grad_norm = train_step(
                 state, batch_data, batch_targets, loss_fn
             )
-            if grad_norm < 1e-6:
+            if epoch < 200 and epoch % 10 == 0 and grad_norm < 1e-6:
                 logger.warning(
                     f"Gradient norm is very small ({grad_norm}). Possible vanishing gradients."
                 )

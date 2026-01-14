@@ -48,7 +48,7 @@ class HessianApproximationMethod(str, Enum):
     BLOCK_FIM = "block_fim"
     BLOCK_HESSIAN = "block_hessian"
     # TKFAC = "tkfac"
-    # TEKFAC = "tekfac"
+    # ETKFAC = "etkfac"
 
     @staticmethod
     def get_approximator_list_except_exact() -> List[HessianApproximationMethod]:
