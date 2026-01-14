@@ -19,7 +19,7 @@ from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 class BlockHessianComputer(ModelBasedHessianEstimator):
     """
     Block-Diagonal Hessian approximation.
-    Optimized version using full Hessian computation with masking.
+    Each block corresponds to a parameter leaf in the model.
     """
 
     precomputed_data: BlockHessianData = field(default_factory=BlockHessianData)
@@ -71,7 +71,7 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Block-diagonal Hessian-vector product.
-        More efficient than old implementation.
+        Computes each block independently.
         """
         damping = 0.0 if damping is None else damping
         is_single = vectors.ndim == 1
@@ -122,7 +122,7 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
         damping: Float,
     ) -> Float[Array, "... d"]:
         """
-        Fast block HVP using the scan-based approach from HessianComputer.
+        Fast block HVP using scan-based approach.
         """
         return self._compute_block_hvp(
             compute_context=self.compute_context,
@@ -142,7 +142,7 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
         damping: Float,
     ) -> Float[Array, "... d"]:
         """
-        Static version for JIT compilation.
+        Fast block HVP using scan-based approach.
         """
         p_flat = compute_context.params_flat
         X = compute_context.inputs
