@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional, Tuple
+from typing import Dict, Literal, Optional, Tuple, Callable
 
 import jax.numpy as jnp
 from jaxtyping import Array, Float
@@ -10,6 +11,7 @@ from simple_parsing import field
 from src.hessians.computer.computer import CollectorBasedHessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.utils.data import DataActivationsGradients, EKFACData
+from src.utils.data.jax_dataloader import JAXDataLoader
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 

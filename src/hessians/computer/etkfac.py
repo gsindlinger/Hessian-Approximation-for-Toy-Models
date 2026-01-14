@@ -1,77 +1,51 @@
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict
 
+import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.hessians.computer.computer import CollectorBasedHessianEstimator
-from src.hessians.utils.data import DataActivationsGradients, ETKFACData
-from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
-
-logger = logging.getLogger(__name__)
+from src.hessians.computer.ekfac import EKFACComputer
 
 
 @dataclass
-class ETKFACComputer(CollectorBasedHessianEstimator):
+class ETKFACComputer(EKFACComputer):
     """
-    Kronecker-Factored Approximate Curvature (KFAC) and Eigenvalue-Corrected KFAC (EKFAC) Hessian approximation.
+    Trace-normalized Eigenvalue-Corrected KFAC (ETKFAC) Hessian approximation.
+    Same as EKFAC but with different covariance computation.
     """
-
-    precomputed_data: ETKFACData = field(default_factory=ETKFACData)
 
     @staticmethod
-    def _build(
-        compute_context: Tuple[DataActivationsGradients, DataActivationsGradients],
-    ) -> ETKFACData:
-        """Method to build the required TK-FAC components to compute the Hessian approximation."""
-        raise NotImplementedError("ETKFAC build method not implemented yet.")
+    def _compute_covariances(
+        activation_batch_dict: Dict[str, Float[Array, "N I"]],
+        gradient_batch_dict: Dict[str, Float[Array, "N O"]],
+    ) -> Dict[str, Dict[str, Float[Array, "D D"]]]:
+        """Compute covariance matrices - TKFAC version."""
+        activation_cov_dict = {}
+        gradient_cov_dict = {}
+        trace_dict = {}
+        for layer in activation_batch_dict.keys():
+            activation_batch = activation_batch_dict[layer]
+            gradient_batch = gradient_batch_dict[layer]
 
-    def _estimate_hessian(
-        self, damping: Optional[Float] = None
-    ) -> Float[Array, "n_params n_params"]:
-        """
-        Compute full Hessian approximation.
-        """
-        raise NotImplementedError("ETKFAC Hessian estimation not implemented yet.")
+            activation_cov = jnp.einsum("ni,nj->ij", activation_batch, activation_batch)
+            gradient_cov = jnp.einsum("ni,nj->ij", gradient_batch, gradient_batch)
 
-    def _estimate_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        """Compute Hessian-vector product."""
+            activation_trace = jnp.trace(activation_cov)
+            gradient_trace = jnp.trace(gradient_cov)
 
-        assert self.precomputed_data is not None, (
-            "ETKFAC data not computed. Please build the computer first."
-        )
-        raise NotImplementedError("ETKFAC HVP estimation not implemented yet.")
+            activation_cov = activation_cov * gradient_trace
+            gradient_cov = gradient_cov * activation_trace
+            trace_entry = activation_trace * gradient_trace
+            # TODO: need to multiply by trace at the end
 
-    def _compare_full_hessian_estimates(
-        self,
-        comparison_matrix: Float[Array, "n_params n_params"],
-        damping: Optional[Float] = None,
-        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
-    ) -> float:
-        """
-        Compare the ETKFAC Hessian approximation to a given comparison matrix.
-        Reuses the KFAC comparison implementation.
-        """
-        assert self.precomputed_data is not None, (
-            "ETKFAC data not computed. Please build the computer first."
-        )
-        raise NotImplementedError("ETKFAC Hessian comparison not implemented yet.")
+            activation_cov_dict[layer] = activation_cov
+            gradient_cov_dict[layer] = gradient_cov
+            trace_dict[layer] = trace_entry
 
-    def _estimate_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        """
-        Compute inverse Hessian-vector product.
-        """
-        assert self.precomputed_data is not None, (
-            "ETKFAC data not computed. Please build the computer first."
-        )
-        raise NotImplementedError("ETKFAC IHVP estimation not implemented yet.")
+        return {
+            "activation_cov": activation_cov_dict,
+            "gradient_cov": gradient_cov_dict,
+            "trace": trace_dict,
+        }

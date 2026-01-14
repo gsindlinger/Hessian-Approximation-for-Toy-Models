@@ -26,8 +26,9 @@ class EKFACComputer(CollectorBasedHessianEstimator):
 
     precomputed_data: EKFACData = field(default_factory=EKFACData)
 
-    @staticmethod
+    @classmethod
     def _build(
+        cls,
         compute_context: Tuple[DataActivationsGradients, DataActivationsGradients],
     ) -> EKFACData:
         """Method to build the required EK-FAC components to compute the Hessian approximation."""
@@ -38,8 +39,14 @@ class EKFACComputer(CollectorBasedHessianEstimator):
 
         # Compute covariances of activations and gradients
         logger.info("Computing covariances for EK-FAC approximation.")
-        activations_covs, gradients_covs = EKFACComputer.compute_covariances(
-            activations, gradients
+
+        covariances_dict = cls._batched_covariance_processing(
+            activations, gradients, cls._compute_covariances
+        )
+
+        activations_covs, gradients_covs = (
+            covariances_dict["activation_cov"],
+            covariances_dict["gradient_cov"],
         )
 
         # Compute eigenvectors & eigenvalues of the covariances (discard eigenvalues since not needed in EK-FAC)
@@ -584,6 +591,76 @@ class EKFACComputer(CollectorBasedHessianEstimator):
         )
 
     @staticmethod
+    def _compute_covariances(
+        activation_batch_dict: Dict[str, Float[Array, "N I"]],
+        gradient_batch_dict: Dict[str, Float[Array, "N O"]],
+    ) -> Dict[str, Dict[str, Float[Array, "D D"]]]:
+        """Compute covariance matrix of x.
+        Expects x as a dict with a single key, e.g. 'activations' or 'gradients'."""
+        activation_cov_dict = {}
+        gradient_cov_dict = {}
+        for layer in activation_batch_dict.keys():
+            activation_batch = activation_batch_dict[layer]
+            gradient_batch = gradient_batch_dict[layer]
+
+            activation_cov = jnp.einsum("ni,nj->ij", activation_batch, activation_batch)
+            gradient_cov = jnp.einsum("ni,nj->ij", gradient_batch, gradient_batch)
+
+            activation_cov_dict[layer] = activation_cov
+            gradient_cov_dict[layer] = gradient_cov
+
+        return {
+            "activation_cov": activation_cov_dict,
+            "gradient_cov": gradient_cov_dict,
+        }
+
+    @staticmethod
+    def _batched_covariance_processing(
+        activations_dict: Dict[str, Float[Array, "N I"]],
+        gradients_dict: Dict[str, Float[Array, "N O"]],
+        compute_fn: Callable,
+        batch_size: int | None = None,
+    ) -> Dict[str, Float[Array, "..."]]:
+        """Process activations and gradients to compute covariances in batches."""
+        if batch_size is None:
+            batch_size = JAXDataLoader.get_batch_size()
+
+        num_samples = list(activations_dict.values())[0].shape[0]
+        num_batches = (num_samples + batch_size - 1) // batch_size
+        accumulator: Dict[str, Dict[str, Array]] = {}
+
+        for batch_idx in range(num_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min(start_idx + batch_size, num_samples)
+
+            activation_batch_dict = {
+                layer: activations_dict[layer][start_idx:end_idx]
+                for layer in activations_dict
+            }
+            gradient_batch_dict = {
+                layer: gradients_dict[layer][start_idx:end_idx]
+                for layer in gradients_dict
+            }
+
+            batch_result: Dict[str, Dict[str, Array]] = compute_fn(
+                activation_batch_dict=activation_batch_dict,
+                gradient_batch_dict=gradient_batch_dict,
+            )  # dict with keys typically "activation_..." and "gradient_..."
+
+            if batch_idx == 0:
+                accumulator = batch_result
+            else:
+                for key in batch_result.keys():
+                    for k, v in batch_result[key].items():
+                        accumulator[key][k] += v
+
+        for key in accumulator.keys():
+            for layer_name in activations_dict.keys():
+                accumulator[key][layer_name] /= num_samples
+
+        return accumulator
+
+    @staticmethod
     def batched_collector_processing(
         layer_keys: Iterable[str],
         num_samples: int,
@@ -638,33 +715,3 @@ class EKFACComputer(CollectorBasedHessianEstimator):
                 accumulator[layer_name] /= num_samples
 
         return accumulator
-
-    @staticmethod
-    def compute_covariances(
-        activations: Dict[str, Float[Array, "N I"]],
-        gradients: Dict[str, Float[Array, "N O"]],
-    ) -> Tuple[Dict[str, Float[Array, "I I"]], Dict[str, Float[Array, "O O"]]]:
-        """
-        Compute covariance matrices for activations and gradients for each layer.
-        """
-        activation_covariances = EKFACComputer.batched_collector_processing(
-            layer_keys=activations.keys(),
-            num_samples=list(activations.values())[0].shape[0],
-            compute_fn=EKFACComputer._compute_covariance,
-            data={"activations": activations},
-        )
-
-        gradient_covariances = EKFACComputer.batched_collector_processing(
-            layer_keys=gradients.keys(),
-            num_samples=list(gradients.values())[0].shape[0],
-            compute_fn=EKFACComputer._compute_covariance,
-            data={"gradients": gradients},
-        )
-        return activation_covariances, gradient_covariances
-
-    @staticmethod
-    def _compute_covariance(**x: Dict[str, Float[Array, "N D"]]) -> Float[Array, "D D"]:
-        """Compute covariance matrix of x.
-        Expects x as a dict with a single key, e.g. 'activations' or 'gradients'."""
-        x_item = next(iter(x.values()))
-        return jnp.einsum("ni,nj->ij", x_item, x_item)
