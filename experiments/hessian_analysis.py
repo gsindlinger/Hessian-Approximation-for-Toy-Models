@@ -405,7 +405,7 @@ def analyze_single_model(
     # Normalize data for regression tasks
     if model_config.loss == LossType.MSE:
         dataset.inputs, _ = Dataset.normalize_data(dataset.inputs, None)
-        # train_targets, val_targets = Dataset.normalize_data(train_targets, val_targets)
+        dataset.targets, _ = Dataset.normalize_data(dataset.targets, None)
 
     # Prepare data
     assert model_config.directory is not None, (

@@ -165,7 +165,7 @@ def json_safe(obj):
 
     # Dataclasses
     if is_dataclass(obj):
-        return asdict(obj)
+        return asdict(obj) # type: ignore
 
     # Sets / tuples
     if isinstance(obj, (set, tuple)):

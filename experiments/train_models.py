@@ -145,7 +145,7 @@ def train_single_model(
 
     # Normalize data for regression tasks
     if model_config.loss == LossType.MSE:
-        train_inputs, val_inputs = Dataset.normalize_data(train_inputs, val_inputs)
+        train_inputs, _ = Dataset.normalize_data(train_inputs, val_inputs)
         train_targets, val_targets = Dataset.normalize_data(train_targets, val_targets)
 
     if model_config.input_dim != dataset.input_dim():

@@ -37,12 +37,14 @@ class HessianEstimator(ABC):
         if self.is_built:
             return self
 
-        # Add data type of precompute data to directory path
+        # Use base directory plus the class name to create path for precomputed data
         directory_path = None
         if base_directory is not None:
             precomputed_data_type = type(self.precomputed_data)
-            if issubclass(precomputed_data_type, ApproximationData):
-                directory_path = f"{base_directory}/{precomputed_data_type.name()}/"
+            
+            # create directory path based on self type and replace computer with data
+            directory_name = type(self).__name__.lower().replace("computer", "_data")
+            directory_path = f"{base_directory}/{directory_name}"
 
         # Check if data exists on disk, if so load it
         if (
@@ -54,18 +56,19 @@ class HessianEstimator(ABC):
             self.is_built = True
             
             logger.info(
-                f"Loaded {precomputed_data_type.name()} from directory: {directory_path}"
+                f"Loaded {directory_name} from directory: {directory_path}"
             )
         # Otherwise, build the data and save it if a base directory is provided
         else:
             self.precomputed_data = self._build(compute_context=self.compute_context)
             if directory_path is not None and self.precomputed_data is not None:
                 self.precomputed_data.save(directory=directory_path)
-                logger.info(
-                    f"Saved \
-                    {precomputed_data_type.name() if issubclass(precomputed_data_type, ApproximationData) else 'precomputed data'} \
-                    to directory: {directory_path}"
+                output_type = (
+                    precomputed_data_type.name()
+                    if issubclass(precomputed_data_type, ApproximationData)
+                    else "precomputed data"
                 )
+                logger.info(f"Saved {output_type} to directory: {directory_path}")
             self.is_built = True
         return self
 
