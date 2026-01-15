@@ -38,7 +38,6 @@ class ETKFACComputer(EKFACComputer):
             activation_cov = activation_cov * gradient_trace
             gradient_cov = gradient_cov * activation_trace
             trace_entry = activation_trace * gradient_trace
-            # TODO: need to multiply by trace at the end
 
             activation_cov_dict[layer] = activation_cov
             gradient_cov_dict[layer] = gradient_cov
@@ -49,3 +48,22 @@ class ETKFACComputer(EKFACComputer):
             "gradient_cov": gradient_cov_dict,
             "trace": trace_dict,
         }
+
+    @staticmethod
+    def _batched_covariance_processing(
+        activations_dict: Dict[str, Float[Array, "N I"]],
+        gradients_dict: Dict[str, Float[Array, "N O"]],
+        compute_fn,
+        batch_size: int | None = None,
+    ) -> Dict[str, Float[Array, "..."]]:
+        """Process covariances and multiply trace product at the end."""
+        result = EKFACComputer._batched_covariance_processing(
+            activations_dict, gradients_dict, compute_fn, batch_size
+        )
+
+        # Multiply trace product with gradient covariance after expectation is computed
+        trace_dict = result["trace"]
+        for layer in result["gradient_cov"].keys():
+            result["gradient_cov"][layer] = result["gradient_cov"][layer] * trace_dict[layer]
+
+        return result

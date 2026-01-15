@@ -5,7 +5,7 @@ from typing import List, Tuple
 
 from flax import linen as nn
 from jaxtyping import Array, Float
-
+import jax.numpy as jnp
 from src.hessians.collector import CollectorBase, layer_wrapper_vjp
 from src.utils.models.approximation_model import ApproximationModel
 from src.utils.models.swiglu import SwiGLU
@@ -41,7 +41,6 @@ class MLPSwiGLU(ApproximationModel):
                     down_dim=down_dim,
                     name=f"swiglu_{i}",
                 )(x)
-                x = nn.LayerNorm(name=f"ln_{i}")(x)
 
         # Final output layer
         final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
@@ -85,11 +84,6 @@ class MLPSwiGLU(ApproximationModel):
                     prefix=f"swiglu_{i}",
                     method=swiglu_module.collector_apply,
                 )
-
-                # Apply LayerNorm after SwiGLU
-                ln_module = nn.LayerNorm(name=f"ln_{i}")
-                ln_params = self.variables["params"][f"ln_{i}"]
-                activations = pure_apply_fn(ln_module, ln_params, activations)
 
         # Final output layer
         output_module = nn.Dense(

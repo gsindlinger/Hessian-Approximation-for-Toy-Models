@@ -620,7 +620,7 @@ class EKFACComputer(CollectorBasedHessianEstimator):
         gradients_dict: Dict[str, Float[Array, "N O"]],
         compute_fn: Callable,
         batch_size: int | None = None,
-    ) -> Dict[str, Float[Array, "..."]]:
+    ) -> Dict[str, Dict[str, Float[Array, "..."]]]:
         """Process activations and gradients to compute covariances in batches."""
         if batch_size is None:
             batch_size = JAXDataLoader.get_batch_size()
