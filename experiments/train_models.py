@@ -154,7 +154,7 @@ def train_single_model(
         model_config.output_dim = dataset.output_dim()
 
     model = ModelRegistry.get_model(
-        model_config=model_config,
+        model_config=model_config, seed=seed
     )
     logger.info(f"Model has {model.num_params} parameters")
 

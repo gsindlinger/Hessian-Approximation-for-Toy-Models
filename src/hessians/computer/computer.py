@@ -52,8 +52,9 @@ class HessianEstimator(ABC):
         ):
             self.precomputed_data = precomputed_data_type.load(directory_path)
             self.is_built = True
+            
             logger.info(
-                f"Loaded Hessian approximation from directory: {directory_path}"
+                f"Loaded {precomputed_data_type.name()} from directory: {directory_path}"
             )
         # Otherwise, build the data and save it if a base directory is provided
         else:
@@ -61,7 +62,9 @@ class HessianEstimator(ABC):
             if directory_path is not None and self.precomputed_data is not None:
                 self.precomputed_data.save(directory=directory_path)
                 logger.info(
-                    f"Saved Hessian approximation to directory: {directory_path}"
+                    f"Saved \
+                    {precomputed_data_type.name() if issubclass(precomputed_data_type, ApproximationData) else 'precomputed data'} \
+                    to directory: {directory_path}"
                 )
             self.is_built = True
         return self

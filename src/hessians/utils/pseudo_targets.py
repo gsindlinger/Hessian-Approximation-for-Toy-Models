@@ -120,14 +120,7 @@ def sample_gradients(
     idx = jax.random.choice(subkey, num_train, (n_vectors,), replace=False)
 
     sample_inputs = inputs[idx]
-
-    pseudo_targets = generate_pseudo_targets(
-        model=model,
-        params=params,
-        inputs=sample_inputs,
-        loss_fn=loss_fn,
-        rng_key=rng_key,
-    )
+    sample_targets = targets[idx]
 
     def grad_and_flatten(params, inputs, pseudo_targets):
         grad = jax.grad(lambda p: loss_fn(model.apply(p, inputs), pseudo_targets))(
@@ -138,4 +131,4 @@ def sample_gradients(
 
     # Vectorize the fused operation with vmap and JIT
     batched_grad_fn = jax.jit(jax.vmap(grad_and_flatten, in_axes=(None, 0, 0)))
-    return batched_grad_fn(params, sample_inputs, pseudo_targets)
+    return batched_grad_fn(params, sample_inputs, sample_targets)
