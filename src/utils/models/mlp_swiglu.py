@@ -5,7 +5,7 @@ from typing import List, Tuple
 
 from flax import linen as nn
 from jaxtyping import Array, Float
-import jax.numpy as jnp
+
 from src.hessians.collector import CollectorBase, layer_wrapper_vjp
 from src.utils.models.approximation_model import ApproximationModel
 from src.utils.models.swiglu import SwiGLU

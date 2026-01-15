@@ -13,6 +13,8 @@ hessian_analysis:
     - fim
     - block_fim
     - block_hessian
+    - eshampoo
+    - etkfac
     comparison_references:
     - exact
     - gnh

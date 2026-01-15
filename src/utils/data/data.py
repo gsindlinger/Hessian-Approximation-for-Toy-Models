@@ -75,16 +75,21 @@ class Dataset:
         pass
 
     @staticmethod
-    def normalize_data(train_data: Array, test_data: Array) -> Tuple[Array, Array]:
+    def normalize_data(
+        train_data: Array, test_data: Optional[Array]
+    ) -> Tuple[Array, Optional[Array]]:
         """Standardize inputs using StandardScaler."""
 
         scaler = StandardScaler()
         normalized_train_data = scaler.fit_transform(train_data)  # type: ignore
-        normalized_test_data = scaler.transform(test_data)
-
+        normalized_test_data = (
+            scaler.transform(test_data) if test_data is not None else None
+        )
         return (
             jnp.asarray(normalized_train_data, dtype=train_data.dtype),
-            jnp.asarray(normalized_test_data, dtype=test_data.dtype),
+            jnp.asarray(normalized_test_data, dtype=test_data.dtype)  # type: ignore
+            if normalized_test_data is not None
+            else None,
         )
 
     def get_k_fold_splits(

@@ -46,7 +46,6 @@ import os
 import time
 from dataclasses import asdict
 from typing import Dict, Tuple
-import jax.numpy as jnp
 
 import hydra
 from hydra.core.config_store import ConfigStore
@@ -392,8 +391,7 @@ def analyze_single_model(
     logger.info(f"{'=' * 70}")
     logger.info(f"[HESSIAN] Analyzing: {model_config.get_model_display_name()}")
     logger.info(f"Model directory: {model_config.directory}")
-    
-    
+
     logger.info(f"{'=' * 70}")
 
     # Log training metrics if available
@@ -403,12 +401,11 @@ def analyze_single_model(
         if model_config.loss == LossType.CROSS_ENTROPY:
             val_acc = metadata.get("val_accuracy", "N/A")
             logger.info(f"Val accuracy: {val_acc}")
-            
+
     # Normalize data for regression tasks
     if model_config.loss == LossType.MSE:
-        dataset.inputs, _ = Dataset.normalize_data(dataset.inputs, jnp.array([]))
+        dataset.inputs, _ = Dataset.normalize_data(dataset.inputs, None)
         # train_targets, val_targets = Dataset.normalize_data(train_targets, val_targets)
-
 
     # Prepare data
     assert model_config.directory is not None, (
