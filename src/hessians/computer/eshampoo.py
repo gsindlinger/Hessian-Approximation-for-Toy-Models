@@ -29,7 +29,6 @@ class EShampooComputer(EKFACComputer):
             gradient_batch = gradient_batch_dict[layer]
 
             grad = jnp.einsum("no, ni -> oi", gradient_batch, activation_batch)
-            # TODO: Double check transpose
             activation_cov = jnp.einsum("oi, oj->ij", grad, grad)
             gradient_cov = jnp.einsum("oi,pi->op", grad, grad)
 
