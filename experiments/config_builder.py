@@ -419,14 +419,66 @@ def sweep_concrete_simple():
     return config
 
 
+def sweep_concrete_single_model():
+    config = concrete_sweep()
+    config.experiment_name = "concrete_single_model"
+
+    models = []
+
+    # Optimized hyperparameter grid
+    lrs = [
+        1e-4,
+        5e-4,
+        1e-3,
+        5e-3,
+    ]  # More conservative for regression
+    wds = [0.0, 1e-5, 1e-4, 5e-4, 1e-3]  # More regularization options
+
+    hidden_dim = [128, 128]
+    for lr in lrs:
+        for wd in wds:
+            model = (
+                ModelConfigBuilder(ModelArchitecture.MLP, hidden_dim)
+                .with_loss(LossType.MSE)
+                .with_training(
+                    learning_rate=lr,
+                    weight_decay=wd,
+                    epochs=500,
+                    batch_size=32,
+                    input_dim=8,
+                    output_dim=1,
+                )
+                .build()
+            )
+            models.append(model)
+
+    config.models = models
+
+    return config
+
+
 def sweep_energy():
     config = concrete_sweep()
-    config.experiment_name = "energy_sweep"
+    config.experiment_name = "energy"
     config.dataset = DatasetConfig(
         name=DatasetEnum.ENERGY,
         path="experiments/datasets/energy",
         test_size=0.1,
     )
+    for model in config.models:
+        model.input_dim = 8
+        model.output_dim = 2
+        model.loss = LossType.MSE
+
+    return config
+
+
+def sweep_energy_single_model():
+    config = sweep_concrete_single_model()
+    config.experiment_name = "energy_single_model"
+
+    config.base_output_dir
+
     for model in config.models:
         model.input_dim = 8
         model.output_dim = 2
@@ -566,8 +618,10 @@ if __name__ == "__main__":
             "digits_simple",
             "concrete",
             "concrete_simple",
+            "concrete_single_model",
             "energy",
             "energy_simple",
+            "energy_single_model",
         ],
         default="training",
         help="Type of configuration to generate",
@@ -599,6 +653,12 @@ if __name__ == "__main__":
         case "energy_simple":
             config = sweep_energy_simple()
             output_path = "experiments/debug_scripts/configs/energy_simple.yaml"
+        case "concrete_single_model":
+            config = sweep_concrete_single_model()
+            output_path = "experiments/debug_scripts/configs/concrete_single_model.yaml"
+        case "energy_single_model":
+            config = sweep_energy_single_model()
+            output_path = "experiments/debug_scripts/configs/energy_single_model.yaml"
         case _:
             raise ValueError(f"Unknown config type: {args.type}")
 
