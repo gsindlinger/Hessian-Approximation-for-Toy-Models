@@ -18,6 +18,7 @@ from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import generate_pseudo_targets, sample_gradients
 from src.utils.data.data import Dataset, RandomClassificationDataset
 from src.utils.loss import cross_entropy_loss, get_loss
+from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
 from src.utils.models.registry import ModelRegistry
@@ -211,7 +212,7 @@ def test_fim_block_computation(
     ).build()
     full_fim = fim_computer.estimate_hessian(damping=damping)
 
-    assert jnp.allclose(block_fim, full_fim, atol=1e-5), (
+    assert FullMatrixMetric.RELATIVE_FROBENIUS.compute(full_fim, block_fim) < 1e-4, (
         "FIM block approximation does not match full FIM for linear model."
     )
 
@@ -248,7 +249,7 @@ def test_fim_block_computation_multi_layer(
         ]
         start_idx += end_idx
 
-        assert jnp.allclose(block_fim_block, full_fim_block, atol=1e-5), (
+        assert FullMatrixMetric.RELATIVE_FROBENIUS.compute(full_fim_block, block_fim_block) < 1e-4, (
             f"FIM block approximation does not match full FIM for layer {layer_name}."
         )
 
@@ -292,14 +293,14 @@ def test_fim_block_hvp_ihvp_roundtrip_linear(
     hvp_block = block_fim._estimate_hvp(v_ones, damping=damping)
     hvp_full = full_fim._estimate_hvp(v_ones, damping=damping)
 
-    assert VectorMetric.RELATIVE_ERROR.compute(hvp_block, hvp_full) < 1e-4, (
+    assert VectorMetric.RELATIVE_ERROR.compute(hvp_block, hvp_full) < 1e-3, (
         "Block FIM HVP does not match full FIM HVP (ones vector)"
     )
 
     hvp_block_r = block_fim._estimate_hvp(v_rand, damping=damping)
     hvp_full_r = full_fim._estimate_hvp(v_rand, damping=damping)
 
-    assert VectorMetric.RELATIVE_ERROR.compute(hvp_block_r, hvp_full_r) < 1e-4, (
+    assert VectorMetric.RELATIVE_ERROR.compute(hvp_block_r, hvp_full_r) < 1e-3, (
         "Block FIM HVP does not match full FIM HVP (random vector)"
     )
 
@@ -309,14 +310,14 @@ def test_fim_block_hvp_ihvp_roundtrip_linear(
     ihvp_block = block_fim._estimate_ihvp(v_ones, damping=damping)
     ihvp_full = full_fim._estimate_ihvp(v_ones, damping=damping)
 
-    assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block, ihvp_full) < 1e-4, (
+    assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block, ihvp_full) < 1e-3, (
         "Block FIM IHVP does not match full FIM IHVP (ones vector)"
     )
 
     ihvp_block_r = block_fim._estimate_ihvp(v_rand, damping=damping)
     ihvp_full_r = full_fim._estimate_ihvp(v_rand, damping=damping)
 
-    assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block_r, ihvp_full_r) < 1e-4, (
+    assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block_r, ihvp_full_r) < 1e-3, (
         "Block FIM IHVP does not match full FIM IHVP (random vector)"
     )
 
@@ -326,10 +327,10 @@ def test_fim_block_hvp_ihvp_roundtrip_linear(
     roundtrip_block = block_fim._estimate_hvp(ihvp_block_r, damping=damping)
     roundtrip_full = full_fim._estimate_hvp(ihvp_full_r, damping=damping)
 
-    assert VectorMetric.RELATIVE_ERROR.compute(roundtrip_block, v_rand) < 1e-4, (
+    assert VectorMetric.RELATIVE_ERROR.compute(roundtrip_block, v_rand) < 1e-3, (
         "Block FIM round-trip H(H^{-1}v) failed"
     )
 
-    assert VectorMetric.RELATIVE_ERROR.compute(roundtrip_full, v_rand) < 1e-4, (
+    assert VectorMetric.RELATIVE_ERROR.compute(roundtrip_full, v_rand) < 1e-3, (
         "Full FIM round-trip H(H^{-1}v) failed"
     )

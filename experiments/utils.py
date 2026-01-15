@@ -1,6 +1,6 @@
 import gc
 import logging
-from dataclasses import fields, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from enum import Enum
 from typing import List, Tuple, get_args, get_type_hints
 
@@ -12,6 +12,7 @@ from typing_extensions import get_origin
 
 from src.config import DatasetConfig
 from src.utils.utils import get_peak_bytes_in_use
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -146,3 +147,29 @@ def block_tree(x, name: str):
         raise
     logger.info(f"[SYNC] Completed {name}")
     return x
+
+def json_safe(obj):
+    # JAX arrays
+    if isinstance(obj, jax.Array):
+        return np.asarray(obj).tolist()
+
+    # NumPy arrays / scalars
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+
+    # Enums
+    if isinstance(obj, Enum):
+        return obj.value
+
+    # Dataclasses
+    if is_dataclass(obj):
+        return asdict(obj)
+
+    # Sets / tuples
+    if isinstance(obj, (set, tuple)):
+        return list(obj)
+
+    # Fallback
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
