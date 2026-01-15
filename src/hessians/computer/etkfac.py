@@ -55,7 +55,7 @@ class ETKFACComputer(EKFACComputer):
         gradients_dict: Dict[str, Float[Array, "N O"]],
         compute_fn,
         batch_size: int | None = None,
-    ) -> Dict[str, Float[Array, "..."]]:
+    ) -> Dict[str, Dict[str, Float[Array, "..."]]]:
         """Process covariances and multiply trace product at the end."""
         result = EKFACComputer._batched_covariance_processing(
             activations_dict, gradients_dict, compute_fn, batch_size
@@ -64,6 +64,8 @@ class ETKFACComputer(EKFACComputer):
         # Multiply trace product with gradient covariance after expectation is computed
         trace_dict = result["trace"]
         for layer in result["gradient_cov"].keys():
-            result["gradient_cov"][layer] = result["gradient_cov"][layer] * trace_dict[layer]
+            result["gradient_cov"][layer] = (
+                result["gradient_cov"][layer] * trace_dict[layer]
+            )
 
         return result
