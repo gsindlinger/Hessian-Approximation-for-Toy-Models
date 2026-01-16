@@ -1,7 +1,7 @@
 base_output_dir: experiments/data/
 dataset:
-  name: concrete
-  path: experiments/datasets/concrete
+  name: energy
+  path: experiments/datasets/energy
   store_on_disk: true
   test_size: 0.1
 experiment_name: energy_single_model

@@ -261,7 +261,9 @@ class BlockHessianData(ApproximationData):
 
     blocks: List[Tuple[int, int]] = field(default_factory=list)
     n_params: int = 0
-    block_mask: Float[Array, "n_params n_params"] = field(default_factory=lambda: jnp.array([[]]))
+    block_mask: Float[Array, "n_params n_params"] = field(
+        default_factory=lambda: jnp.array([[]])
+    )
 
     @classmethod
     def name(cls) -> str:

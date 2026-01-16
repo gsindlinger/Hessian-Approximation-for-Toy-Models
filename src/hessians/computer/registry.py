@@ -14,7 +14,14 @@ from src.hessians.computer.hessian_block import BlockHessianComputer
 from src.hessians.computer.kfac import KFACComputer
 from src.hessians.computer.shampoo import ShampooComputer
 from src.hessians.computer.tkfac import TKFACComputer
-from src.hessians.utils.data import DataActivationsGradients, ModelContext
+from src.hessians.utils.data import (
+    ApproximationData,
+    BlockHessianData,
+    DataActivationsGradients,
+    EKFACData,
+    FIMData,
+    ModelContext,
+)
 
 
 class HessianComputerRegistry:
@@ -34,6 +41,22 @@ class HessianComputerRegistry:
         HessianApproximationMethod.ESHAMPOO: EShampooComputer,
     }
 
+    DATA_REGISTRY: Dict[
+        HessianApproximationMethod, Tuple[type[ApproximationData], str]
+    ] = {
+        HessianApproximationMethod.KFAC: (EKFACData, "ekfac_data"),
+        HessianApproximationMethod.EKFAC: (EKFACData, "ekfac_data"),
+        HessianApproximationMethod.FIM: (FIMData, "fim_data"),
+        HessianApproximationMethod.SHAMPOO: (EKFACData, "eshampoo_data"),
+        HessianApproximationMethod.ESHAMPOO: (EKFACData, "eshampoo_data"),
+        HessianApproximationMethod.TKFAC: (EKFACData, "etkfac_data"),
+        HessianApproximationMethod.ETKFAC: (EKFACData, "etkfac_data"),
+        HessianApproximationMethod.BLOCK_HESSIAN: (
+            BlockHessianData,
+            "block_hessian_data",
+        ),
+    }
+
     @staticmethod
     def get_computer(
         approximator: HessianApproximationMethod,
@@ -41,7 +64,22 @@ class HessianComputerRegistry:
         | Tuple[DataActivationsGradients, DataActivationsGradients],
     ) -> HessianEstimator | HessianComputer:
         computer_cls = HessianComputerRegistry.REGISTRY[approximator]
-        return computer_cls(compute_context=compute_context)
+        precomputed_data_type, precomputed_data_dir = (
+            HessianComputerRegistry.get_precomputed_data_type(approximator)
+        )
+
+        # For exact Hessian, no precomputed data is needed
+        if approximator == HessianApproximationMethod.EXACT:
+            return computer_cls(
+                compute_context=compute_context,
+            )
+
+        # For other approximators, pass precomputed data type if available
+        return computer_cls(
+            compute_context=compute_context,
+            precomputed_data_directory=precomputed_data_dir,
+            precomputed_data=precomputed_data_type() if precomputed_data_type else None,
+        )
 
     @staticmethod
     def get_compute_context(
@@ -58,3 +96,9 @@ class HessianComputerRegistry:
             return model_ctx
         else:
             return collector_data
+
+    @staticmethod
+    def get_precomputed_data_type(
+        approximator: HessianApproximationMethod,
+    ) -> Tuple[type[ApproximationData], str] | Tuple[None, None]:
+        return HessianComputerRegistry.DATA_REGISTRY.get(approximator, (None, None))

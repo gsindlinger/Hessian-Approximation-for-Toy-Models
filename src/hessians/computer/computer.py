@@ -29,6 +29,7 @@ class HessianEstimator(ABC):
 
     is_built: bool = False
     precomputed_data: Optional[ApproximationData] = None
+    precomputed_data_directory: Optional[str] = None
 
     def build(self, base_directory: Optional[str] = None) -> HessianEstimator:
         """Build the Hessian approximation by computing the relevant components. Optionally saves the components and config to the specified directory."""
@@ -40,34 +41,30 @@ class HessianEstimator(ABC):
         # Use base directory plus the class name to create path for precomputed data
         directory_path = None
         if base_directory is not None:
-            precomputed_data_type = type(self.precomputed_data)
-            
             # create directory path based on self type and replace computer with data
-            directory_name = type(self).__name__.lower().replace("computer", "_data")
+            if self.precomputed_data_directory is None:
+                directory_name = (
+                    type(self).__name__.lower().replace("computer", "_data")
+                )
+            else:
+                directory_name = self.precomputed_data_directory
             directory_path = f"{base_directory}/{directory_name}"
 
         # Check if data exists on disk, if so load it
-        if (
-            directory_path is not None
-            and ApproximationData.exists(directory_path)
-            and issubclass(precomputed_data_type, ApproximationData)
-        ):
-            self.precomputed_data = precomputed_data_type.load(directory_path)
-            self.is_built = True
-            
-            logger.info(
-                f"Loaded {directory_name} from directory: {directory_path}"
+        if directory_path is not None and ApproximationData.exists(directory_path):
+            assert self.precomputed_data is not None, (
+                "precomputed_data must be set to load from disk."
             )
+            self.precomputed_data = self.precomputed_data.load(directory_path)
+            self.is_built = True
+
+            logger.info(f"Loaded {directory_name} from directory: {directory_path}")
         # Otherwise, build the data and save it if a base directory is provided
         else:
             self.precomputed_data = self._build(compute_context=self.compute_context)
             if directory_path is not None and self.precomputed_data is not None:
                 self.precomputed_data.save(directory=directory_path)
-                output_type = (
-                    precomputed_data_type.name()
-                    if issubclass(precomputed_data_type, ApproximationData)
-                    else "precomputed data"
-                )
+                output_type = "precomputed data"
                 logger.info(f"Saved {output_type} to directory: {directory_path}")
             self.is_built = True
         return self
