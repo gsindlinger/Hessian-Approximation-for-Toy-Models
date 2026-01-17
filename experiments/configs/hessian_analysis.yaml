@@ -13,7 +13,9 @@ hessian_analysis:
     - fim
     - block_fim
     - block_hessian
+    - shampoo
     - eshampoo
+    - tkfac
     - etkfac
     comparison_references:
     - exact
@@ -32,7 +34,7 @@ hessian_analysis:
     - spectral_relative
     - cosine_similarity
     - trace_distance
-  results_output_dir: experiments/data/results/hessian_analysis
+  results_output_dir: experiments/data/results/hessian_analysis/digits
   vector_config:
     metrics:
     - absolute_l2_diff
@@ -41,7 +43,7 @@ hessian_analysis:
     - inner_product_diff
     - relative_energy_diff
     - inner_product_ratio
-    num_samples: 1000
+    num_samples: 700
     sampling_method: gradients
 models: []
 seed: 42

@@ -12,6 +12,7 @@ import yaml
 from simple_parsing import ArgumentParser
 
 from src.config import (
+    ActivationFunction,
     ComputationType,
     DampingStrategy,
     DatasetConfig,
@@ -568,6 +569,7 @@ def register_enum_representers():
     yaml.add_representer(VectorSamplingMethod, enum_representer)
     yaml.add_representer(VectorMetric, enum_representer)
     yaml.add_representer(FullMatrixMetric, enum_representer)
+    yaml.add_representer(ActivationFunction, enum_representer)
 
 
 def hessian_analysis_sweep():
