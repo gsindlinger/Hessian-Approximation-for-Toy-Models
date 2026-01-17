@@ -9,6 +9,8 @@ import jax.numpy as jnp
 from flax import linen as nn
 from jax.tree_util import tree_flatten_with_path
 
+from src.config import ActivationFunction
+
 
 @dataclass
 class ApproximationModel(nn.Module):
@@ -16,17 +18,21 @@ class ApproximationModel(nn.Module):
     output_dim: int
     hidden_dim: List[int]
     seed: int = 42
+    
+    activation: ActivationFunction | None = ActivationFunction.RELU
 
     @classmethod
-    def get_activation(cls, act_str: str) -> Callable:
+    def get_activation_fn(cls, activation: ActivationFunction) -> Callable:
         activations = {
-            "relu": nn.relu,
-            "tanh": nn.tanh,
+            ActivationFunction.RELU: jax.nn.relu,
+            ActivationFunction.TANH: jax.nn.tanh,
+            ActivationFunction.SWIGLU: ValueError("SwiGLU is not a standalone activation function and should be used within a SwiGLU block."),
         }
-        if act_str not in activations:
-            raise ValueError(f"Unknown activation: {act_str}")
-        return activations[act_str]
-
+        
+        if activation not in activations:
+            raise ValueError(f"Unknown activation: {activation}")
+        
+        return activations[activation]
     def get_layer_names(self) -> List[str]:
         """
         Get the names of all unique layers in the model.

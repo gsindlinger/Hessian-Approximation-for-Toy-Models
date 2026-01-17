@@ -5,6 +5,7 @@ from dataclasses import field
 from flax import linen as nn
 from jaxtyping import Array, Float
 
+from src.config import ActivationFunction
 from src.hessians.collector import CollectorBase, layer_wrapper_vjp
 from src.utils.models.approximation_model import ApproximationModel
 
@@ -19,7 +20,14 @@ class MLP(ApproximationModel):
     """
 
     hidden_dim: list[int] | None = field(default_factory=list)
-    activation: str = "relu"
+    activation: ActivationFunction = ActivationFunction.TANH
+    
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        assert self.activation in {
+            ActivationFunction.RELU,
+            ActivationFunction.TANH,
+        }, "MLP only supports ReLU and Tanh activations."
 
     @nn.compact
     def __call__(
@@ -28,7 +36,7 @@ class MLP(ApproximationModel):
         """Forward pass of the MLP model.
         Returns the logits of the model.
         """
-        act_fn = self.get_activation(self.activation)
+        act_fn = self.get_activation_fn(self.activation)
         if self.hidden_dim is not None:
             for i, h in enumerate(self.hidden_dim):
                 x = nn.Dense(h, use_bias=False, name=f"linear_{i}")(x)
@@ -54,7 +62,7 @@ class MLP(ApproximationModel):
             return module.apply({"params": params}, activations)
 
         activations = x
-        act_fn = self.get_activation(self.activation)
+        act_fn = self.get_activation_fn(self.activation)
 
         if self.hidden_dim is not None:
             for i, h in enumerate(self.hidden_dim):

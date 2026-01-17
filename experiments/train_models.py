@@ -145,8 +145,11 @@ def train_single_model(
 
     # Normalize data for regression tasks
     if model_config.loss == LossType.MSE:
-        train_inputs, _ = Dataset.normalize_data(train_inputs, val_inputs)
+        train_inputs, val_targets = Dataset.normalize_data(train_inputs, val_inputs)
         train_targets, val_targets = Dataset.normalize_data(train_targets, val_targets)
+        
+    assert val_targets is not None, "Validation targets cannot be None"
+    assert train_targets is not None, "Training targets cannot be None"
 
     if model_config.input_dim != dataset.input_dim():
         model_config.input_dim = dataset.input_dim()

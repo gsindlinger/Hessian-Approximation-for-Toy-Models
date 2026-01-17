@@ -6246,6 +6246,6 @@ models:
     learning_rate: 0.01
     optimizer: adamw
     weight_decay: 0.01
-seed: 42
+seed: 1234
 selection_metric: val_accuracy
 selection_minimize: false

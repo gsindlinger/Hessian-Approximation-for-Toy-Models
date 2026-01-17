@@ -26,6 +26,12 @@ class ModelArchitecture(str, Enum):
     MLP = "mlp"
     MLPSWIGLU = "mlp_swiglu"
     LINEAR = "linear"
+    
+class ActivationFunction(str, Enum):
+    """Available activation functions."""
+    RELU = "relu"
+    TANH = "tanh"
+    SWIGLU = "swiglu"
 
 
 class OptimizerType(str, Enum):
@@ -144,6 +150,9 @@ class ModelConfig:
     input_dim: int = field(default=0)
     hidden_dim: List[int] | List[Tuple[int, int, int]] | None = field(default=None)
     output_dim: int = field(default=0)
+    
+    # Activation function
+    activation: Optional[ActivationFunction] = ActivationFunction.TANH
 
     # Loss function
     loss: LossType = LossType.CROSS_ENTROPY

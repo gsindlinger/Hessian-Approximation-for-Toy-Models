@@ -5,6 +5,7 @@ from dataclasses import field
 from flax import linen as nn
 from jaxtyping import Array, Float
 
+from src.config import ActivationFunction
 from src.hessians.collector import CollectorBase, layer_wrapper_vjp
 
 from .approximation_model import ApproximationModel
@@ -19,6 +20,11 @@ class LinearModel(ApproximationModel):
     """
 
     hidden_dim: list[int] | None = field(default_factory=list)
+    activation: ActivationFunction | None = None  # Linear model does not use activation functions
+    
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        assert self.activation is None, "LinearModel does not support activation functions."
 
     @nn.compact
     def __call__(
