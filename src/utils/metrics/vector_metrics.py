@@ -16,6 +16,7 @@ class VectorMetric(str, Enum):
     INNER_PRODUCT_DIFF = "inner_product_diff"  # |⟨x, v_1⟩ - ⟨x, v_2⟩|
     RELATIVE_ENERGY_DIFF = "relative_energy_diff"  # |‖v_1‖² - ‖v_2‖²| / ‖v_1‖²
     INNER_PRODUCT_RATIO = "inner_product_ratio"  # ⟨x, v_2⟩ / ⟨x, v_1⟩
+    RELATIVE_INNER_PRODUCT_DIFF = "relative_inner_product_diff"  # |⟨x, v_1⟩ - ⟨x, v_2⟩| / |⟨x, v_1⟩|
 
     def compute_fn(self) -> Callable:
         """Return to the corresponding enum belonging metric as function / callable."""
@@ -41,6 +42,13 @@ class VectorMetric(str, Enum):
             ip1 = jnp.sum(x * v1, axis=-1)
             ip2 = jnp.sum(x * v2, axis=-1)
             return jnp.abs(ip1 - ip2)
+        
+        def relative_inner_product_diff(v1, v2, x):
+            if x is None:
+                raise ValueError("relative_inner_product_diff requires auxiliary vector x")
+            ip1 = jnp.sum(x * v1, axis=-1)
+            ip2 = jnp.sum(x * v2, axis=-1)
+            return jnp.abs(ip1 - ip2) / (jnp.abs(ip1) + 1e-10)
 
         # ||v_1 - v_2||
         def absolute_l2_diff(v1, v2, x=None):
@@ -67,6 +75,7 @@ class VectorMetric(str, Enum):
             VectorMetric.RELATIVE_ERROR: relative_error,
             VectorMetric.COSINE_SIMILARITY: cosine_similarity,
             VectorMetric.INNER_PRODUCT_DIFF: inner_product_diff,
+            VectorMetric.RELATIVE_INNER_PRODUCT_DIFF: relative_inner_product_diff,
             VectorMetric.ABSOLUTE_L2_DIFF: absolute_l2_diff,
             VectorMetric.RELATIVE_ENERGY_DIFF: relative_energy_diff,
             VectorMetric.INNER_PRODUCT_RATIO: inner_product_ratio,

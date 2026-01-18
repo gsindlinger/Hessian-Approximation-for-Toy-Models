@@ -1,6 +1,6 @@
 from dataclasses import asdict
 
-from src.config import ModelArchitecture, ModelConfig
+from src.config import ActivationFunction, ModelArchitecture, ModelConfig
 from src.utils.models.approximation_model import ApproximationModel
 from src.utils.models.linear_model import LinearModel
 from src.utils.models.mlp import MLP
@@ -20,9 +20,14 @@ class ModelRegistry:
     def get_model(model_config: ModelConfig, seed: int = 42) -> ApproximationModel:
         model_cls = ModelRegistry.REGISTRY[model_config.architecture]
         hidden_dim = asdict(model_config).get("hidden_dim", [])
+        activation = asdict(model_config).get("activation", None)
+        if activation is not None:
+            activation = ActivationFunction(activation)
+            
         return model_cls(
             input_dim=model_config.input_dim,
             output_dim=model_config.output_dim,
             hidden_dim=hidden_dim,
+            activation=activation,
             seed=seed,
         )
