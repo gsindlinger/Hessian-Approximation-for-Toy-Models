@@ -150,6 +150,8 @@ def train_single_model(
 
     assert val_targets is not None, "Validation targets cannot be None"
     assert train_targets is not None, "Training targets cannot be None"
+    assert val_inputs is not None, "Validation inputs cannot be None"
+    assert train_inputs is not None, "Training inputs cannot be None"
 
     if model_config.input_dim != dataset.input_dim():
         model_config.input_dim = dataset.input_dim()

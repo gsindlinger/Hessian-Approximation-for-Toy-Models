@@ -21,7 +21,7 @@ class MLP(ApproximationModel):
 
     hidden_dim: list[int] | None = field(default_factory=list)
     activation: ActivationFunction = ActivationFunction.TANH
-    
+
     def __post_init__(self) -> None:
         super().__post_init__()
         assert self.activation in {

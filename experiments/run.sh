@@ -30,18 +30,6 @@ fi
 
 echo "Training complete. Path captured: $BEST_MODELS_PATH"
 
-# -----------------------------
-# Set NUM_SAMPLES based on config name
-# -----------------------------
-if [[ "$TRAINING_CONFIG_NAME" == *concrete* || "$TRAINING_CONFIG_NAME" == *energy* ]]; then
-    NUM_SAMPLES=500
-else
-    NUM_SAMPLES=700
-fi
-
-echo "Using NUM_SAMPLES=$NUM_SAMPLES"
-
-
 uv run python -m experiments.hessian_analysis \
     --config-name=hessian_analysis \
     --config-path=./configs \

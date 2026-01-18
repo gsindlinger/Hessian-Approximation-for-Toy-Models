@@ -99,7 +99,7 @@ def collect_data(
 
     # Sample gradient vectors
     logger.info("[HESSIAN] Sampling gradient vectors")
-    grads_1 = sample_vectors(
+    grads: Float[Array, "2 n_vectors num_params"] = sample_vectors(
         vector_config=hessian_config.vector_config,
         model=model,
         params=params,
@@ -107,17 +107,11 @@ def collect_data(
         targets=train_targets,
         loss_fn=loss_fn,
         seed=seed,
+        repetitions=2,
     )
 
-    grads_2 = sample_vectors(
-        vector_config=hessian_config.vector_config,
-        model=model,
-        params=params,
-        inputs=train_inputs,
-        targets=train_targets,
-        loss_fn=loss_fn,
-        seed=seed + 1,
-    )
+    grads_1, grads_2 = grads[0], grads[1]
+
     cleanup_memory("gradient_sampling")
 
     # Collect Activation & Gradients (2 runs)

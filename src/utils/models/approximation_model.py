@@ -18,21 +18,24 @@ class ApproximationModel(nn.Module):
     output_dim: int
     hidden_dim: List[int]
     seed: int = 42
-    
-    activation: ActivationFunction | None = ActivationFunction.RELU
+
+    activation: ActivationFunction | None = ActivationFunction.TANH
 
     @classmethod
     def get_activation_fn(cls, activation: ActivationFunction) -> Callable:
         activations = {
             ActivationFunction.RELU: jax.nn.relu,
             ActivationFunction.TANH: jax.nn.tanh,
-            ActivationFunction.SWIGLU: ValueError("SwiGLU is not a standalone activation function and should be used within a SwiGLU block."),
+            ActivationFunction.SWIGLU: ValueError(
+                "SwiGLU is not a standalone activation function and should be used within a SwiGLU block."
+            ),
         }
-        
+
         if activation not in activations:
             raise ValueError(f"Unknown activation: {activation}")
-        
+
         return activations[activation]
+
     def get_layer_names(self) -> List[str]:
         """
         Get the names of all unique layers in the model.
