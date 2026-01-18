@@ -145,9 +145,9 @@ def train_single_model(
 
     # Normalize data for regression tasks
     if model_config.loss == LossType.MSE:
-        train_inputs, val_targets = Dataset.normalize_data(train_inputs, val_inputs)
+        train_inputs, val_inputs = Dataset.normalize_data(train_inputs, val_inputs)
         train_targets, val_targets = Dataset.normalize_data(train_targets, val_targets)
-        
+
     assert val_targets is not None, "Validation targets cannot be None"
     assert train_targets is not None, "Training targets cannot be None"
 
@@ -156,9 +156,7 @@ def train_single_model(
     if model_config.output_dim != dataset.output_dim():
         model_config.output_dim = dataset.output_dim()
 
-    model = ModelRegistry.get_model(
-        model_config=model_config, seed=seed
-    )
+    model = ModelRegistry.get_model(model_config=model_config, seed=seed)
     logger.info(f"Model has {model.num_params} parameters")
 
     model_dir = model_config.directory
