@@ -65,7 +65,7 @@ class FullMatrixMetric(str, Enum):
 
         def cosine_similarity(A, B):
             # tr(A @ B^T) / (||A||_F * ||B||_F)
-            inner = jnp.vdot(A, B)
+            inner = jnp.trace(A @ B.T)
             norm_a = jnp.linalg.norm(A, ord="fro")
             norm_b = jnp.linalg.norm(B, ord="fro")
             cosine = inner / (norm_a * norm_b + 1e-10)

@@ -4,6 +4,7 @@ from typing import Callable, List, Optional
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
+from matplotlib import axis
 
 
 class VectorMetric(str, Enum):
@@ -25,38 +26,38 @@ class VectorMetric(str, Enum):
 
         # ||v_1 - v_2|| / ||v_1||
         def relative_error(v1, v2, x=None):
-            return jnp.linalg.norm(v1 - v2) / (jnp.linalg.norm(v1) + 1e-10)
+            return jnp.linalg.norm(v1 - v2, axis=-1) / (jnp.linalg.norm(v1, axis=-1) + 1e-10)
 
         # ⟨v_1, v_2⟩ / (||v_1|| * ||v_2||)
         def cosine_similarity(v1, v2, x=None):
-            dot = jnp.dot(v1, v2)
-            nrm = jnp.linalg.norm(v1) * jnp.linalg.norm(v2)
+            dot = jnp.sum(v1 * v2, axis=-1)
+            nrm = jnp.linalg.norm(v1, axis=-1) * jnp.linalg.norm(v2, axis=-1)
             return dot / (nrm + 1e-10)
 
         # |⟨x, v_1⟩ - ⟨x, v_2⟩|
         def inner_product_diff(v1, v2, x):
             if x is None:
                 raise ValueError("inner_product_diff requires auxiliary vector x")
-            ip1 = jnp.dot(x, v1)
-            ip2 = jnp.dot(x, v2)
+            ip1 = jnp.sum(x * v1, axis=-1)
+            ip2 = jnp.sum(x * v2, axis=-1)
             return jnp.abs(ip1 - ip2)
 
         # ||v_1 - v_2||
         def absolute_l2_diff(v1, v2, x=None):
-            return jnp.linalg.norm(v1 - v2)
+            return jnp.linalg.norm(v1 - v2, axis=-1)
 
         # |‖v_1‖² - ‖v_2‖²| / ‖v_1‖²
         def relative_energy_diff(v1, v2, x=None):
-            e1 = jnp.sum(v1**2)
-            e2 = jnp.sum(v2**2)
+            e1 = jnp.sum(v1**2, axis=-1)
+            e2 = jnp.sum(v2**2, axis=-1)
             return jnp.abs(e1 - e2) / (e1 + 1e-10)
 
         # |⟨x, v_2⟩ / ⟨x, v_1⟩|
         def inner_product_ratio(v1, v2, x):
             if x is None:
                 raise ValueError("inner_product_ratio requires auxiliary vector x")
-            ip1 = jnp.dot(x, v1)
-            ip2 = jnp.dot(x, v2)
+            ip1 = jnp.sum(x * v1, axis=-1)
+            ip2 = jnp.sum(x * v2, axis=-1)
             return jnp.abs((ip2 + 1e-10) / (ip1 + 1e-10))
 
         # ------------------------------------------------------

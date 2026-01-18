@@ -36,7 +36,7 @@ echo "Training complete. Path captured: $BEST_MODELS_PATH"
 if [[ "$TRAINING_CONFIG_NAME" == *concrete* || "$TRAINING_CONFIG_NAME" == *energy* ]]; then
     NUM_SAMPLES=500
 else
-    NUM_SAMPLES=1000
+    NUM_SAMPLES=700
 fi
 
 echo "Using NUM_SAMPLES=$NUM_SAMPLES"
