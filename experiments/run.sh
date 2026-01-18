@@ -34,5 +34,4 @@ uv run python -m experiments.hessian_analysis \
     --config-name=hessian_analysis \
     --config-path=./configs \
     hydra.run.dir=experiments/logs/hessian_analysis/$TRAINING_CONFIG_NAME/$(date +%Y%m%d-%H%M%S) \
-    hessian_analysis.vector_config.num_samples="$NUM_SAMPLES" \
     +override_config="$BEST_MODELS_PATH"
