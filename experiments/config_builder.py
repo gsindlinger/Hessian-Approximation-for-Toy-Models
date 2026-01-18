@@ -135,6 +135,7 @@ def create_hyperparameter_sweep(
             models.append(model)
     return models
 
+
 def digits_sweep_all():
     """Generate an extensive training sweep configuration."""
     models = []
@@ -163,9 +164,7 @@ def digits_sweep_all():
     #     )
 
     # MLPSwiGLU architectures
-    swiglu_configs = [
-        [(10, 10, 10)] * i for i in range(1, 9)
-    ]
+    swiglu_configs = [[(10, 10, 10)] * i for i in range(1, 9)]
 
     for hidden_dim in swiglu_configs:
         models.extend(
@@ -194,7 +193,7 @@ def digits_sweep_all():
         selection_metric="val_accuracy",
         selection_minimize=False,
     )
-    
+
     return config
 
 
@@ -206,7 +205,7 @@ def digits_sweep_simple():
     lrs = [1e-3]
     wds = [0.0]
 
-    # MLP architectures 
+    # MLP architectures
     mlp_configs = [
         [16],
     ]
@@ -641,7 +640,7 @@ def hessian_analysis_sweep():
         models=[],
         hessian_analysis=HessianAnalysisConfig(
             vector_config=VectorAnalysisConfig(
-                num_samples=1000,
+                num_samples=500,
                 sampling_method=VectorSamplingMethod.GRADIENTS,
                 metrics=VectorMetric.all_metrics(),
             ),

@@ -43,7 +43,7 @@ hessian_analysis:
     - inner_product_diff
     - relative_energy_diff
     - inner_product_ratio
-    num_samples: 700
+    num_samples: 500
     sampling_method: gradients
 models: []
 seed: 42

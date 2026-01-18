@@ -74,12 +74,13 @@ def sample_vectors(
     targets: Float[Array, "N n_targets"],
     loss_fn: Callable,
     seed: int = 42,
-) -> Float[Array, "n_vectors num_params"]:
-    n_vectors = vector_config.num_samples
+    repetitions: int = 1,
+) -> Float[Array, "repetitions n_vectors num_params"]:
+    n_vectors = vector_config.num_samples * repetitions
     if vector_config.sampling_method == VectorSamplingMethod.RANDOM:
         raise NotImplementedError("Random sampling not implemented yet.")
     elif vector_config.sampling_method == VectorSamplingMethod.GRADIENTS:
-        return sample_gradients(
+        gradients = sample_gradients(
             model=model,
             params=params,
             inputs=inputs,
@@ -88,10 +89,16 @@ def sample_vectors(
             n_vectors=n_vectors,
             rng_key=jax.random.PRNGKey(seed),
         )
+
     else:
         raise ValueError(
             f"Unknown vector sampling method: {vector_config.sampling_method}"
         )
+
+    # if repetitions > 1, reshape to (repetitions, num_samples, num_params)
+    if repetitions > 1:
+        gradients = gradients.reshape((repetitions, vector_config.num_samples, -1))
+    return gradients
 
 
 def sample_gradients(
