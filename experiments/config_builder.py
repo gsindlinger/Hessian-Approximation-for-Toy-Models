@@ -40,9 +40,15 @@ logger = logging.getLogger(__name__)
 class ModelConfigBuilder:
     """Builder pattern for creating ModelConfig with training settings."""
 
-    def __init__(self, architecture: ModelArchitecture, hidden_dim):
+    def __init__(
+        self,
+        architecture: ModelArchitecture,
+        hidden_dim,
+        activation_function: ActivationFunction = ActivationFunction.TANH,
+    ):
         self.architecture = architecture
         self.hidden_dim = hidden_dim
+        self.activation_function = activation_function
         self.loss = LossType.CROSS_ENTROPY
         self.init_seed = 42
         self.skip_existing = True
@@ -91,6 +97,7 @@ class ModelConfigBuilder:
     def build(self) -> ModelConfig:
         return ModelConfig(
             architecture=self.architecture,
+            activation=self.activation_function,
             hidden_dim=self.hidden_dim,
             input_dim=self.input_dim,
             output_dim=self.output_dim,
@@ -114,6 +121,7 @@ def create_hyperparameter_sweep(
     optimizer: OptimizerType = OptimizerType.ADAMW,
     input_dim: int = 0,
     output_dim: int = 0,
+    activation_function: ActivationFunction = ActivationFunction.TANH,
     **kwargs,
 ) -> List[ModelConfig]:
     """Create a grid of models with different hyperparameters."""
@@ -121,7 +129,7 @@ def create_hyperparameter_sweep(
     for lr in learning_rates:
         for wd in weight_decays:
             model = (
-                ModelConfigBuilder(architecture, hidden_dim)
+                ModelConfigBuilder(architecture, hidden_dim, activation_function)
                 .with_training(
                     learning_rate=lr,
                     weight_decay=wd,
@@ -221,6 +229,7 @@ def digits_sweep_simple():
                 batch_size=128,
                 input_dim=64,
                 output_dim=10,
+                activation_function=ActivationFunction.TANH,
             )
         )
 
@@ -239,6 +248,7 @@ def digits_sweep_simple():
                 batch_size=32,
                 input_dim=64,
                 output_dim=10,
+                activation_function=ActivationFunction.SWIGLU,
             )
         )
 

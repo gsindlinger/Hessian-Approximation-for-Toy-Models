@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+from dataclasses import field
+from typing import List, Tuple
+
+import jax.numpy as jnp
+from flax import linen as nn
+from jaxtyping import Array, Float
+
+from src.config import ActivationFunction
+from src.hessians.collector import CollectorBase, layer_wrapper_vjp
+from src.utils.models.approximation_model import ApproximationModel
+from src.utils.models.swiglu import SwiGLU
+
+
+class ResNetMLPSwiGLU(ApproximationModel):
+    """ResNet-style MLP with SwiGLU activation blocks and residual connections.
+
+    Each layer computes: output = input + SwiGLU(input)
+
+    Note: Assumes for simplicity no bias in the layers.
+    """
+
+    hidden_dim: List[Tuple[int, int, int]] | None = field(default_factory=list)
+    activation: ActivationFunction = ActivationFunction.SWIGLU
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        assert self.activation == ActivationFunction.SWIGLU, (
+            "ResNetMLPSwiGLU only supports SwiGLU activation."
+        )
+
+    @nn.compact
+    def __call__(
+        self, x: Float[Array, "batch_size input_dim"]
+    ) -> Float[Array, "batch_size output_dim"]:
+        """Forward pass of the ResNet MLP model with SwiGLU activations.
+
+        Returns the logits of the model.
+        """
+        if self.hidden_dim is not None:
+            for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
+                residual = x
+
+                # Project residual if dimensions don't match
+                if x.shape[-1] != down_dim:
+                    residual = nn.Dense(
+                        down_dim, use_bias=False, name=f"residual_proj_{i}"
+                    )(residual)
+
+                # output = input + SwiGLU(input)
+                x = SwiGLU(
+                    up_dim=up_dim,
+                    gate_dim=gate_dim,
+                    down_dim=down_dim,
+                    name=f"swiglu_{i}",
+                )(x)
+                x = x + residual
+
+        # Final output layer
+        final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
+        return final_logits
+
+    @nn.compact
+    def collector_apply(
+        self, x: Float[Array, "batch_size input_dim"], collector: CollectorBase
+    ) -> Float[Array, "batch_size output_dim"]:
+        """Forward pass with hooks for collecting activations and gradients.
+
+        This method uses a custom VJP wrapper around each layer to enable
+        collection of necessary data during forward and backward passes.
+        Data is collected by the provided `collector` instance.
+
+        Returns the logits of the model.
+        """
+
+        def pure_apply_fn(module, params, activations):
+            """Helper to apply a module with given parameters."""
+            return module.apply({"params": params}, activations)
+
+        activations = x
+
+        if self.hidden_dim is not None:
+            for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
+                residual = activations
+
+                # Project residual if dimensions don't match
+                if activations.shape[-1] != down_dim:
+                    proj_module = nn.Dense(
+                        features=down_dim, use_bias=False, name=f"residual_proj_{i}"
+                    )
+                    proj_params = self.variables["params"][f"residual_proj_{i}"]
+                    residual = layer_wrapper_vjp(
+                        lambda p, a: pure_apply_fn(proj_module, p, a),
+                        proj_params,
+                        residual,
+                        f"residual_proj_{i}",
+                        collector,
+                    )
+
+                # output = input + SwiGLU(input)
+                swiglu_module = SwiGLU(
+                    up_dim=up_dim,
+                    gate_dim=gate_dim,
+                    down_dim=down_dim,
+                    name=f"swiglu_{i}",
+                )
+                swiglu_params = self.variables["params"][f"swiglu_{i}"]
+                # Use the SwiGLU's collector_apply method
+                activations = swiglu_module.apply(
+                    {"params": swiglu_params},
+                    activations,
+                    collector,
+                    prefix=f"swiglu_{i}",
+                    method=swiglu_module.collector_apply,
+                )
+                assert isinstance(activations, jnp.ndarray)
+                activations = activations + residual
+
+        # Final output layer
+        output_module = nn.Dense(
+            features=self.output_dim, use_bias=False, name="output"
+        )
+        output_params = self.variables["params"]["output"]
+        final_logits = layer_wrapper_vjp(
+            lambda p, a: pure_apply_fn(output_module, p, a),
+            output_params,
+            activations,
+            "output",
+            collector,
+        )
+
+        return final_logits
