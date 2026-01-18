@@ -135,6 +135,68 @@ def create_hyperparameter_sweep(
             models.append(model)
     return models
 
+def digits_sweep_all():
+    """Generate an extensive training sweep configuration."""
+    models = []
+
+    # Hyperparameter grid
+    lrs = [5e-4, 1e-3, 2e-3, 1e-2]
+    wds = [0.0, 1e-4, 1e-3, 1e-2]
+
+    # MLP architectures
+    # mlp_configs = [
+    #     [64] * i for i in range(1, 7)
+    # ]
+
+    # for hidden_dim in mlp_configs:
+    #     models.extend(
+    #         create_hyperparameter_sweep(
+    #             ModelArchitecture.MLP,
+    #             hidden_dim,
+    #             learning_rates=lrs,
+    #             weight_decays=wds,
+    #             epochs=500,
+    #             batch_size=128,
+    #             input_dim=64,
+    #             output_dim=10,
+    #         )
+    #     )
+
+    # MLPSwiGLU architectures
+    swiglu_configs = [
+        [(10, 10, 10)] * i for i in range(1, 9)
+    ]
+
+    for hidden_dim in swiglu_configs:
+        models.extend(
+            create_hyperparameter_sweep(
+                ModelArchitecture.MLPSWIGLU,
+                hidden_dim,
+                learning_rates=lrs,
+                weight_decays=wds,
+                epochs=500,
+                batch_size=32,
+                input_dim=64,
+                output_dim=10,
+            )
+        )
+
+    # Create training-only config
+    config = TrainingExperimentConfig(
+        experiment_name="digits_extensive_sweep_swiglu",
+        seed=42,
+        base_output_dir="experiments/data/",
+        dataset=DatasetConfig(
+            name=DatasetEnum.SKLEARN_DIGITS,
+            path="experiments/datasets/sklearn_digits",
+        ),
+        models=models,
+        selection_metric="val_accuracy",
+        selection_minimize=False,
+    )
+    
+    return config
+
 
 def digits_sweep_simple():
     """Generate a simple training sweep configuration."""
@@ -144,7 +206,7 @@ def digits_sweep_simple():
     lrs = [1e-3]
     wds = [0.0]
 
-    # MLP architectures
+    # MLP architectures 
     mlp_configs = [
         [16],
     ]
@@ -617,6 +679,7 @@ if __name__ == "__main__":
         choices=[
             "hessian",
             "digits",
+            "digits_all",
             "digits_simple",
             "concrete",
             "concrete_simple",
@@ -639,6 +702,10 @@ if __name__ == "__main__":
         case "digits_simple":
             config = digits_sweep_simple()
             output_path = "experiments/debug_scripts/configs/digits_simple.yaml"
+
+        case "digits_all":
+            config = digits_sweep_all()
+            output_path = "experiments/configs/digits_sweep_all.yaml"
 
         case "hessian":
             config = hessian_analysis_sweep()
