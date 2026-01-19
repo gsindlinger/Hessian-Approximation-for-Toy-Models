@@ -452,11 +452,3 @@ class LDSExperimentConfig:
 
     # LDS analysis configuration
     lds_analysis: LDSAnalysisConfig = field(default_factory=LDSAnalysisConfig)
-
-    def get_results_dir(self) -> str:
-        return os.path.join(
-            self.base_output_dir,
-            "results",
-            self.experiment_name,
-            self.dataset.name.value,
-        )

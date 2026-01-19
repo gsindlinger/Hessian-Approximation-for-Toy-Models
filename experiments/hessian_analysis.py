@@ -50,11 +50,11 @@ from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 
 import hydra
-from tqdm.auto import tqdm
 from hydra.core.config_store import ConfigStore
 from jax.random import PRNGKey
 from jaxtyping import Array, Float
 from omegaconf import DictConfig, OmegaConf
+from tqdm.auto import tqdm
 
 from experiments.utils import (
     block_tree,
@@ -65,12 +65,12 @@ from experiments.utils import (
 )
 from src.config import (
     ComputationType,
-    PseudoTargetGenerationStrategy,
-    RegularizationStrategy,
-    ExperimentConfig,
     HessianAnalysisConfig,
+    HessianExperimentConfig,
     LossType,
     ModelConfig,
+    PseudoTargetGenerationStrategy,
+    RegularizationStrategy,
 )
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator
@@ -93,7 +93,7 @@ logging.getLogger("experiments.utils").setLevel(logging.WARNING)
 logging.getLogger("src.hessians.computer.computer").setLevel(logging.WARNING)
 
 cs = ConfigStore.instance()
-cs.store(name="hessian_experiment", node=ExperimentConfig)
+cs.store(name="hessian_experiment", node=HessianExperimentConfig)
 
 
 def collect_data(
@@ -191,10 +191,11 @@ def compute_hessian_comparison_for_single_model(
     # Use EKFAC as base for damping selection
     pseudo_inverse_factor: Optional[float] = None
     damping: Optional[float] = None
-    if hessian_config.computation_config.regularization_strategy in (RegularizationStrategy.AUTO_MEAN_EIGENVALUE, RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION):
-        logger.info(
-            "[HESSIAN] Using EKFAC to estimate damping for other methods."
-        )
+    if hessian_config.computation_config.regularization_strategy in (
+        RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
+        RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
+    ):
+        logger.info("[HESSIAN] Using EKFAC to estimate damping for other methods.")
         ekfac_computer = EKFACComputer(
             compute_context=collector_data, corr_context=collector_data_corr
         )
@@ -204,18 +205,23 @@ def compute_hessian_comparison_for_single_model(
             factor=hessian_config.computation_config.regularization_value,
         )
         logger.info(f"[HESSIAN] Using damping: {damping:.6f}")
-        results.setdefault("damping", damping) # type: ignore
-    elif hessian_config.computation_config.regularization_strategy == RegularizationStrategy.FIXED:
+        results.setdefault("damping", damping)  # type: ignore
+    elif (
+        hessian_config.computation_config.regularization_strategy
+        == RegularizationStrategy.FIXED
+    ):
         damping = hessian_config.computation_config.regularization_value
         logger.info(f"[HESSIAN] Using fixed damping: {damping:.6f}")
-        results.setdefault("damping", damping) # type: ignore
-    elif hessian_config.computation_config.regularization_strategy == RegularizationStrategy.PSEUDO_INVERSE:
+        results.setdefault("damping", damping)  # type: ignore
+    elif (
+        hessian_config.computation_config.regularization_strategy
+        == RegularizationStrategy.PSEUDO_INVERSE
+    ):
         pseudo_inverse_factor = hessian_config.computation_config.regularization_value
         logger.info(
             f"[HESSIAN] Using pseudo-inverse with factor: {pseudo_inverse_factor:.6f}"
         )
-        results.setdefault("pseudo_inverse_factor", pseudo_inverse_factor) # type: ignore
-        
+        results.setdefault("pseudo_inverse_factor", pseudo_inverse_factor)  # type: ignore
 
     comp_config = hessian_config.computation_config
 
@@ -329,11 +335,15 @@ def compute_hessian_comparison_for_single_model(
 
         # IHVP comparisons
         if ComputationType.IHVP in comp_config.computation_types:
+            logger.info(f"[HESSIAN] Computing {reference_approx.value} IHVP")
             ref_ihvp = block_tree(
-                reference_computer.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
+                reference_computer.estimate_ihvp(
+                    grads_1,
+                    damping=damping,
+                    pseudo_inverse_factor=pseudo_inverse_factor,
+                ),
                 f"{reference_approx.value}_ihvp",
             )
-
             ihvp_approxs = [
                 a for a in comp_config.approximators if a != reference_approx
             ]
@@ -359,7 +369,11 @@ def compute_hessian_comparison_for_single_model(
                 approx_computer.build(base_directory=build_base_dir)
 
                 approx_ihvp = block_tree(
-                    approx_computer.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
+                    approx_computer.estimate_ihvp(
+                        grads_1,
+                        damping=damping,
+                        pseudo_inverse_factor=pseudo_inverse_factor,
+                    ),
                     f"{approx.value}_ihvp",
                 )
 
@@ -376,9 +390,7 @@ def compute_hessian_comparison_for_single_model(
 
                 if compute_approximation_error:
                     # Compute round-trip approximation error
-                    round_trip_V = reference_computer.estimate_hvp(
-                        approx_ihvp
-                    )
+                    round_trip_V = reference_computer.estimate_hvp(approx_ihvp)
                     approx_error = VectorMetric.RELATIVE_ERROR.compute(
                         grads_1, round_trip_V, x=None, power=2.0
                     )
@@ -555,7 +567,11 @@ def main(cfg: DictConfig) -> Dict:
     logger.info(f"Seed: {config.seed}")
     logger.info(f"Dataset: {config.dataset.name.value}")
     logger.info(f"Models to analyze: {len(config.models)}")
-    if config.epochs is not None and isinstance(config.epochs, list) and len(config.epochs) > 0:
+    if (
+        config.epochs is not None
+        and isinstance(config.epochs, list)
+        and len(config.epochs) > 0
+    ):
         logger.info(f"Epochs to investigate: {config.epochs}")
         logger.info(f"Total analyses: {len(config.models) * len(config.epochs)}")
     else:
@@ -586,7 +602,6 @@ def main(cfg: DictConfig) -> Dict:
                     f"Required epochs: {config.epochs}"
                 )
                 raise FileNotFoundError(f"Missing epoch checkpoints in {model_dir}")
-            
 
     # Run Hessian analysis
     logger.info(f"{'#' * 70}")
