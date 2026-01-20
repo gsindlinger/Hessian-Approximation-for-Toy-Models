@@ -2,41 +2,43 @@
 Standalone Hessian analysis script.
 
 Loads pre-trained models and performs Hessian approximation comparisons.
-Can override models from command line with models_file parameter.
+Supports analyzing models at specific training epochs or final checkpoints.
 
 Usage:
-    # Basic run with config specified in ../configs/hessian_analysis.yaml 
-    # (must include the model directories to analyze)
-    python -m experiments.hessian_analysis \\
+    # Basic run with final checkpoints only
+    uv run python -m experiments.hessian_analysis \\
         --config-name=hessian_analysis \\
         --config-path=../configs
     
-    # Run with specific models from training output
-    python -m experiments.hessian_analysis \\
+    # Analyze specific epochs across all models
+    uv run python -m experiments.hessian_analysis \\
         --config-name=hessian_analysis \\
         --config-path=../configs \\
-        +override_config=path/to/best_models.yaml
+        epochs=[10,50,100]
     
-    # Override individual config parameters, e.g., number of samples for vector analysis
-    python -m experiments.hessian_analysis \\
+    # Use models from training output with epoch analysis
+    uv run python -m experiments.hessian_analysis \\
         --config-name=hessian_analysis \\
-        --config-path=../configs \\
+        +override_config=path/to/best_models.yaml \\
+        epochs=[25,50,75,100]
+    
+    # Override vector config parameters
+    uv run python -m experiments.hessian_analysis \\
+        --config-name=hessian_analysis \\
         hessian_analysis.vector_config.num_samples=500 \\
-        +override_config=experiments/outputs/models/best_models_20240115.yaml
-    
-    # Custom output directory and log location
-    python -m experiments.hessian_analysis \\
-        --config-name=hessian_analysis \\
-        --config-path=../configs \\
-        hydra.run.dir=experiments/logs/hessian_analysis/$(date +%Y%m%d-%H%M%S) \\
-        hessian_analysis.results_output_dir=custom/output/path \\
-        +override_config=path/to/models.yaml
+        epochs=[100]
 
+Epoch Analysis:
+    - If epochs=None (default): analyzes only final checkpoints
+    - If epochs=[10,50,100]: analyzes each model at epochs 10, 50, and 100
+    - Total analyses = num_models × num_epochs (or num_models if epochs=None)
+    - All specified epoch checkpoints must exist before analysis begins
 
 Notes:
     - The override_config parameter expects a YAML file with model paths, dataset config, and seed
+    - Epoch-specific collector data is stored separately to avoid conflicts
+    - Results include epoch metadata for tracking training progression
     - Vector config (num_samples) can be adjusted based on dataset size
-    - Hydra manages logging; use hydra.run.dir to specify log output location
     - Results are saved as timestamped JSON files in hessian_analysis.results_output_dir
 """
 
@@ -45,8 +47,7 @@ import logging
 import os
 import time
 from dataclasses import asdict
-from typing import Dict, Tuple
-import jax.numpy as jnp
+from typing import Dict, List, Optional, Tuple
 
 import hydra
 from hydra.core.config_store import ConfigStore
@@ -74,10 +75,13 @@ from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
-from src.hessians.utils.pseudo_targets import generate_pseudo_targets, generate_pseudo_targets_dataset, sample_vectors
+from src.hessians.utils.pseudo_targets import (
+    generate_pseudo_targets_dataset,
+    sample_vectors,
+)
 from src.utils.data.data import Dataset, DownloadableDataset
 from src.utils.loss import get_loss
-from src.utils.train import load_model_checkpoint
+from src.utils.train import check_saved_model, load_model_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -119,14 +123,16 @@ def collect_data(
     collected_data_list = []
     logger.info("[HESSIAN] Collecting Activations & Gradients")
     for run_idx, collector_dir in enumerate(collector_dirs):
-        monte_carlo_repetitions = 6
+        monte_carlo_repetitions = 3
         run_seed = seed + (run_idx * monte_carlo_repetitions)
         collector_data = generate_pseudo_targets_dataset(
             model=model,
             params=params,
             dataset=dataset,
+            dataset=dataset,
             loss_fn=loss_fn,
             rng_key=PRNGKey(run_seed),
+            monte_carlo_repetitions=monte_carlo_repetitions,
             monte_carlo_repetitions=monte_carlo_repetitions,
         )
         cleanup_memory("pseudo_target_generation")
@@ -376,16 +382,32 @@ def analyze_single_model(
     dataset: Dataset,
     hessian_config: HessianAnalysisConfig,
     seed: int,
+    epoch: Optional[int] = None,
 ) -> Dict:
-    """Run Hessian analysis on a single model. Dataset to consist only of training data."""
+    """
+    Run Hessian analysis on a single model at a specific epoch.
+
+    Args:
+        model_directory: Path to model checkpoint directory
+        dataset: Training dataset to use for analysis
+        hessian_config: Configuration for Hessian analysis
+        seed: Random seed
+        epoch: Optional specific epoch to analyze. If None, uses final checkpoint.
+
+    Returns:
+        Dictionary with analysis results including epoch information
+    """
     # Load model and parameters
+    params, model, model_config, metadata = load_model_checkpoint(
+        model_directory, epoch=epoch
+    )
 
-    params, model, model_config, metadata = load_model_checkpoint(model_directory)
-
+    epoch_str = f"epoch_{epoch}" if epoch is not None else "final"
     logger.info(f"{'=' * 70}")
-    logger.info(f"[HESSIAN] Analyzing: {model_config.get_model_display_name()}")
+    logger.info(
+        f"[HESSIAN] Analyzing: {model_config.get_model_display_name()} ({epoch_str})"
+    )
     logger.info(f"Model directory: {model_config.directory}")
-
     logger.info(f"{'=' * 70}")
 
     # Log training metrics if available
@@ -406,14 +428,20 @@ def analyze_single_model(
         "directory must be set in model_config for Hessian analysis."
     )
 
+    # Create epoch-specific collector directories
+    collector_base = os.path.join(model_config.directory, "collector")
+    if epoch is not None:
+        collector_base = os.path.join(collector_base, f"epoch_{epoch}")
+
     grads_1, grads_2, collector_data, model_ctx = collect_data(
         model=model,
         params=params,
         model_config=model_config,
         dataset=Dataset(dataset.inputs, dataset.targets),
+        dataset=Dataset(dataset.inputs, dataset.targets),
         collector_dirs=(
-            os.path.join(model_config.directory, "collector", "run_1"),
-            os.path.join(model_config.directory, "collector", "run_2"),
+            os.path.join(collector_base, "run_1"),
+            os.path.join(collector_base, "run_2"),
         ),
         hessian_config=hessian_config,
         seed=seed,
@@ -429,19 +457,43 @@ def analyze_single_model(
         model_directory,
     )
 
-    return {
+    result = {
         "model_name": model_config.get_model_display_name(),
         "model_directory": model_config.directory,
+        "epoch": epoch,
         "model_config": asdict(model_config),
         "num_parameters": model.num_params,
         "metadata": metadata or {},
         "hessian_analysis": hessian_results,
     }
 
+    return result
 
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
+
+def expand_models_with_epochs(
+    model_directories: List[str], epochs: Optional[List[int]]
+) -> List[Tuple[str, Optional[int]]]:
+    """
+    Expand model list to include epoch-specific variants.
+
+    Args:
+        model_directories: List of model directory paths
+        epochs: Optional list of epochs to analyze. If None, only analyze final checkpoints.
+
+    Returns:
+        List of (model_directory, epoch) tuples
+    """
+    if epochs is None:
+        # No epochs specified, analyze final checkpoint only
+        return [(model_dir, None) for model_dir in model_directories]
+
+    # Expand each model to include all requested epochs
+    expanded = []
+    for model_dir in model_directories:
+        for epoch in epochs:
+            expanded.append((model_dir, epoch))
+
+    return expanded
 
 
 @hydra.main(
@@ -475,6 +527,11 @@ def main(cfg: DictConfig) -> Dict:
     logger.info(f"Seed: {config.seed}")
     logger.info(f"Dataset: {config.dataset.name.value}")
     logger.info(f"Models to analyze: {len(config.models)}")
+    if config.epochs is not None:
+        logger.info(f"Epochs to investigate: {config.epochs}")
+        logger.info(f"Total analyses: {len(config.models) * len(config.epochs)}")
+    else:
+        logger.info("Analyzing final checkpoints only")
     logger.info(f"{'=' * 70}")
 
     # Load dataset
@@ -489,20 +546,38 @@ def main(cfg: DictConfig) -> Dict:
 
     logger.info(f"Loaded dataset: {config.dataset.name.value}")
 
+    # Expand models with epochs
+    model_epoch_pairs = expand_models_with_epochs(config.models, config.epochs)
+
+    # Validate that all required checkpoints exist
+    if config.epochs is not None:
+        for model_dir in config.models:
+            if not check_saved_model(model_dir, config.epochs):
+                logger.error(
+                    f"Model at {model_dir} does not have all specified epochs saved. "
+                    f"Required epochs: {config.epochs}"
+                )
+                raise FileNotFoundError(f"Missing epoch checkpoints in {model_dir}")
+
     # Run Hessian analysis
     logger.info(f"{'#' * 70}")
     logger.info("HESSIAN ANALYSIS")
     logger.info(f"{'#' * 70}")
 
     hessian_results = []
-    for i, model_config in enumerate(config.models, 1):
-        logger.info(f"[MODEL {i}/{len(config.models)}]")
+    for i, (model_dir, epoch) in enumerate(model_epoch_pairs, 1):
+        epoch_str = f"epoch_{epoch}" if epoch is not None else "final"
+        logger.info(
+            f"[ANALYSIS {i}/{len(model_epoch_pairs)}] "
+            f"{os.path.basename(model_dir)} ({epoch_str})"
+        )
 
         result = analyze_single_model(
-            model_config,
-            dataset,
-            config.hessian_analysis,
-            config.seed,
+            model_directory=model_dir,
+            dataset=dataset,
+            hessian_config=config.hessian_analysis,
+            seed=config.seed,
+            epoch=epoch,
         )
         hessian_results.append(result)
 
@@ -512,14 +587,12 @@ def main(cfg: DictConfig) -> Dict:
     results_dir = config.hessian_analysis.results_output_dir
     os.makedirs(results_dir, exist_ok=True)
 
-    output_file = os.path.join(
-        results_dir,
-        f"{timestamp}.json",
-    )
+    output_file = os.path.join(results_dir, f"{timestamp}.json")
 
     full_results = {
         "experiment_name": config.experiment_name,
         "timestamp": timestamp,
+        "epochs_analyzed": config.epochs,
         "hessian_config": asdict(config.hessian_analysis),
         "results": hessian_results,
     }
@@ -529,7 +602,10 @@ def main(cfg: DictConfig) -> Dict:
 
     logger.info(f"{'=' * 70}")
     logger.info("Hessian Analysis Complete!")
-    logger.info(f"Models analyzed: {len(hessian_results)}")
+    logger.info(f"Total analyses performed: {len(hessian_results)}")
+    logger.info(f"Unique models: {len(config.models)}")
+    if config.epochs:
+        logger.info(f"Epochs per model: {len(config.epochs)}")
     logger.info(f"Results saved to: {output_file}")
     logger.info(f"{'=' * 70}")
 

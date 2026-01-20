@@ -77,7 +77,7 @@ def train_model(
             state, loss_value, grad_norm = train_step(
                 state, batch_data, batch_targets, loss_fn
             )
-            if epoch < 200 and epoch % 10 == 0 and grad_norm < 1e-6:
+            if epoch < 200 and (epoch + 1) % 10 == 0 and grad_norm < 1e-6:
                 logger.warning(
                     f"Gradient norm is very small ({grad_norm}). Possible vanishing gradients."
                 )
@@ -86,12 +86,12 @@ def train_model(
 
         epoch_loss = running_loss / total_samples
         loss_history.append(epoch_loss)
-        if epoch % 50 == 0 or epoch == epochs - 1:
+        if (epoch + 1) % 50 == 0 or epoch == epochs - 1:
             logger.info(
                 f"Epoch {epoch + 1}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"
             )
         # Save checkpoint if required
-        if save_epochs is not None and epoch in save_epochs:
+        if save_epochs is not None and (epoch + 1) in save_epochs:
             assert isinstance(state.params, Dict)
             save_model_checkpoint(
                 model_config=model.get_model_config(),

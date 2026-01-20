@@ -1,73 +1,60 @@
 """
 Training-only script that trains models and selects best performers.
 
-This script trains multiple model configurations with different hyperparameters,
-evaluates their performance, and selects the best model for each architecture
-based on validation metrics. It outputs results in both JSON (full training log)
-and YAML (best models only) formats for downstream analysis.
-
-Uses TrainingExperimentConfig instead of full ExperimentConfig.
+Trains multiple model configurations with different hyperparameters, evaluates
+performance, and selects the best model per architecture. Supports saving
+checkpoints at specific epochs for downstream analysis.
 
 Usage:
-    # Basic run with default config (must include the configs of the models to train)
+    # Basic run with default config
     python -m experiments.train_models \
         --config-name=training_experiment \
         --config-path=../configs
     
-    # Run specific training sweep (e.g., a predefined sweep for the CONCRETE dataset)
-    python -m experiments.train_models \
-        --config-name=concrete_sweep \
-        --config-path=../configs
-    
-    # Override individual parts of the config from command line, e.g., dataset & seed
+    # Run with specific epoch checkpoints
     python -m experiments.train_models \
         --config-name=training_experiment \
         --config-path=../configs \
+        save_epochs=[10,50,100]
+    
+    # Override dataset and seed
+    python -m experiments.train_models \
+        --config-name=concrete_sweep \
+        --config-path=../configs \
         dataset.name=CONCRETE \
-        dataset.path=experiments/data/datasets/concrete \
         seed=42
     
-    # Capture output in shell pipeline (for automation)
+    # Capture best models YAML path for pipeline automation
     BEST_MODELS=$(python -m experiments.train_models \
         --config-name=concrete_sweep \
         --config-path=../configs | \
         sed -n 's/^BEST_MODELS_YAML=//p')
-    
+
 Model Selection:
-    Models are grouped by architecture and structure (architecture + hidden_dim).
-    Within each group, the model with the best validation metric is selected.
+    Models are grouped by architecture + hidden_dim structure.
+    Best model per group is selected by validation metric.
     
-    For classification (CROSS_ENTROPY loss):
-        - Default metric: val_accuracy (higher is better)
-        - Alternative: val_loss (lower is better)
-    
-    For regression (MSE loss):
-        - Default metric: val_loss (lower is better)
+    Classification: val_accuracy (higher) or val_loss (lower)
+    Regression: val_loss (lower)
 
 Output Files:
     1. Full training results (JSON):
        experiments/results/<experiment_name>/training/<timestamp>.json
-       Contains all trained models with their metrics and hyperparameters
     
     2. Best models (YAML):
-       experiments /results/<experiment_name>/best_models/<timestamp>.yaml
-       Contains only the best model paths for each architecture group
-       Format compatible with hessian_analysis.py's override_config parameter
+       experiments/results/<experiment_name>/best_models/<timestamp>.yaml
+       Compatible with hessian_analysis.py's override_config parameter
     
     3. Model checkpoints:
        experiments/results/<experiment_name>/models/<model_name>_<hash>/
-       Contains checkpoint.msgpack, model.json for each model
-
-Shell Output:
-    The script prints "BEST_MODELS_YAML=<path>" to stdout for pipeline capture.
-    This path can be parsed and passed to subsequent analysis scripts.
+       Contains checkpoint.msgpack and intermediate epoch checkpoints if save_epochs is set
 
 Notes:
-    - Input/output data is normalized for regression tasks (MSE loss)
-    - Model directories are generated using config hash for reproducibility
-    - Models can be skipped if already trained (set skip_existing=true)
-    - Hydra manages logging; use hydra.run.dir to specify log location
-    - Each model is assigned a unique directory based on its config hash
+    - save_epochs specifies which training epochs to checkpoint (e.g., [10,50,100])
+    - Data is normalized for regression tasks (MSE loss)
+    - Model directories use config hash for reproducibility
+    - Set skip_existing=true to avoid retraining existing models
+    - Shell output includes BEST_MODELS_YAML=<path> for pipeline integration
 """
 
 import json
@@ -489,6 +476,7 @@ def main(cfg: DictConfig):
                 "dataset": asdict(config.dataset),
                 "seed": config.seed,
                 "models": normalize_for_yaml(models_for_yaml),
+                "save_epochs": config.save_epochs,
             },
             f,
             default_flow_style=False,

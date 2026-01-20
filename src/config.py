@@ -325,3 +325,6 @@ class ExperimentConfig:
     hessian_analysis: HessianAnalysisConfig = field(
         default_factory=HessianAnalysisConfig
     )
+
+    # If specified, allow for analyzing the different checkpoints saved during training
+    epochs: Optional[List[int]] = None

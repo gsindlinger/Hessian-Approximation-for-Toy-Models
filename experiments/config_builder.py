@@ -205,6 +205,48 @@ def digits_sweep_all():
     return config
 
 
+def digits_sweep_better_hessian():
+    """Generate training sweep configuration with better Hessian properties."""
+    models = []
+
+    # Hyperparameter grid
+    lrs = [1e-3, 1e-4]
+    wds = [1e-1, 1e-2]
+
+    # MLP architectures
+    mlp_configs = [[16] * i for i in range(1, 7)]
+
+    for hidden_dim in mlp_configs:
+        models.extend(
+            create_hyperparameter_sweep(
+                ModelArchitecture.MLP,
+                hidden_dim,
+                learning_rates=lrs,
+                weight_decays=wds,
+                epochs=1000,
+                batch_size=32,
+                input_dim=64,
+                output_dim=10,
+            )
+        )
+
+    # Create training-only config
+    config = TrainingExperimentConfig(
+        experiment_name="digits_better_hessian_sweep",
+        seed=12,
+        base_output_dir="experiments/data/",
+        dataset=DatasetConfig(
+            name=DatasetEnum.SKLEARN_DIGITS,
+            path="experiments/datasets/sklearn_digits",
+        ),
+        models=models,
+        selection_metric="val_loss",
+        selection_minimize=True,
+        save_epochs=[10, 100, 1000],
+    )
+    return config
+
+
 def digits_sweep_simple():
     """Generate a simple training sweep configuration."""
     models = []
@@ -711,11 +753,12 @@ if __name__ == "__main__":
         case "digits_simple":
             config = digits_sweep_simple()
             output_path = "experiments/debug_scripts/configs/digits_simple.yaml"
-
         case "digits_all":
             config = digits_sweep_all()
             output_path = "experiments/configs/digits_sweep_all.yaml"
-
+        case "digits_better_hessian":
+            config = digits_sweep_better_hessian()
+            output_path = "experiments/configs/digits_sweep_better_hessian.yaml"
         case "hessian":
             config = hessian_analysis_sweep()
             output_path = "experiments/configs/hessian_analysis.yaml"
