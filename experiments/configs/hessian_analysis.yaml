@@ -46,4 +46,5 @@ hessian_analysis:
     num_samples: 500
     sampling_method: gradients
 models: []
+epochs: null
 seed: 42

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Dict, Any
 
 import jax
 import jax.numpy as jnp
@@ -26,24 +26,25 @@ class VectorMetric(str, Enum):
         # ------------------------------------------------------
 
         # ||v_1 - v_2|| / ||v_1||
-        def relative_error(v1, v2, x=None):
-            return jnp.linalg.norm(v1 - v2, axis=-1) / (jnp.linalg.norm(v1, axis=-1) + 1e-10)
+        def relative_error(v1, v2, x=None, power: float = 1.0, **kwargs):
+            norm_res = jnp.linalg.norm(v1 - v2, axis=-1) / (jnp.linalg.norm(v1, axis=-1) + 1e-10)
+            return norm_res ** power
 
         # ⟨v_1, v_2⟩ / (||v_1|| * ||v_2||)
-        def cosine_similarity(v1, v2, x=None):
+        def cosine_similarity(v1, v2, x=None, **kwargs):
             dot = jnp.sum(v1 * v2, axis=-1)
             nrm = jnp.linalg.norm(v1, axis=-1) * jnp.linalg.norm(v2, axis=-1)
             return dot / (nrm + 1e-10)
 
         # |⟨x, v_1⟩ - ⟨x, v_2⟩|
-        def inner_product_diff(v1, v2, x):
+        def inner_product_diff(v1, v2, x, **kwargs):
             if x is None:
                 raise ValueError("inner_product_diff requires auxiliary vector x")
             ip1 = jnp.sum(x * v1, axis=-1)
             ip2 = jnp.sum(x * v2, axis=-1)
             return jnp.abs(ip1 - ip2)
         
-        def relative_inner_product_diff(v1, v2, x):
+        def relative_inner_product_diff(v1, v2, x, **kwargs):
             if x is None:
                 raise ValueError("relative_inner_product_diff requires auxiliary vector x")
             ip1 = jnp.sum(x * v1, axis=-1)
@@ -51,17 +52,17 @@ class VectorMetric(str, Enum):
             return jnp.abs(ip1 - ip2) / (jnp.abs(ip1) + 1e-10)
 
         # ||v_1 - v_2||
-        def absolute_l2_diff(v1, v2, x=None):
-            return jnp.linalg.norm(v1 - v2, axis=-1)
+        def absolute_l2_diff(v1, v2, x=None, power: float = 1.0, **kwargs):
+            return jnp.linalg.norm(v1 - v2, axis=-1) ** power
 
         # |‖v_1‖² - ‖v_2‖²| / ‖v_1‖²
-        def relative_energy_diff(v1, v2, x=None):
+        def relative_energy_diff(v1, v2, x=None, **kwargs):
             e1 = jnp.sum(v1**2, axis=-1)
             e2 = jnp.sum(v2**2, axis=-1)
             return jnp.abs(e1 - e2) / (e1 + 1e-10)
 
         # |⟨x, v_2⟩ / ⟨x, v_1⟩|
-        def inner_product_ratio(v1, v2, x):
+        def inner_product_ratio(v1, v2, x, **kwargs):
             if x is None:
                 raise ValueError("inner_product_ratio requires auxiliary vector x")
             ip1 = jnp.sum(x * v1, axis=-1)
@@ -91,9 +92,19 @@ class VectorMetric(str, Enum):
         v1: Float[Array, "..."],
         v2: Float[Array, "..."],
         x: Optional[Float[Array, "..."]] = None,
+        **metric_kwargs,
     ) -> Float:
+        """
+        Compute metric for a single pair of vectors.
+        
+        Args:
+            v1: First vector (ground truth)
+            v2: Second vector (approximation)
+            x: Optional auxiliary vector
+            **metric_kwargs: Additional parameters for specific metrics (e.g., power=2.0)
+        """
         fn = self.compute_fn()
-        return fn(v1, v2, x)
+        return fn(v1, v2, x, **metric_kwargs)
 
     # ----------------------------------------------------------
     #             Batched evaluation
@@ -105,18 +116,23 @@ class VectorMetric(str, Enum):
         v2: Float[Array, "*batch_size n_params"],
         x: Optional[Float[Array, "*batch_size n_params"]] = None,
         reduction: str = "mean",
+        **metric_kwargs,
     ) -> Float:
         """
         Compute metric across a batch of vector pairs.
 
-        v1, v2: shape (batch, dim) or (dim,) - <em>v1: ground truth</em> and <em>v2: approximation</em>
-        x: optional auxiliary vector(s) (same batching rules as v1/v2)
-        reduction: "mean" or "sum"
+        Args:
+            v1: shape (batch, dim) or (dim,) - ground truth
+            v2: shape (batch, dim) or (dim,) - approximation
+            x: optional auxiliary vector(s) (same batching rules as v1/v2)
+            reduction: "mean" or "sum"
+            **metric_kwargs: Additional parameters for specific metrics:
+                - power: float (for RELATIVE_ERROR and ABSOLUTE_L2_DIFF)
         """
 
         # Single-sample case
         if v1.ndim == 1:
-            return self.compute_single(v1, v2, x)
+            return self.compute_single(v1, v2, x, **metric_kwargs)
 
         # Determine in_axes for x based on its dimensionality
         if x is None:
@@ -126,8 +142,8 @@ class VectorMetric(str, Enum):
         else:
             x_axis = 0  # x is already batched
 
-        fn = self.compute_fn()
-
+        fn = lambda v1, v2, x: self.compute_single(v1, v2, x, **metric_kwargs)
+        
         batched_fn = jax.vmap(fn, in_axes=(0, 0, x_axis))
         values = batched_fn(v1, v2, x)
 

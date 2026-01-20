@@ -175,6 +175,7 @@ class HessianEstimator(ABC):
         return data_path.exists() and config_path.exists()
 
 
+@dataclass
 class ModelBasedHessianEstimator(HessianEstimator):
     compute_context: ModelContext
 
@@ -193,6 +194,7 @@ class ModelBasedHessianEstimator(HessianEstimator):
         return None
 
 
+@dataclass
 class CollectorBasedHessianEstimator(HessianEstimator):
     compute_context: Tuple[DataActivationsGradients, DataActivationsGradients]
 

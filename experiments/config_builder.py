@@ -210,11 +210,13 @@ def digits_sweep_better_hessian():
     models = []
 
     # Hyperparameter grid
-    lrs = [1e-3, 1e-4]
-    wds = [1e-1, 1e-2]
+    # lrs = [1e-3, 1e-4]
+    # wds = [1e-2, 1e-3]
+    lrs = [1e-3]
+    wds = [1e-2]
 
     # MLP architectures
-    mlp_configs = [[16] * i for i in range(1, 7)]
+    mlp_configs = [[16] * i for i in range(7, 8)]
 
     for hidden_dim in mlp_configs:
         models.extend(
@@ -732,6 +734,7 @@ if __name__ == "__main__":
             "digits",
             "digits_all",
             "digits_simple",
+            "digits_better_hessian",
             "concrete",
             "concrete_simple",
             "concrete_single_model",

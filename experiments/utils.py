@@ -2,7 +2,7 @@ import gc
 import logging
 from dataclasses import asdict, fields, is_dataclass
 from enum import Enum
-from typing import List, Tuple, get_args, get_type_hints
+from typing import List, Optional, Tuple, get_args, get_type_hints
 
 import jax
 import yaml
@@ -112,7 +112,7 @@ def _convert_value(target_type, value):
 
 def load_experiment_override_from_yaml(
     path: str,
-) -> Tuple[List[str], DatasetConfig, int | None]:
+) -> Tuple[List[str], DatasetConfig, int | None, Optional[List[int]]]:
     with open(path, "r") as f:
         data = yaml.safe_load(f)
 
@@ -121,11 +121,17 @@ def load_experiment_override_from_yaml(
 
     if "dataset" in data:
         dataset = to_dataclass(DatasetConfig, data["dataset"])
+        
+    # if any of the keys of data contain epochs or epochs as substring of the key, set epochs
+    epochs = None
+    for key in data.keys():
+        if "epochs" in key:
+            epochs = data[key]
+            break
 
     seed = data.get("seed", None)
 
-    return models, dataset, seed  # type: ignore
-
+    return models, dataset, seed, epochs # type: ignore
 
 def cleanup_memory(stage: str | None = None):
     """Force garbage collection and clear JAX caches."""

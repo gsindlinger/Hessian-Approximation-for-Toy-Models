@@ -81,6 +81,7 @@ from src.hessians.utils.pseudo_targets import (
 )
 from src.utils.data.data import Dataset, DownloadableDataset
 from src.utils.loss import get_loss
+from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.train import check_saved_model, load_model_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -129,10 +130,8 @@ def collect_data(
             model=model,
             params=params,
             dataset=dataset,
-            dataset=dataset,
             loss_fn=loss_fn,
             rng_key=PRNGKey(run_seed),
-            monte_carlo_repetitions=monte_carlo_repetitions,
             monte_carlo_repetitions=monte_carlo_repetitions,
         )
         cleanup_memory("pseudo_target_generation")
@@ -175,6 +174,7 @@ def compute_hessian_comparison_for_single_model(
     grads_1: Float[Array, "*batch_size n_params"],
     grads_2: Float[Array, "*batch_size n_params"],
     model_directory: str,
+    compute_approximation_error: bool = True,
 ) -> Dict:
     """Compute all Hessian comparisons specified in the config."""
     results = {
@@ -368,6 +368,32 @@ def compute_hessian_comparison_for_single_model(
                     results["ihvp_comparisons"][metric.name][reference_approx.value][
                         approx.value
                     ] = float(score)
+                
+                if compute_approximation_error:
+                    if isinstance(reference_computer, HessianComputer):
+                        ref_hessian = block_tree(
+                            reference_computer.compute_hessian(damping=damping),
+                            f"{reference_approx.value}_matrix",
+                        )
+                    elif isinstance(reference_computer, HessianEstimator):
+                        ref_hessian = block_tree(
+                            reference_computer.estimate_hessian(damping=damping),
+                            f"{reference_approx.value}_matrix",
+                        )
+                    round_trip_V = (ref_hessian @ approx_ihvp.T).T
+                    approx_error = VectorMetric.RELATIVE_ERROR.compute(
+                        grads_1, round_trip_V, x=None, power=2.0
+                    )
+                    results.setdefault("ihvp_round_trip_approximation_errors", {})
+                    results["ihvp_round_trip_approximation_errors"].setdefault(
+                        reference_approx.value, {}
+                    )
+                    results["ihvp_round_trip_approximation_errors"][reference_approx.value].setdefault(
+                        approx.value, {}
+                    )
+                    results["ihvp_round_trip_approximation_errors"][reference_approx.value][
+                        approx.value
+                    ] = float(approx_error)
 
                 del approx_ihvp
 
@@ -438,7 +464,6 @@ def analyze_single_model(
         params=params,
         model_config=model_config,
         dataset=Dataset(dataset.inputs, dataset.targets),
-        dataset=Dataset(dataset.inputs, dataset.targets),
         collector_dirs=(
             os.path.join(collector_base, "run_1"),
             os.path.join(collector_base, "run_2"),
@@ -507,7 +532,7 @@ def main(cfg: DictConfig) -> Dict:
 
     if override_file:
         logger.info(f"[CONFIG] Overriding config data from: {override_file}")
-        model_directories, dataset, seed = load_experiment_override_from_yaml(
+        model_directories, dataset, seed, epochs = load_experiment_override_from_yaml(
             override_file
         )
 
@@ -517,6 +542,8 @@ def main(cfg: DictConfig) -> Dict:
             cfg.dataset = asdict(dataset)
         if seed is not None:
             cfg.seed = seed
+        if epochs is not None:
+            cfg.epochs = epochs
 
     config: ExperimentConfig = to_dataclass(ExperimentConfig, cfg)  # type: ignore
 

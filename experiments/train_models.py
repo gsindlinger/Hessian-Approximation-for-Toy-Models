@@ -476,7 +476,7 @@ def main(cfg: DictConfig):
                 "dataset": asdict(config.dataset),
                 "seed": config.seed,
                 "models": normalize_for_yaml(models_for_yaml),
-                "save_epochs": config.save_epochs,
+                "intermediate_epochs": config.save_epochs,
             },
             f,
             default_flow_style=False,

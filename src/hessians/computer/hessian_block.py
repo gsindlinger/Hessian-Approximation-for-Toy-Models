@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -34,7 +34,7 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
         idx = 0
         for leaf in leaves:
             size = leaf.size
-            blocks.append((idx, idx + size))
+            blocks.append((int(idx), int(idx + size)))
             idx += size
 
         return BlockHessianData(blocks=blocks, n_params=idx)
@@ -117,10 +117,10 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
         Creates identity matrices for all blocks, concatenates them,
         then does one scan over the data computing all HVPs simultaneously.
         """
-        blocks_tuple = tuple(self.precomputed_data.blocks)
+        blocks = tuple(tuple(int(block[i]) for i in range(2)) for block in self.precomputed_data.blocks)
         return self._compute_blocks(
             compute_context=self.compute_context,
-            blocks=blocks_tuple,
+            blocks=blocks,
             damping=damping,
         )
 
@@ -128,11 +128,12 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
     @partial(jax.jit, static_argnames=["blocks"])
     def _compute_blocks(
         compute_context: ModelContext,
-        blocks: tuple,
+        blocks: Tuple[Tuple[int, int]],
         damping: Float,
     ):
         """
-        Compute all blocks in one dataset pass by batching all identity vectors.
+        Compute all blocks in parallel.
+        Uses list comprehension with static block sizes for parallelization.
         """
         p_flat = compute_context.params_flat
         X = compute_context.inputs
@@ -144,83 +145,81 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
             preds = compute_context.model_apply_fn(params_unflat, x[None, ...])
             return compute_context.loss_fn(preds.squeeze(0), y)
 
-        # Create all identity vectors for all blocks at once
-        all_identity_vectors = []
-        block_sizes = []
-
-        for start, end in blocks:
-            start = int(start)
-            end = int(end)
+        def compute_single_block_static(start: int, end: int):
+            """Compute Hessian for a single block with static dimensions."""
             block_size = end - start
-            block_sizes.append(block_size)
-
-            # Identity matrix for this block
+            
+            # Create identity matrix for this block (block_size is now static)
             I_block = jnp.eye(block_size)
-
-            # Embed each identity vector into full parameter space
-            for i in range(block_size):
-                full = jnp.zeros_like(p_flat)
-                full = lax.dynamic_update_slice(full, I_block[i], (start,))
-                all_identity_vectors.append(full)
-
-        # Stack all identity vectors: shape (total_params, n_params)
-        all_vectors = jnp.stack(all_identity_vectors)
-        total_vectors = all_vectors.shape[0]
-
-        # The key: Single scan over dataset computing all HVPs at once
-        def compute_all_hvps(vectors):
-            """Compute H @ vectors for all vectors in one dataset pass"""
-
-            def body_fn(accum, xy):
-                x_i, y_i = xy
-
-                # Compute HVP for all vectors simultaneously
-                def grad_fn(p):
-                    return jax.grad(lambda p_: loss_single(p_, x_i, y_i))(p)
-
-                # vmap over all vectors to compute all HVPs at once
-                def single_jvp(v):
-                    _, hvp = jax.jvp(grad_fn, (p_flat,), (v,))
-                    return hvp
-
-                hvps = jax.vmap(single_jvp)(vectors)
-                return accum + hvps, None
-
-            summed, _ = jax.lax.scan(body_fn, jnp.zeros_like(vectors), (X, Y))
-            return summed / n_samples
-
-        # Compute in chunks to avoid OOM
-        CHUNK_SIZE = 256  # Adjust based on memory
-        all_hvps = []
-
-        for i in range(0, total_vectors, CHUNK_SIZE):
-            chunk = all_vectors[i : min(i + CHUNK_SIZE, total_vectors)]
-            hvps_chunk = compute_all_hvps(chunk)
-            all_hvps.append(hvps_chunk)
-
-        all_hvps = jnp.concatenate(all_hvps, axis=0)
-
-        # Extract blocks from the concatenated HVPs
-        result_blocks = []
-        idx = 0
-
-        for block_idx, (start, end) in enumerate(blocks):
-            start = int(start)
-            end = int(end)
-            block_size = block_sizes[block_idx]
-
-            # Extract the HVPs for this block
-            block_hvps = all_hvps[idx : idx + block_size]
-
-            # Extract only the block-diagonal portion
-            H_block = block_hvps[:, start:end]
-
+            
+            def compute_block_hvps(identity_vectors):
+                """Compute H @ identity_vectors for this block."""
+                # identity_vectors shape: (n_vectors, block_size)
+                n_vectors = identity_vectors.shape[0]
+                
+                def body_fn(accum, xy):
+                    x_i, y_i = xy
+                    
+                    def grad_fn(p):
+                        return jax.grad(lambda p_: loss_single(p_, x_i, y_i))(p)
+                    
+                    def single_jvp(v):
+                        # Embed vector into full parameter space
+                        full = jnp.zeros_like(p_flat)
+                        full = lax.dynamic_update_slice(full, v, (start,))
+                        
+                        # Compute JVP
+                        _, hvp = jax.jvp(grad_fn, (p_flat,), (full,))
+                        
+                        # Extract block portion
+                        return lax.dynamic_slice(hvp, (start,), (block_size,))
+                    
+                    # Compute HVPs for all identity vectors simultaneously
+                    hvps = jax.vmap(single_jvp)(identity_vectors)
+                    return accum + hvps, None
+                
+                summed, _ = jax.lax.scan(
+                    body_fn, 
+                    jnp.zeros((n_vectors, block_size)),  # Match the identity_vectors shape
+                    (X, Y)
+                )
+                return summed / n_samples
+            
+            # Process identity vectors in chunks to manage memory
+            # Practical chunk sizes based on model size
+            n_params = p_flat.shape[0]
+            if n_params < 1000:
+                chunk_size = block_size  # Small models: no chunking needed
+            elif n_params < 10000:
+                chunk_size = min(2048, block_size)
+            elif n_params < 100000:
+                chunk_size = min(1024, block_size)
+            else:
+                chunk_size = min(512, block_size)
+                
+            
+            if block_size <= chunk_size:
+                H_block = compute_block_hvps(I_block)
+            else:
+                # Process in chunks for large blocks
+                chunks = []
+                for i in range(0, block_size, chunk_size):
+                    chunk = I_block[i : min(i + chunk_size, block_size)]
+                    chunk_result = compute_block_hvps(chunk)
+                    chunks.append(chunk_result)
+                H_block = jnp.concatenate(chunks, axis=0)
+            
             # Add damping
             H_block = H_block + damping * jnp.eye(block_size)
-            result_blocks.append(H_block)
-
-            idx += block_size
-
+            return H_block
+        
+        # Compute all blocks - JAX will parallelize these automatically
+        # Each block computation is independent and can run in parallel
+        result_blocks = [
+            compute_single_block_static(int(start), int(end))
+            for start, end in blocks
+        ]
+        
         return result_blocks
 
     def compute_block_hvp(

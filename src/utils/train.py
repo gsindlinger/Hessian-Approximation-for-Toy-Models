@@ -69,7 +69,7 @@ def train_model(
 
     loss_history = []
 
-    for epoch in tqdm(range(epochs)):
+    for epoch in tqdm(range(1, epochs + 1)):
         running_loss = 0.0
         total_samples = 0
 
@@ -77,7 +77,7 @@ def train_model(
             state, loss_value, grad_norm = train_step(
                 state, batch_data, batch_targets, loss_fn
             )
-            if epoch < 200 and (epoch + 1) % 10 == 0 and grad_norm < 1e-6:
+            if epoch < 200 and epoch % 10 == 0 and grad_norm < 1e-6:
                 logger.warning(
                     f"Gradient norm is very small ({grad_norm}). Possible vanishing gradients."
                 )
@@ -86,18 +86,20 @@ def train_model(
 
         epoch_loss = running_loss / total_samples
         loss_history.append(epoch_loss)
-        if (epoch + 1) % 50 == 0 or epoch == epochs - 1:
+        if epoch % 50 == 0 or epoch == epochs:
             logger.info(
-                f"Epoch {epoch + 1}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"
+                f"Epoch {epoch}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"
             )
         # Save checkpoint if required
-        if save_epochs is not None and (epoch + 1) in save_epochs:
+        if (save_epochs is not None and epoch in save_epochs) or (epoch == epochs):
             assert isinstance(state.params, Dict)
             save_model_checkpoint(
-                model_config=model.get_model_config(),
+                model_config=model_config,
                 params=state.params,
                 epoch=epoch,
             )
+            
+        
 
     assert isinstance(state.params, Dict)
     return model, state.params, loss_history
@@ -243,7 +245,6 @@ def save_model_checkpoint(
 
     if epoch is None or epoch == model_config.training.epochs - 1:
         save_params(base_directory, params)
-
         # first save the model and metadata as json as single json file
         model_json = model_config.serialize()
         if metadata is not None:

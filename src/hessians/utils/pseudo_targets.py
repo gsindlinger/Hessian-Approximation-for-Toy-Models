@@ -81,8 +81,7 @@ def _generate_classification_pseudo_targets(
     logits = model.apply(params, inputs)
     if not isinstance(logits, jnp.ndarray):
         raise ValueError("Model predictions must be a jnp.ndarray for classification.")
-    probs = jax.nn.softmax(logits, axis=-1)
-    return jax.random.categorical(rng_key, jnp.log(probs), axis=-1)
+    return jax.random.categorical(rng_key, logits, axis=-1)
 
 
 def _generate_regression_pseudo_targets(
