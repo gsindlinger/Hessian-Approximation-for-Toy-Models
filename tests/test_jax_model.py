@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
-from src.utils.models.approximation_model import ApproximationModel
 
 from src.config import (
     LossType,
@@ -16,7 +15,7 @@ from src.config import (
 )
 from src.utils.data.data import Dataset, RandomRegressionDataset
 from src.utils.loss import get_loss
-from src.utils.models.registry import ModelRegistry
+from src.utils.models.approximation_model import ApproximationModel
 from src.utils.optimizers import optimizer
 from src.utils.train import train_model
 
@@ -88,13 +87,10 @@ class TestLinearRegression:
         assert model_config.input_dim == dataset.input_dim()
         assert model_config.output_dim == dataset.output_dim()
 
-        # Get model from registry
-        model = ModelRegistry.get_model(model_config=model_config)
-
         # Train the model
         model, params, _ = train_model(
-            model,
-            dataset.get_dataloader(
+            model_config=model_config,
+            dataloader=dataset.get_dataloader(
                 batch_size=model_config.training.batch_size, seed=0, shuffle=True
             ),
             loss_fn=get_loss(model_config.loss),

@@ -49,13 +49,17 @@ def train_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn
 
 
 def train_model(
-    model: ApproximationModel,
+    model_config: ModelConfig,
     dataloader: JAXDataLoader,
     loss_fn: Callable,
     optimizer: optax.GradientTransformation,
     epochs: int,
+    seed: int = 42,
+    save_epochs: Optional[List[int]] = None,
 ) -> Tuple[ApproximationModel, Dict, List]:
     """Train the model."""
+
+    model = ModelRegistry.get_model(model_config=model_config, seed=seed)
 
     # Create training state
     params = initialize_model(
@@ -85,6 +89,14 @@ def train_model(
         if epoch % 50 == 0 or epoch == epochs - 1:
             logger.info(
                 f"Epoch {epoch + 1}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"
+            )
+        # Save checkpoint if required
+        if save_epochs is not None and epoch in save_epochs:
+            assert isinstance(state.params, Dict)
+            save_model_checkpoint(
+                model_config=model.get_model_config(),
+                params=state.params,
+                epoch=epoch,
             )
 
     assert isinstance(state.params, Dict)
@@ -191,41 +203,59 @@ def save_model_checkpoint(
     model_config: ModelConfig,
     params: Dict,
     metadata: Optional[Dict] = None,
+    epoch: Optional[int] = None,
 ) -> None:
-    """Save model parameters using orbax for better compatibility."""
+    """
+    Save model and parameters to checkpoint directory.
+    If epoch is specified, saves parameters in epoch-specific subdirectory.
+    If epoch is None or the last epoch, saves parameters (additionally) and the model configuration in the base directory.
+    So when epoch is the last epoch, parameters are saved both in the epoch directory and base directory.
+    """
 
-    # check wheter directory exists, if not create it
+    def save_params(directory: str, params: Dict) -> None:
+        try:
+            # Use Flax serialization for better handling of PyTrees
+            bytes_output = serialization.to_bytes(params)
+            with open(f"{directory}/checkpoint.msgpack", "wb") as f:
+                f.write(bytes_output)
+        except ImportError:
+            # Fallback to pickle if serialization not available
+            try:
+                with open(f"{directory}/checkpoint.pkl", "wb") as f:
+                    pickle.dump(params, f)
+            except Exception as e:
+                logger.error(f"Failed to save model parameters: {e}")
+
+    # check whether directory exists, if not create it
     assert model_config.directory is not None, (
         "Model directory must be specified in ModelConfig."
     )
-    directory = model_config.directory
+    base_directory = model_config.directory
 
-    if not os.path.exists(directory):
-        os.makedirs(directory)
+    if not os.path.exists(base_directory):
+        os.makedirs(base_directory)
 
-    # first save the model and metadata as json as single json file
-    model_json = model_config.serialize()
-    if metadata is not None:
-        model_json.update({METADATA_STR: metadata})
-    with open(f"{directory}/model.json", "w") as f:
-        json.dump(model_json, f, indent=4)
+    if epoch is not None:
+        epoch_directory = os.path.join(base_directory, f"epoch_{epoch}")
+        if not os.path.exists(epoch_directory):
+            os.makedirs(epoch_directory)
+        save_params(epoch_directory, params)
 
-    try:
-        # Use Flax serialization for better handling of PyTrees
-        bytes_output = serialization.to_bytes(params)
-        with open(f"{directory}/checkpoint.msgpack", "wb") as f:
-            f.write(bytes_output)
-    except ImportError:
-        # Fallback to pickle if serialization not available
-        try:
-            with open(f"{directory}/checkpoint.pkl", "wb") as f:
-                pickle.dump(params, f)
-        except Exception as e:
-            logger.error(f"Failed to save model parameters: {e}")
+    if epoch is None or epoch == model_config.training.epochs - 1:
+        save_params(base_directory, params)
+
+        # first save the model and metadata as json as single json file
+        model_json = model_config.serialize()
+        if metadata is not None:
+            model_json.update({METADATA_STR: metadata})
+        with open(f"{base_directory}/model.json", "w") as f:
+            json.dump(model_json, f, indent=4)
 
 
-def check_saved_model(directory: str) -> bool:
-    """Check if a saved model exists with saved parameters."""
+def check_saved_model(directory: str, epochs: Optional[List[int]] = None) -> bool:
+    """Check if a saved model exists with saved parameters. If epochs is provided,
+    also checks if checkpoints for the specified epochs exist.
+    """
     model_path = os.path.join(directory, "model.json")
     checkpoint_path_msgpack = os.path.join(directory, "checkpoint.msgpack")
     checkpoint_path_pkl = os.path.join(directory, "checkpoint.pkl")
@@ -239,22 +269,41 @@ def check_saved_model(directory: str) -> bool:
 
     # remove metadata before comparison
     saved_model_data.pop(METADATA_STR, None)
-
     model_config = ModelConfig.from_dict(saved_model_data)
 
-    return (
-        os.path.exists(checkpoint_path_msgpack) or os.path.exists(checkpoint_path_pkl)
-    ) and model_config is not None
+    if not (
+        (os.path.exists(checkpoint_path_msgpack) or os.path.exists(checkpoint_path_pkl))
+        and model_config is not None
+    ):
+        return False
+
+    if epochs is not None:
+        for epoch in epochs:
+            epoch_directory = os.path.join(directory, f"epoch_{epoch}")
+            checkpoint_path_msgpack = os.path.join(
+                epoch_directory, "checkpoint.msgpack"
+            )
+            checkpoint_path_pkl = os.path.join(epoch_directory, "checkpoint.pkl")
+            if not (
+                os.path.exists(checkpoint_path_msgpack)
+                or os.path.exists(checkpoint_path_pkl)
+            ):
+                return False
+
+    return True
 
 
 def load_model_checkpoint(
     directory: str,
+    epoch: Optional[int] = None,
 ) -> Tuple[Dict, ApproximationModel, ModelConfig, Dict]:
-    """Load model and parameters from checkpoint directory.
-    Returns:
-        params: Model parameters as a PyTree.
-        model: The model instance.
-        metadata: Additional metadata if available, else empty dict.
+    """
+    Load model and parameters from checkpoint directory. Must be the models base directory, i.e. not the epoch subdirectory.
+    If epoch is specified, loads parameters from epoch-specific subdirectory.
+    If epoch is None, loads parameters from the base directory.
+
+    Note, that this method requires the model to be fully trained and saved previously.
+    Intermediate epochs can only be loaded when the full model was saved at the end of training.
     """
 
     if not check_saved_model(directory):
@@ -274,6 +323,8 @@ def load_model_checkpoint(
         )
 
     # Load parameters
+    if epoch is not None:
+        directory = os.path.join(directory, f"epoch_{epoch}")
     checkpoint_path_msgpack = os.path.join(directory, "checkpoint.msgpack")
     checkpoint_path_pkl = os.path.join(directory, "checkpoint.pkl")
     if os.path.exists(checkpoint_path_msgpack):

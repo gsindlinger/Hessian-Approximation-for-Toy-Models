@@ -25,7 +25,6 @@ from src.utils.loss import get_loss
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
 from src.utils.train import train_model
 
@@ -99,19 +98,18 @@ def model_params_loss(
     config: Dict, dataset: Dataset
 ) -> Tuple[ApproximationModel, Dict, Callable]:
     """Train a model and return it with its parameters and loss function."""
-    model_config = config["model_config"]
+    model_config: ModelConfig = config["model_config"]
 
     # Update dimensions from dataset
     model_config.input_dim = dataset.input_dim()
     model_config.output_dim = dataset.output_dim()
 
-    # Get model from registry
-    model = ModelRegistry.get_model(model_config=model_config)
-
     # Train the model
     model, params, _ = train_model(
-        model,
-        dataset.get_dataloader(batch_size=model_config.training.batch_size, seed=42),
+        model_config=model_config,
+        dataloader=dataset.get_dataloader(
+            batch_size=model_config.training.batch_size, seed=42
+        ),
         loss_fn=get_loss(model_config.loss),
         optimizer=optimizer(
             model_config.training.optimizer, lr=model_config.training.learning_rate

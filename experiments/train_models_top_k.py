@@ -170,7 +170,7 @@ def train_single_model(
     else:
         logger.info(f"[TRAIN] {model_config.get_model_display_name()}")
         model, params, _ = train_model(
-            model=model,
+            model_config=model_config,
             dataloader=Dataset(train_inputs, train_targets).get_dataloader(
                 batch_size=model_config.training.batch_size, seed=seed
             ),

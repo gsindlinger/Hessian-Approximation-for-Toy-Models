@@ -134,29 +134,18 @@ def generate_model_directory(
 
 def train_single_model(
     model_config: ModelConfig,
-    dataset: Dataset,
+    train_dataset: Dataset,
+    val_dataset: Dataset,
     seed: int,
     test_size: float,
+    save_epochs: List[int],
 ) -> Dict:
     """Train a single model and return its results."""
-    train_ds, val_ds = dataset.train_test_split(test_size=test_size, seed=seed)
-    train_inputs, train_targets = train_ds.inputs, train_ds.targets
-    val_inputs, val_targets = val_ds.inputs, val_ds.targets
 
-    # Normalize data for regression tasks
-    if model_config.loss == LossType.MSE:
-        train_inputs, val_inputs = Dataset.normalize_data(train_inputs, val_inputs)
-        train_targets, val_targets = Dataset.normalize_data(train_targets, val_targets)
-
-    assert val_targets is not None, "Validation targets cannot be None"
-    assert train_targets is not None, "Training targets cannot be None"
-    assert val_inputs is not None, "Validation inputs cannot be None"
-    assert train_inputs is not None, "Training inputs cannot be None"
-
-    if model_config.input_dim != dataset.input_dim():
-        model_config.input_dim = dataset.input_dim()
-    if model_config.output_dim != dataset.output_dim():
-        model_config.output_dim = dataset.output_dim()
+    if model_config.input_dim != train_dataset.input_dim():
+        model_config.input_dim = train_dataset.input_dim()
+    if model_config.output_dim != train_dataset.output_dim():
+        model_config.output_dim = train_dataset.output_dim()
 
     model = ModelRegistry.get_model(model_config=model_config, seed=seed)
     logger.info(f"Model has {model.num_params} parameters")
@@ -164,14 +153,14 @@ def train_single_model(
     model_dir = model_config.directory
     assert model_dir is not None, "Model directory must be set"
 
-    if model_config.skip_existing and check_saved_model(model_dir):
-        params, _, _, _ = load_model_checkpoint(model_dir)
+    if model_config.skip_existing and check_saved_model(model_dir, epochs=save_epochs):
+        params, model, _, _ = load_model_checkpoint(model_dir)
         logger.info(f"[LOAD] {model_config.get_model_display_name()} from {model_dir}")
     else:
         logger.info(f"[TRAIN] {model_config.get_model_display_name()}")
         model, params, _ = train_model(
-            model=model,
-            dataloader=Dataset(train_inputs, train_targets).get_dataloader(
+            model_config=model_config,
+            dataloader=train_dataset.get_dataloader(
                 batch_size=model_config.training.batch_size, seed=seed
             ),
             loss_fn=get_loss(model_config.loss),
@@ -181,11 +170,17 @@ def train_single_model(
                 weight_decay=model_config.training.weight_decay,
             ),
             epochs=model_config.training.epochs,
+            seed=seed,
+            save_epochs=save_epochs,
         )
 
     if model_config.loss == LossType.CROSS_ENTROPY:
         val_loss, val_acc = evaluate_loss_and_classification_accuracy(
-            model, params, val_inputs, val_targets, get_loss(model_config.loss)
+            model,
+            params,
+            val_dataset.inputs,
+            val_dataset.targets,
+            get_loss(model_config.loss),
         )
         logger.info(
             f"[EVAL] {model_config.get_model_display_name()}: "
@@ -197,10 +192,18 @@ def train_single_model(
         }
     else:
         val_loss = evaluate_loss(
-            model, params, val_inputs, val_targets, get_loss(model_config.loss)
+            model,
+            params,
+            val_dataset.inputs,
+            val_dataset.targets,
+            get_loss(model_config.loss),
         )
         train_loss = evaluate_loss(
-            model, params, train_inputs, train_targets, get_loss(model_config.loss)
+            model,
+            params,
+            train_dataset.inputs,
+            train_dataset.targets,
+            get_loss(model_config.loss),
         )
         logger.info(
             f"[EVAL] {model_config.get_model_display_name()}: val_loss={val_loss:.6f}"
@@ -308,6 +311,7 @@ def main(cfg: DictConfig):
     logger.info(f"Seed: {config.seed}")
     logger.info(f"Dataset: {config.dataset.name.value}")
     logger.info(f"Models to train: {len(config.models)}")
+    logger.info(f"Epoch checkpoints to store: {config.save_epochs}")
     logger.info(f"Selection metric: {config.selection_metric}")
     logger.info(f"{'=' * 70}")
 
@@ -325,6 +329,24 @@ def main(cfg: DictConfig):
         directory=config.dataset.path,
         store_on_disk=config.dataset.store_on_disk,
     )
+    dataset_cls = type(dataset)
+    train_ds, val_ds = dataset.train_test_split(
+        test_size=config.dataset.test_size, seed=config.seed
+    )
+    train_inputs, train_targets = train_ds.inputs, train_ds.targets
+    val_inputs, val_targets = val_ds.inputs, val_ds.targets
+
+    # Normalize data for regression tasks
+    if model_config.loss == LossType.MSE:
+        train_inputs, val_inputs = Dataset.normalize_data(train_inputs, val_inputs)
+        train_targets, val_targets = Dataset.normalize_data(train_targets, val_targets)
+
+    assert val_targets is not None, "Validation targets cannot be None"
+    assert train_targets is not None, "Training targets cannot be None"
+    assert val_inputs is not None, "Validation inputs cannot be None"
+    assert train_inputs is not None, "Training inputs cannot be None"
+    train_ds = dataset_cls(train_inputs, train_targets)
+    val_ds = dataset_cls(val_inputs, val_targets)
     logger.info(f"Loaded dataset: {config.dataset.name.value}")
 
     # Train all models
@@ -339,16 +361,18 @@ def main(cfg: DictConfig):
             f"Model {i}/{len(config.models)}: {model_config.get_model_display_name()}"
         )
         logger.info(
-            f"  lr={model_config.training.learning_rate:.2e}, "
+            f"lr={model_config.training.learning_rate:.2e}, "
             f"wd={model_config.training.weight_decay:.2e}"
         )
         logger.info(f"{'=' * 70}")
 
         result = train_single_model(
             model_config=model_config,
-            dataset=dataset,
+            train_dataset=train_ds,
+            val_dataset=val_ds,
             seed=config.seed,
             test_size=config.dataset.test_size,
+            save_epochs=config.save_epochs,
         )
         training_results.append(result)
 

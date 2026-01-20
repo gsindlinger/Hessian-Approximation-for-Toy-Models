@@ -207,3 +207,26 @@ class HessianComputer:
         # Vectorize over the batch dimension
         hessian = HessianComputer._compute_hessian(compute_context, damping)
         return jnp.linalg.solve(hessian, vectors.T).T
+
+    def save_hessian(
+        self, hessian: Optional[Float[Array, "n_params n_params"]], path: str
+    ) -> None:
+        """Save the Hessian matrix to a file."""
+        if hessian is None:
+            hessian = self._compute_hessian(self.compute_context, damping=0.0)
+
+        assert isinstance(hessian, jnp.ndarray), "Hessian must be a JAX array."
+        jnp.save(path, hessian)
+
+    def load_hessian(self, path: str) -> Float[Array, "n_params n_params"]:
+        """Load the Hessian matrix from a file, if the file exists. Otherwise compute and save it."""
+        try:
+            hessian = jnp.load(path)
+            assert isinstance(hessian, jnp.ndarray), (
+                "Loaded Hessian must be a JAX array."
+            )
+            return hessian
+        except FileNotFoundError:
+            hessian = self._compute_hessian(self.compute_context, damping=0.0)
+            self.save_hessian(hessian, path)
+            return hessian

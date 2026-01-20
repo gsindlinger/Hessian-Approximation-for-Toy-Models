@@ -276,6 +276,9 @@ class TrainingExperimentConfig:
     # Models to train (list of individual model configs)
     models: List[ModelConfig] = field(default_factory=list)
 
+    # List which epoch checkpoints to save
+    save_epochs: List[int] = field(default_factory=list)
+
     # Model selection criteria
     selection_metric: str = "val_accuracy"  # or "val_loss"
     selection_minimize: bool = False  # False for accuracy, True for loss

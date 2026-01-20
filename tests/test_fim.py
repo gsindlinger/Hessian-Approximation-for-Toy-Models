@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax import flatten_util
-from jax.random import PRNGKey
 
 from src.config import (
     LossType,
@@ -16,17 +15,14 @@ from src.config import (
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
-from src.hessians.utils.pseudo_targets import generate_pseudo_targets
 from src.utils.data.data import (
     Dataset,
     RandomClassificationDataset,
     RandomRegressionDataset,
 )
 from src.utils.loss import get_loss, get_loss_name
-from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
 from src.utils.train import train_model
 
@@ -42,7 +38,7 @@ def config(request, tmp_path_factory):
 
     if request.param == "classification":
         architecture = ModelArchitecture.MLP
-        hidden_dim = [10]
+        hidden_dim = [3]
         loss = LossType.CROSS_ENTROPY
         tol_hvp = 0.2
         tol_ihvp = 0.1
@@ -112,13 +108,12 @@ def model_params_loss(
     model_config.input_dim = dataset.input_dim()
     model_config.output_dim = dataset.output_dim()
 
-    # Get model from registry
-    model = ModelRegistry.get_model(model_config=model_config)
-
     # Train the model
     model, params, _ = train_model(
-        model,
-        dataset.get_dataloader(batch_size=model_config.training.batch_size, seed=0),
+        model_config=model_config,
+        dataloader=dataset.get_dataloader(
+            batch_size=model_config.training.batch_size, seed=0
+        ),
         loss_fn=get_loss(model_config.loss),
         optimizer=optimizer(
             model_config.training.optimizer, lr=model_config.training.learning_rate
@@ -145,34 +140,25 @@ def model_context(
 
 
 @pytest.fixture(scope="session")
-def fim_data_model_context_with_pseudo_targets(
+def fim_data_model_context_without_pseudo_targets(
     dataset: Dataset,
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ) -> Tuple[Tuple[DataActivationsGradients, DataActivationsGradients], ModelContext]:
     """Collect FIM data with pseudo targets and create reference context."""
     model, params, loss = model_params_loss
 
-    # Generate pseudo targets for FIM computation
-    pseudo_targets = generate_pseudo_targets(
-        model=model,
-        inputs=dataset.inputs,
-        params=params,
-        loss_fn=loss,
-        rng_key=PRNGKey(1234),
-    )
-
     # Collect activations and gradients
     collector = CollectorActivationsGradients(model=model, params=params, loss_fn=loss)
 
     fim_data = collector.collect(
         inputs=dataset.inputs,
-        targets=pseudo_targets,
+        targets=dataset.targets,
     )
 
     assert isinstance(fim_data, DataActivationsGradients)
 
     return (fim_data, DataActivationsGradients()), ModelContext.create(
-        dataset=Dataset(inputs=dataset.inputs, targets=pseudo_targets),
+        dataset=Dataset(inputs=dataset.inputs, targets=dataset.targets),
         model=model,
         params=params,
         loss_fn=loss,
@@ -221,35 +207,36 @@ def reference_fim_from_autodiff(model_context: ModelContext, damping: float = 0.
 
 
 def test_fim_matrix_matches_reference(
-    fim_data_model_context_with_pseudo_targets: Tuple[
+    fim_data_model_context_without_pseudo_targets: Tuple[
         Tuple[DataActivationsGradients, DataActivationsGradients], ModelContext
     ],
 ):
     """Full FIM matrix must match autodiff reference."""
 
-    fim_data = fim_data_model_context_with_pseudo_targets[0]
-    model_context = fim_data_model_context_with_pseudo_targets[1]
+    fim_data = fim_data_model_context_without_pseudo_targets[0]
+    model_context = fim_data_model_context_without_pseudo_targets[1]
 
     fim = FIMComputer(compute_context=fim_data).build()
 
     F_collector = fim.estimate_hessian(damping=0.0)
     F_ref = reference_fim_from_autodiff(model_context, damping=0.0)
 
-    rel_err = FullMatrixMetric.RELATIVE_FROBENIUS.compute(F_collector, F_ref)
-    assert rel_err < 1e-4, f"FIM relative error too large: {rel_err}"
+    assert jnp.allclose(F_collector, F_ref, atol=1e-5), (
+        "FIM matrix does not match reference."
+    )
 
 
 def test_fim_hvp_matches_reference(
     config: Dict,
-    fim_data_model_context_with_pseudo_targets: Tuple[
+    fim_data_model_context_without_pseudo_targets: Tuple[
         Tuple[DataActivationsGradients, DataActivationsGradients], ModelContext
     ],
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ):
     """FIM-vector product must match autodiff reference."""
 
-    fim_data = fim_data_model_context_with_pseudo_targets[0]
-    model_context = fim_data_model_context_with_pseudo_targets[1]
+    fim_data = fim_data_model_context_without_pseudo_targets[0]
+    model_context = fim_data_model_context_without_pseudo_targets[1]
     fim = FIMComputer(compute_context=fim_data).build()
 
     _, params, _ = model_params_loss
@@ -263,27 +250,23 @@ def test_fim_hvp_matches_reference(
     def ref_hvp(v, damping: float):
         return F @ v + damping * v
 
-    fim_hvp_1 = fim.estimate_hvp(v1, damping=0.1)
-    ref_hvp_1 = ref_hvp(v1, damping=0.1)
+    fim_hvp_1 = fim.estimate_hvp(v1)
+    ref_hvp_1 = ref_hvp(v1, damping=0.0)
 
-    fim_hvp_2 = fim.estimate_hvp(v2, damping=0.1)
-    ref_hvp_2 = ref_hvp(v2, damping=0.1)
+    fim_hvp_2 = fim.estimate_hvp(v2)
+    ref_hvp_2 = ref_hvp(v2, damping=0.0)
 
-    assert (
-        VectorMetric.RELATIVE_ERROR.compute(fim_hvp_1, ref_hvp_1) < config["tol_hvp"]
-    ), f"HVP error (ones): {VectorMetric.RELATIVE_ERROR.compute(fim_hvp_1, ref_hvp_1)}"
-
-    assert (
-        VectorMetric.RELATIVE_ERROR.compute(fim_hvp_2, ref_hvp_2) < config["tol_hvp"]
-    ), (
-        f"HVP error (random): {VectorMetric.RELATIVE_ERROR.compute(fim_hvp_2, ref_hvp_2)}"
+    assert VectorMetric.RELATIVE_ERROR.compute(fim_hvp_1, ref_hvp_1) < 1e-5, (
+        "FIM HVP (v1) does not match reference."
+    )
+    assert VectorMetric.RELATIVE_ERROR.compute(fim_hvp_2, ref_hvp_2) < 1e-5, (
+        "FIM HVP (v2) does not match reference."
     )
 
 
 def test_fim_ihvp_matches_reference(
-    config: Dict,
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
-    fim_data_model_context_with_pseudo_targets: Tuple[
+    fim_data_model_context_without_pseudo_targets: Tuple[
         Tuple[DataActivationsGradients, DataActivationsGradients], ModelContext
     ],
 ):
@@ -291,20 +274,23 @@ def test_fim_ihvp_matches_reference(
     _, params, _ = model_params_loss
 
     fim = FIMComputer(
-        compute_context=fim_data_model_context_with_pseudo_targets[0]
+        compute_context=fim_data_model_context_without_pseudo_targets[0]
     ).build()
 
     params_flat, _ = flatten_util.ravel_pytree(params)
     v = jax.random.normal(jax.random.PRNGKey(1), shape=params_flat.shape)
 
     F_ref = reference_fim_from_autodiff(
-        fim_data_model_context_with_pseudo_targets[1], damping=0.1
+        fim_data_model_context_without_pseudo_targets[1], damping=0.0
     )
 
-    fim_ihvp = fim.estimate_ihvp(v, damping=0.1)
+    eigenvals, _ = jnp.linalg.eigh(F_ref)
+    damping = 0.1 * jnp.mean(eigenvals[eigenvals > 0])
+    F_ref = F_ref + damping * jnp.eye(F_ref.shape[0], dtype=F_ref.dtype)
+
+    fim_ihvp = fim.estimate_ihvp(v, damping=damping)
     ref_ihvp = jnp.linalg.solve(F_ref, v)
 
-    rel_error = VectorMetric.RELATIVE_ERROR.compute(fim_ihvp, ref_ihvp)
-    assert rel_error < config["tol_ihvp"], (
-        f"IHVP relative error too high: {rel_error:. 4f} >= {config['tol_ihvp']}"
+    assert VectorMetric.RELATIVE_ERROR.compute(fim_ihvp, ref_ihvp) < 1e-5, (
+        "FIM IHVP does not match reference."
     )

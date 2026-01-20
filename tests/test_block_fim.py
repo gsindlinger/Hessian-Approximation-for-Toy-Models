@@ -21,7 +21,6 @@ from src.utils.loss import cross_entropy_loss, get_loss
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
 from src.utils.train import train_model
 
@@ -80,13 +79,12 @@ def model_params_loss(
     config.input_dim = dataset.input_dim()
     config.output_dim = dataset.output_dim()
 
-    # Get model from registry
-    model = ModelRegistry.get_model(model_config=config)
-
     # Train the model
     model, params, _ = train_model(
-        model,
-        dataset.get_dataloader(batch_size=config.training.batch_size, seed=123),
+        model_config=config,
+        dataloader=dataset.get_dataloader(
+            batch_size=config.training.batch_size, seed=123
+        ),
         loss_fn=get_loss(config.loss),
         optimizer=optimizer(
             config.training.optimizer, lr=config.training.learning_rate
@@ -249,9 +247,10 @@ def test_fim_block_computation_multi_layer(
         ]
         start_idx += end_idx
 
-        assert FullMatrixMetric.RELATIVE_FROBENIUS.compute(full_fim_block, block_fim_block) < 1e-4, (
-            f"FIM block approximation does not match full FIM for layer {layer_name}."
-        )
+        assert (
+            FullMatrixMetric.RELATIVE_FROBENIUS.compute(full_fim_block, block_fim_block)
+            < 1e-4
+        ), f"FIM block approximation does not match full FIM for layer {layer_name}."
 
 
 @pytest.mark.parametrize("config", ["linear"], indirect=True)
