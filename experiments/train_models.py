@@ -137,7 +137,6 @@ def train_single_model(
     train_dataset: Dataset,
     val_dataset: Dataset,
     seed: int,
-    test_size: float,
     save_epochs: List[int],
 ) -> Dict:
     """Train a single model and return its results."""
@@ -371,7 +370,6 @@ def main(cfg: DictConfig):
             train_dataset=train_ds,
             val_dataset=val_ds,
             seed=config.seed,
-            test_size=config.dataset.test_size,
             save_epochs=config.save_epochs,
         )
         training_results.append(result)

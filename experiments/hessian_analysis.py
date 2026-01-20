@@ -46,6 +46,7 @@ import os
 import time
 from dataclasses import asdict
 from typing import Dict, Tuple
+import jax.numpy as jnp
 
 import hydra
 from hydra.core.config_store import ConfigStore
@@ -73,7 +74,7 @@ from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
-from src.hessians.utils.pseudo_targets import generate_pseudo_targets, sample_vectors
+from src.hessians.utils.pseudo_targets import generate_pseudo_targets, generate_pseudo_targets_dataset, sample_vectors
 from src.utils.data.data import Dataset, DownloadableDataset
 from src.utils.loss import get_loss
 from src.utils.train import load_model_checkpoint
@@ -118,16 +119,15 @@ def collect_data(
     collected_data_list = []
     logger.info("[HESSIAN] Collecting Activations & Gradients")
     for run_idx, collector_dir in enumerate(collector_dirs):
-        run_seed = seed + run_idx
-        pseudo_targets = generate_pseudo_targets(
+        monte_carlo_repetitions = 6
+        run_seed = seed + (run_idx * monte_carlo_repetitions)
+        collector_data = generate_pseudo_targets_dataset(
             model=model,
-            inputs=train_inputs,
             params=params,
+            dataset=dataset,
             loss_fn=loss_fn,
             rng_key=PRNGKey(run_seed),
-        )
-        collector_data = Dataset(train_inputs, train_targets).replace_targets(
-            pseudo_targets
+            monte_carlo_repetitions=monte_carlo_repetitions,
         )
         cleanup_memory("pseudo_target_generation")
 
@@ -377,7 +377,7 @@ def analyze_single_model(
     hessian_config: HessianAnalysisConfig,
     seed: int,
 ) -> Dict:
-    """Run Hessian analysis on a single model."""
+    """Run Hessian analysis on a single model. Dataset to consist only of training data."""
     # Load model and parameters
 
     params, model, model_config, metadata = load_model_checkpoint(model_directory)
@@ -410,7 +410,7 @@ def analyze_single_model(
         model=model,
         params=params,
         model_config=model_config,
-        dataset=dataset,
+        dataset=Dataset(dataset.inputs, dataset.targets),
         collector_dirs=(
             os.path.join(model_config.directory, "collector", "run_1"),
             os.path.join(model_config.directory, "collector", "run_2"),

@@ -8,9 +8,42 @@ from jax import flatten_util
 from jaxtyping import Array, Float, Int
 
 from src.config import VectorAnalysisConfig, VectorSamplingMethod
+from src.utils.data.data import Dataset
 from src.utils.loss import get_loss_name
 from src.utils.models.approximation_model import ApproximationModel
 
+
+def generate_pseudo_targets_dataset(
+    model: nn.Module,
+    params: Dict,
+    dataset: Dataset,
+    loss_fn: Callable,
+    rng_key: Array | None = None,
+    monte_carlo_repetitions: int = 1,
+):
+    """
+    Generate pseudo-targets for an entire dataset based on the model's output distribution.
+
+    This is used to compute the true Fisher Information Matrix rather than
+    the empirical Fisher (which would use true labels).
+    """
+    if rng_key is None:
+        rng_key = jax.random.PRNGKey(0)
+        
+    keys = jax.random.split(rng_key, monte_carlo_repetitions)
+    pseudo_targets = jax.vmap(
+        lambda key: generate_pseudo_targets(
+            model, params, dataset.inputs, loss_fn, rng_key=key
+        )
+    )(keys)
+    
+    # provide dataset with inputs repeated and corresponding pseudo targets
+    # first bring pseudo_targets to shape (n_samples * monte_carlo_repetitions, target_shape)
+    repeated_inputs = jnp.tile(dataset.inputs, (monte_carlo_repetitions, 1))
+    # now bring pseudo_targets from shape (monte_carlo_repetitions, n_samples) to (n_samples * monte_carlo_repetitions,)
+    pseudo_targets = pseudo_targets.reshape(-1, *pseudo_targets.shape[2:])
+    return dataset.__class__(inputs=repeated_inputs, targets=pseudo_targets)
+    
 
 def generate_pseudo_targets(
     model: nn.Module,
@@ -27,7 +60,7 @@ def generate_pseudo_targets(
     """
     if rng_key is None:
         rng_key = jax.random.PRNGKey(0)
-
+        
     loss_name = get_loss_name(loss_fn)
     if loss_name == "cross_entropy":
         return _generate_classification_pseudo_targets(model, params, inputs, rng_key)
@@ -35,6 +68,7 @@ def generate_pseudo_targets(
         return _generate_regression_pseudo_targets(model, params, inputs, rng_key)
     else:
         raise ValueError(f"Unsupported loss function for EKFAC: {loss_name}")
+        
 
 
 def _generate_classification_pseudo_targets(
