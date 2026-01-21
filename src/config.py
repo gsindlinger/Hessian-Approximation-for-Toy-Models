@@ -84,7 +84,7 @@ class ComputationType(str, Enum):
     IHVP = "ihvp"
 
 
-class DampingStrategy(str, Enum):
+class RegularizationStrategy(str, Enum):
     """Strategy for computing the damping parameter."""
 
     FIXED = "fixed"
@@ -239,8 +239,8 @@ class HessianComputationConfig:
             ComputationType.IHVP,
         ]
     )
-    damping: float = 0.1
-    damping_strategy: DampingStrategy = DampingStrategy.AUTO_MEAN_EIGENVALUE
+    regularization_value: float = 0.1
+    regularization_strategy: RegularizationStrategy = RegularizationStrategy.AUTO_MEAN_EIGENVALUE
 
 
 @dataclass

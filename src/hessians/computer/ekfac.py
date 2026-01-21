@@ -9,7 +9,7 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float
 
-from src.config import DampingStrategy
+from src.config import RegularizationStrategy
 from src.hessians.computer.computer import CollectorBasedHessianEstimator
 from src.hessians.utils.data import DataActivationsGradients, EKFACData
 from src.utils.data.jax_dataloader import JAXDataLoader
@@ -448,19 +448,19 @@ class EKFACComputer(CollectorBasedHessianEstimator):
     @staticmethod
     def get_damping(
         ekfac_data: EKFACData,
-        damping_strategy: DampingStrategy,
+        damping_strategy: RegularizationStrategy,
         factor: float,
     ) -> Float:
         """Get damping value for a specific layer based on mean eigenvalues."""
         match damping_strategy:
-            case DampingStrategy.FIXED:
+            case RegularizationStrategy.FIXED:
                 return factor
-            case DampingStrategy.AUTO_MEAN_EIGENVALUE:
+            case RegularizationStrategy.AUTO_MEAN_EIGENVALUE:
                 return ekfac_data.mean_eigenvalues_aggregated * factor
-            case DampingStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION:
+            case RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION:
                 return ekfac_data.mean_corrections_aggregated * factor
             case _:
-                raise ValueError(f"Unknown damping strategy: {damping_strategy}")
+                raise ValueError(f"Unsupported regularization strategy: {damping_strategy}")
 
     @staticmethod
     def compute_eigenvalue_corrections(

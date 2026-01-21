@@ -24,8 +24,8 @@ hessian_analysis:
     - matrix
     - hvp
     - ihvp
-    damping: 0.1
-    damping_strategy: auto_mean_eigenvalue
+    regularization_value: 0.1
+    regularization_strategy: auto_mean_eigenvalue
   matrix_config:
     metrics:
     - frobenius
@@ -41,6 +41,7 @@ hessian_analysis:
     - relative_error
     - cosine_similarity
     - inner_product_diff
+    - relative_inner_product_diff
     - relative_energy_diff
     - inner_product_ratio
     num_samples: 500
