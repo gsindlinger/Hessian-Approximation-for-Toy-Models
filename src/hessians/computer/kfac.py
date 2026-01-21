@@ -90,6 +90,7 @@ class KFACComputer(CollectorBasedHessianEstimator):
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Compute inverse Hessian-vector product.
@@ -104,6 +105,9 @@ class KFACComputer(CollectorBasedHessianEstimator):
             layer_names=self.compute_context[0].layer_names,
             method="ihvp",
             damping=0.0 if damping is None else damping,
+            pseudo_inverse_factor=(
+                0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+            ),
         )
 
     def estimate_inverse_hessian(

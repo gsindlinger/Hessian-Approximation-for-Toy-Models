@@ -23,6 +23,9 @@ experiments/**/*.png
 experiments/**/*.md
 **/results/*
 **/logs/*
+**/configs/*
+plots**.ipynb
+*.png
 
 
 # Byte-compiled / optimized / DLL files

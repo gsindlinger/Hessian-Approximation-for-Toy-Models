@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import partial
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -92,10 +92,14 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Inverse block-diagonal Hessian-vector product.
         """
+        pseudo_inverse_factor = (
+            0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+        )
         damping = 0.0 if damping is None else damping
         is_single = vectors.ndim == 1
         vectors = vectors[None, :] if is_single else vectors
@@ -106,7 +110,16 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
             start = int(start)
             end = int(end)
             v_block = vectors[..., start:end]
-            y_block = jnp.linalg.solve(H_blocks[i], v_block.T).T
+            if pseudo_inverse_factor > 0.0:
+                jax.config.update("jax_enable_x64", True)
+                eigvals, eigvecs = jnp.linalg.eigh(H_blocks[i])
+                jax.config.update("jax_enable_x64", False)
+                eigvals_inv = jnp.where(
+                    jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
+                )
+                y_block = (eigvecs * eigvals_inv) @ (eigvecs.T @ v_block.T).T
+            else:
+                y_block = jnp.linalg.solve(H_blocks[i], v_block.T).T
             results.append(y_block)
 
         out = jnp.concatenate(results, axis=-1)
@@ -117,7 +130,10 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
         Creates identity matrices for all blocks, concatenates them,
         then does one scan over the data computing all HVPs simultaneously.
         """
-        blocks = tuple(tuple(int(block[i]) for i in range(2)) for block in self.precomputed_data.blocks)
+        blocks = tuple(
+            tuple(int(block[i]) for i in range(2))
+            for block in self.precomputed_data.blocks
+        )
         return self._compute_blocks(
             compute_context=self.compute_context,
             blocks=blocks,
@@ -148,43 +164,45 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
         def compute_single_block_static(start: int, end: int):
             """Compute Hessian for a single block with static dimensions."""
             block_size = end - start
-            
+
             # Create identity matrix for this block (block_size is now static)
             I_block = jnp.eye(block_size)
-            
+
             def compute_block_hvps(identity_vectors):
                 """Compute H @ identity_vectors for this block."""
                 # identity_vectors shape: (n_vectors, block_size)
                 n_vectors = identity_vectors.shape[0]
-                
+
                 def body_fn(accum, xy):
                     x_i, y_i = xy
-                    
+
                     def grad_fn(p):
                         return jax.grad(lambda p_: loss_single(p_, x_i, y_i))(p)
-                    
+
                     def single_jvp(v):
                         # Embed vector into full parameter space
                         full = jnp.zeros_like(p_flat)
                         full = lax.dynamic_update_slice(full, v, (start,))
-                        
+
                         # Compute JVP
                         _, hvp = jax.jvp(grad_fn, (p_flat,), (full,))
-                        
+
                         # Extract block portion
                         return lax.dynamic_slice(hvp, (start,), (block_size,))
-                    
+
                     # Compute HVPs for all identity vectors simultaneously
                     hvps = jax.vmap(single_jvp)(identity_vectors)
                     return accum + hvps, None
-                
+
                 summed, _ = jax.lax.scan(
-                    body_fn, 
-                    jnp.zeros((n_vectors, block_size)),  # Match the identity_vectors shape
-                    (X, Y)
+                    body_fn,
+                    jnp.zeros(
+                        (n_vectors, block_size)
+                    ),  # Match the identity_vectors shape
+                    (X, Y),
                 )
                 return summed / n_samples
-            
+
             # Process identity vectors in chunks to manage memory
             # Practical chunk sizes based on model size
             n_params = p_flat.shape[0]
@@ -196,8 +214,7 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
                 chunk_size = min(1024, block_size)
             else:
                 chunk_size = min(512, block_size)
-                
-            
+
             if block_size <= chunk_size:
                 H_block = compute_block_hvps(I_block)
             else:
@@ -208,18 +225,17 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
                     chunk_result = compute_block_hvps(chunk)
                     chunks.append(chunk_result)
                 H_block = jnp.concatenate(chunks, axis=0)
-            
+
             # Add damping
             H_block = H_block + damping * jnp.eye(block_size)
             return H_block
-        
+
         # Compute all blocks - JAX will parallelize these automatically
         # Each block computation is independent and can run in parallel
         result_blocks = [
-            compute_single_block_static(int(start), int(end))
-            for start, end in blocks
+            compute_single_block_static(int(start), int(end)) for start, end in blocks
         ]
-        
+
         return result_blocks
 
     def compute_block_hvp(

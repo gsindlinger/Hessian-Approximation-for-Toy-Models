@@ -176,6 +176,7 @@ class EKFACComputer(CollectorBasedHessianEstimator):
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Compute inverse Hessian-vector product.
@@ -190,6 +191,9 @@ class EKFACComputer(CollectorBasedHessianEstimator):
             layer_names=self.compute_context[0].layer_names,
             method="ihvp",
             damping=0.0 if damping is None else damping,
+            pseudo_inverse_factor=0.0
+            if pseudo_inverse_factor is None
+            else pseudo_inverse_factor,
         )
 
     def estimate_inverse_hessian(
@@ -318,7 +322,8 @@ class EKFACComputer(CollectorBasedHessianEstimator):
         Lambdas: Dict[str, Float[Array, "I O"]],
         layer_names: List[str],
         method: Literal["ihvp", "hvp"],
-        damping: Optional[Float] = None,
+        damping: Float = 0.0,
+        pseudo_inverse_factor: Float = 0.0,
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Compute inverse Hessian-vector product or Hessian-vector product.
@@ -339,7 +344,20 @@ class EKFACComputer(CollectorBasedHessianEstimator):
         offset = 0
         for layer_name in layer_names:
             Lambda = Lambdas[layer_name]
-            input_dim, output_dim = Lambda.shape
+
+            if method == "ihvp":
+                # if pseudo-inverse is requested, set lambdas below the threshold to zero
+                if pseudo_inverse_factor > 0.0:
+                    Lambda = jnp.where(
+                        jnp.abs(Lambda) > pseudo_inverse_factor,
+                        1 / (Lambda + damping),
+                        0,
+                    )
+                else:
+                    Lambda = 1 / (Lambda + damping)
+            else:  # method == "hvp"
+                Lambda = Lambda + damping
+            input_dim, output_dim = Lambda.shape  # type: ignore
             size = input_dim * output_dim
 
             # Extract and reshape vector for this layer
@@ -363,22 +381,18 @@ class EKFACComputer(CollectorBasedHessianEstimator):
             Q_activations=Q_activations_list,
             Q_gradients=Q_gradients_list,
             Lambdas=Lambda_list,
-            damping=damping,
-            method=method,
         )
 
         # Concatenate all layer results
         return jnp.concatenate(vp_pieces, axis=-1)
 
     @staticmethod
-    @partial(jax.jit, static_argnames=["method"])
+    @jax.jit
     def compute_ihvp_or_hvp_all_layers(
         v_layers: list[Float[Array, "*batch_size I O"]],
         Q_activations: list[Float[Array, "I I"]],
         Q_gradients: list[Float[Array, "O O"]],
         Lambdas: list[Float[Array, "I O"]],
-        damping: Float[Array, ""],
-        method: Literal["ihvp", "hvp"],
     ) -> list[Float[Array, "*batch_size num_params"]]:
         """
         Computes the inverse Hessian-vector product (IHVP) or Hessian-vector product (HVP) for multiple layers.
@@ -393,13 +407,8 @@ class EKFACComputer(CollectorBasedHessianEstimator):
             # Transform to eigenbasis
             V_tilde: Float[Array, "*batch_size I O"] = Q_A.T @ v_layer @ Q_G
 
-            # Apply eigenvalue corrections + damping
-            Lambda_damped: Float[Array, "I O"] = Lambda + damping
-
-            if method == "ihvp":
-                scaled: Float[Array, "*batch_size I O"] = V_tilde / Lambda_damped
-            else:
-                scaled: Float[Array, "*batch_size I O"] = V_tilde * Lambda_damped
+            # Scale by eigenvalues / corrections
+            scaled: Float[Array, "*batch_size I O"] = V_tilde * Lambda
 
             # Transform back to original basis
             vector_product: Float[Array, "*batch_size I O"] = Q_A @ scaled @ Q_G.T

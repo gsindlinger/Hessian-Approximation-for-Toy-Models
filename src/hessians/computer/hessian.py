@@ -81,6 +81,7 @@ class HessianComputer:
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "n_params"]:
         """
         Compute the inverse Hessian-vector product (IHVP).
@@ -89,6 +90,9 @@ class HessianComputer:
             self.compute_context,
             vectors,
             damping=0.0 if damping is None else damping,
+            pseudo_inverse_factor=(
+                0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+            ),
         )
 
     @staticmethod
@@ -200,13 +204,23 @@ class HessianComputer:
         compute_context: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
+        pseudo_inverse_factor: Float,
     ) -> Float[Array, "batch_size n_params"]:
         """
         JIT-compiled Inverse Hessian-vector product (IHVP) computation.
         """
         # Vectorize over the batch dimension
         hessian = HessianComputer._compute_hessian(compute_context, damping)
-        return jnp.linalg.solve(hessian, vectors.T).T
+        if pseudo_inverse_factor > 0.0:
+            jax.config.update("jax_enable_x64", True)
+            eigvals, eigvecs = jnp.linalg.eigh(hessian)
+            jax.config.update("jax_enable_x64", False)
+            eigvals_inv = jnp.where(
+                jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
+            )
+            return (eigvecs * eigvals_inv) @ (eigvecs.T @ vectors.T).T
+        else:
+            return jnp.linalg.solve(hessian, vectors.T).T
 
     def save_hessian(
         self, hessian: Optional[Float[Array, "n_params n_params"]], path: str

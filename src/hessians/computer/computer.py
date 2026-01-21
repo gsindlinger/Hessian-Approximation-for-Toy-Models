@@ -151,19 +151,25 @@ class HessianEstimator(ABC):
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """Compute Inverse Hessian-vector product."""
         if not self.is_built:
             raise RuntimeError(
                 "HessianEstimator not built. Please call the 'build' method before estimating the Inverse Hessian-vector product."
             )
-        return self._estimate_ihvp(vectors, damping)
+        if pseudo_inverse_factor is not None and damping is not None:
+            raise ValueError(
+                "Cannot use both damping and pseudo-inverse factor simultaneously."
+            )
+        return self._estimate_ihvp(vectors, damping, pseudo_inverse_factor)
 
     @abstractmethod
     def _estimate_ihvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """Compute Inverse Hessian-vector product."""
         pass

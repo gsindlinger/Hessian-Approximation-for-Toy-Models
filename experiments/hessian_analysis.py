@@ -368,19 +368,17 @@ def compute_hessian_comparison_for_single_model(
                     results["ihvp_comparisons"][metric.name][reference_approx.value][
                         approx.value
                     ] = float(score)
-                
+
                 if compute_approximation_error:
+                    # Compute round-trip approximation error
                     if isinstance(reference_computer, HessianComputer):
-                        ref_hessian = block_tree(
-                            reference_computer.compute_hessian(damping=damping),
-                            f"{reference_approx.value}_matrix",
+                        round_trip_V = reference_computer.compute_hvp(
+                            approx_ihvp, damping=damping
                         )
-                    elif isinstance(reference_computer, HessianEstimator):
-                        ref_hessian = block_tree(
-                            reference_computer.estimate_hessian(damping=damping),
-                            f"{reference_approx.value}_matrix",
+                    else:
+                        round_trip_V = reference_computer.estimate_hvp(
+                            approx_ihvp, damping=damping
                         )
-                    round_trip_V = (ref_hessian @ approx_ihvp.T).T
                     approx_error = VectorMetric.RELATIVE_ERROR.compute(
                         grads_1, round_trip_V, x=None, power=2.0
                     )
@@ -388,12 +386,12 @@ def compute_hessian_comparison_for_single_model(
                     results["ihvp_round_trip_approximation_errors"].setdefault(
                         reference_approx.value, {}
                     )
-                    results["ihvp_round_trip_approximation_errors"][reference_approx.value].setdefault(
-                        approx.value, {}
-                    )
-                    results["ihvp_round_trip_approximation_errors"][reference_approx.value][
-                        approx.value
-                    ] = float(approx_error)
+                    results["ihvp_round_trip_approximation_errors"][
+                        reference_approx.value
+                    ].setdefault(approx.value, {})
+                    results["ihvp_round_trip_approximation_errors"][
+                        reference_approx.value
+                    ][approx.value] = float(approx_error)
 
                 del approx_ihvp
 

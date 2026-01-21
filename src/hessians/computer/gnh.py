@@ -86,6 +86,7 @@ class GNHComputer(ModelBasedHessianEstimator):
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
     ) -> jnp.ndarray:
         """
         Compute the inverse Gauss-Newton-vector product (GNVP).
@@ -94,6 +95,9 @@ class GNHComputer(ModelBasedHessianEstimator):
             data=self.compute_context,
             vectors=vectors,
             damping=0.0 if damping is None else damping,
+            pseudo_inverse_factor=(
+                0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+            ),
         )
         return result
 
@@ -103,12 +107,22 @@ class GNHComputer(ModelBasedHessianEstimator):
         data: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
+        pseudo_inverse_factor: Float,
     ) -> Float[Array, "batch_size n_params"]:
         """
         Compute inverse Gauss-Newton-vector products for a batch of vectors.
         """
         gnh = GNHComputer._compute_gnh(data, damping)
-        return jnp.linalg.solve(gnh, vectors.T).T
+        if pseudo_inverse_factor > 0.0:
+            jax.config.update("jax_enable_x64", True)
+            eigvals, eigvecs = jnp.linalg.eigh(gnh)
+            jax.config.update("jax_enable_x64", False)
+            eigvals_inv = jnp.where(
+                jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
+            )
+            return (eigvecs * eigvals_inv) @ (eigvecs.T @ vectors.T).T
+        else:
+            return jnp.linalg.solve(gnh, vectors.T).T
 
     @staticmethod
     @jax.jit

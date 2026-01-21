@@ -565,7 +565,6 @@ def test_ekfac_ihvp_batched_vs_single_consistency(
 ):
     """Test whether EK-FAC IHVP with batched vectors is consistent with single vector IHVP computation."""
     comp = EKFACComputer(compute_context=collector_data_single).build()
-    damping = 0.1
 
     model, params, loss = model_params_loss
     assert model_context.targets is not None, "ModelContext targets must not be None"
@@ -579,10 +578,10 @@ def test_ekfac_ihvp_batched_vs_single_consistency(
         n_vectors=4,
     )
 
-    IHVP_batch = comp.estimate_ihvp(V, damping)
+    IHVP_batch = comp.estimate_ihvp(V, pseudo_inverse_factor=1e-4)
 
     for i in range(V.shape[0]):
-        IHVP_single = comp.estimate_ihvp(V[i], damping)
+        IHVP_single = comp.estimate_ihvp(V[i], pseudo_inverse_factor=1e-4)
 
         assert VectorMetric.RELATIVE_ERROR.compute(IHVP_batch[i], IHVP_single) < 1e-3
 

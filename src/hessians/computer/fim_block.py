@@ -81,11 +81,15 @@ class FIMBlockComputer(CollectorBasedHessianEstimator):
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Compute the inverse Fisher Information Matrix block-vector product.
         """
         damping = 0.0 if damping is None else damping
+        pseudo_inverse_factor = (
+            0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+        )
         return self._compute_fim_block_ihvp(
             activations=[
                 self.compute_context[0].activations[layer]
@@ -97,6 +101,7 @@ class FIMBlockComputer(CollectorBasedHessianEstimator):
             ],
             vectors=vectors,
             damping=damping,
+            pseudo_inverse_factor=pseudo_inverse_factor,
         )
 
     @staticmethod
@@ -184,6 +189,7 @@ class FIMBlockComputer(CollectorBasedHessianEstimator):
         gradients: List[Float[Array, "N O"]],
         vectors: Float[Array, "*batch_size n_params"],
         damping: float,
+        pseudo_inverse_factor: float,
     ) -> Float[Array, "*batch_size n_params"]:
         """Computes (F + λI)^(-1)v for block-diagonal FIM.
 
@@ -203,9 +209,18 @@ class FIMBlockComputer(CollectorBasedHessianEstimator):
             )
 
             fim_block = (per_sample_vecs.T @ per_sample_vecs) / act.shape[0]
-            fim_block = fim_block + damping * jnp.eye(fim_block.shape[0])
 
-            y_block = jnp.linalg.solve(fim_block, v_block.T).T
+            if pseudo_inverse_factor > 0.0:
+                jax.config.update("jax_enable_x64", True)
+                eigvals, eigvecs = jnp.linalg.eigh(0.5 * (fim_block + fim_block.T))
+                eigvals_inv = jnp.where(
+                    jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
+                )
+                jax.config.update("jax_enable_x64", False)
+                y_block = (eigvecs * eigvals_inv) * (eigvecs.T * v_block.T).T
+            else:
+                fim_block = fim_block + damping * jnp.eye(fim_block.shape[0])
+                y_block = jnp.linalg.solve(fim_block, v_block.T).T
 
             results.append(y_block)
             offset += D

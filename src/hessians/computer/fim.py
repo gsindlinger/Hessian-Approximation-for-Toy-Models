@@ -116,12 +116,16 @@ class FIMComputer(CollectorBasedHessianEstimator):
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """
         Compute the inverse Fisher-vector product (IFVP) using direct solve.
         """
         gradients = self.precomputed_data.per_sample_grads
         damping = 0.0 if damping is None else damping
+        pseudo_inverse_factor = (
+            0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+        )
 
         # Normalize to 2D: add batch dimension if needed
         is_single = vectors.ndim == 1
@@ -129,7 +133,9 @@ class FIMComputer(CollectorBasedHessianEstimator):
             vectors[None, :] if is_single else vectors
         )
 
-        result_2D = self._estimate_ifvp(gradients, vectors_2D, damping)
+        result_2D = self._estimate_ifvp(
+            gradients, vectors_2D, damping, pseudo_inverse_factor
+        )
         return result_2D.squeeze(0) if is_single else result_2D
 
     @staticmethod
@@ -138,12 +144,23 @@ class FIMComputer(CollectorBasedHessianEstimator):
         gradients: Float[Array, "n_samples n_params"],
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
+        pseudo_inverse_factor: Float,
     ) -> Float[Array, "batch_size n_params"]:
         """
         Solve FIM^{-1} @ v for each vector v using direct linear solve.
         """
         fim = FIMComputer._compute_fim(gradients, damping)
-        return jnp.linalg.solve(fim, vectors.T).T
+        if pseudo_inverse_factor > 0.0:
+            jax.config.update("jax_enable_x64", True)
+            eigvals, eigvecs = jnp.linalg.eigh(0.5 * (fim + fim.T))
+            jax.config.update("jax_enable_x64", False)
+            eigvals_inv = jnp.where(
+                jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
+            )
+            ifvp = (eigvecs * eigvals_inv) @ (eigvecs.T @ vectors.T).T
+            return ifvp
+        else:
+            return jnp.linalg.solve(fim, vectors.T).T
 
     @staticmethod
     @jax.jit

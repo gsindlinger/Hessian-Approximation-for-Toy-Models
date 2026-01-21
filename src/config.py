@@ -90,6 +90,7 @@ class DampingStrategy(str, Enum):
     FIXED = "fixed"
     AUTO_MEAN_EIGENVALUE = "auto_mean_eigenvalue"
     AUTO_MEAN_EIGENVALUE_CORRECTION = "auto_mean_eigenvalue_correction"
+    PSEUDO_INVERSE = "pseudo_inverse"
 
 
 class DatasetEnum(str, Enum):
