@@ -77,7 +77,6 @@ from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import (
-    generate_pseudo_targets_dataset,
     sample_vectors,
 )
 from src.utils.data.data import Dataset, DownloadableDataset
@@ -96,7 +95,7 @@ def collect_data(
     params,
     model_config: ModelConfig,
     dataset: Dataset,
-    collector_dirs: Tuple[str, str],
+    collector_dir: str,
     hessian_config: HessianAnalysisConfig,
     seed: int,
 ):
@@ -122,39 +121,20 @@ def collect_data(
     cleanup_memory("gradient_sampling")
 
     # Collect Activation & Gradients (2 runs)
-    collected_data_list = []
     logger.info("[HESSIAN] Collecting Activations & Gradients")
-    for run_idx, collector_dir in enumerate(collector_dirs):
-        monte_carlo_repetitions = 3
-        run_seed = seed + (run_idx * monte_carlo_repetitions)
-        collector_data = generate_pseudo_targets_dataset(
-            model=model,
-            params=params,
-            dataset=dataset,
-            loss_fn=loss_fn,
-            rng_key=PRNGKey(run_seed),
-            monte_carlo_repetitions=monte_carlo_repetitions,
-        )
-        cleanup_memory("pseudo_target_generation")
-
-        collector = CollectorActivationsGradients(
-            model=model, params=params, loss_fn=loss_fn
-        )
-        collected_data_list.append(
-            collector.collect(
-                inputs=collector_data.inputs,
-                targets=collector_data.targets,
-                save_directory=collector_dir,
-                try_load=True,
-            )
-        )
-        cleanup_memory(f"collection_run_{run_idx}")
-
-    assert len(collected_data_list) == 2, "Expected 2 runs of collected data."
-
-    collected_data: Tuple[DataActivationsGradients, DataActivationsGradients] = (
-        collected_data_list[0],
-        collected_data_list[1],
+    collector = CollectorActivationsGradients(
+        model=model, 
+        params=params, 
+        loss_fn=loss_fn,
+        pseudo_target_repetitions=hessian_config.computation_config.pseudo_target_generation_repetitions, 
+        pseudo_target_strategy=hessian_config.computation_config.pseudo_target_generation_strategy
+    )
+    
+    collected_data: DataActivationsGradients = collector.collect(
+        dataset=Dataset(train_inputs, train_targets),
+        save_directory=collector_dir,
+        try_load=True,
+        rng_key=PRNGKey(seed),
     )
 
     # Create model context
@@ -170,11 +150,11 @@ def collect_data(
 
 def compute_hessian_comparison_for_single_model(
     hessian_config: HessianAnalysisConfig,
-    collector_data: Tuple[DataActivationsGradients, DataActivationsGradients],
+    collector_data: DataActivationsGradients,
     model_ctx: ModelContext,
     grads_1: Float[Array, "*batch_size n_params"],
     grads_2: Float[Array, "*batch_size n_params"],
-    model_directory: str,
+    build_base_dir: str,
     compute_approximation_error: bool = True,
 ) -> Dict:
     """Compute all Hessian comparisons specified in the config."""
@@ -192,7 +172,7 @@ def compute_hessian_comparison_for_single_model(
             "[HESSIAN] Using EKFAC to estimate damping for other methods."
         )
         ekfac_computer = EKFACComputer(compute_context=collector_data)
-        ekfac_computer.build(base_directory=model_directory)
+        ekfac_computer.build(base_directory=build_base_dir)
         damping = EKFACComputer.get_damping(
             ekfac_data=ekfac_computer.precomputed_data,
             damping_strategy=hessian_config.computation_config.regularization_strategy,
@@ -225,7 +205,7 @@ def compute_hessian_comparison_for_single_model(
             reference_approx, reference_data
         )
         if isinstance(reference_computer, HessianEstimator):
-            reference_computer.build(base_directory=model_directory)
+            reference_computer.build(base_directory=build_base_dir)
 
         # Matrix comparisons
         if ComputationType.MATRIX in comp_config.computation_types:
@@ -257,7 +237,7 @@ def compute_hessian_comparison_for_single_model(
                     approx, approx_data
                 )
                 if isinstance(approx_computer, HessianEstimator):
-                    approx_computer.build(base_directory=model_directory)
+                    approx_computer.build(base_directory=build_base_dir)
                 else:
                     raise RuntimeError(
                         "Matrix comparisons require HessianEstimator, don't use exact Hessian as approximation method."
@@ -313,7 +293,7 @@ def compute_hessian_comparison_for_single_model(
                 assert isinstance(approx_computer, HessianEstimator), (
                     "HVP comparisons require HessianEstimator"
                 )
-                approx_computer.build(base_directory=model_directory)
+                approx_computer.build(base_directory=build_base_dir)
 
                 approx_hvp = block_tree(
                     approx_computer.estimate_hvp(grads_1),
@@ -369,7 +349,7 @@ def compute_hessian_comparison_for_single_model(
                 assert isinstance(approx_computer, HessianEstimator), (
                     "IHVP comparisons require HessianEstimator"
                 )
-                approx_computer.build(base_directory=model_directory)
+                approx_computer.build(base_directory=build_base_dir)
 
                 approx_ihvp = block_tree(
                     approx_computer.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
@@ -471,19 +451,16 @@ def analyze_single_model(
     )
 
     # Create epoch-specific collector directories
-    collector_base = os.path.join(model_config.directory, "collector")
+    collector_dir = os.path.join(model_config.directory, "collector")
     if epoch is not None:
-        collector_base = os.path.join(collector_base, f"epoch_{epoch}")
+        collector_dir = os.path.join(collector_dir, f"epoch_{epoch}")
 
     grads_1, grads_2, collector_data, model_ctx = collect_data(
         model=model,
         params=params,
         model_config=model_config,
         dataset=Dataset(dataset.inputs, dataset.targets),
-        collector_dirs=(
-            os.path.join(collector_base, "run_1"),
-            os.path.join(collector_base, "run_2"),
-        ),
+        collector_dir=collector_dir,
         hessian_config=hessian_config,
         seed=seed,
     )
@@ -495,7 +472,7 @@ def analyze_single_model(
         model_ctx,
         grads_1,
         grads_2,
-        model_directory,
+        build_base_dir=collector_dir,    
     )
 
     result = {
@@ -524,7 +501,7 @@ def expand_models_with_epochs(
     Returns:
         List of (model_directory, epoch) tuples
     """
-    if epochs is None:
+    if epochs is None or (isinstance(epochs, list) and len(epochs) == 0):
         # No epochs specified, analyze final checkpoint only
         return [(model_dir, None) for model_dir in model_directories]
 
@@ -570,7 +547,7 @@ def main(cfg: DictConfig) -> Dict:
     logger.info(f"Seed: {config.seed}")
     logger.info(f"Dataset: {config.dataset.name.value}")
     logger.info(f"Models to analyze: {len(config.models)}")
-    if config.epochs is not None:
+    if config.epochs is not None and isinstance(config.epochs, list) and len(config.epochs) > 0:
         logger.info(f"Epochs to investigate: {config.epochs}")
         logger.info(f"Total analyses: {len(config.models) * len(config.epochs)}")
     else:
@@ -601,6 +578,7 @@ def main(cfg: DictConfig) -> Dict:
                     f"Required epochs: {config.epochs}"
                 )
                 raise FileNotFoundError(f"Missing epoch checkpoints in {model_dir}")
+            
 
     # Run Hessian analysis
     logger.info(f"{'#' * 70}")

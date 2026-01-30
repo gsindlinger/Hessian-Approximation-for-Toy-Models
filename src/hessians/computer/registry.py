@@ -60,8 +60,7 @@ class HessianComputerRegistry:
     @staticmethod
     def get_computer(
         approximator: HessianApproximationMethod,
-        compute_context: ModelContext
-        | Tuple[DataActivationsGradients, DataActivationsGradients],
+        compute_context: ModelContext | DataActivationsGradients,
     ) -> HessianEstimator | HessianComputer:
         computer_cls = HessianComputerRegistry.REGISTRY[approximator]
         precomputed_data_type, precomputed_data_dir = (
@@ -84,7 +83,7 @@ class HessianComputerRegistry:
     @staticmethod
     def get_compute_context(
         approximator: HessianApproximationMethod,
-        collector_data: Tuple[DataActivationsGradients, DataActivationsGradients],
+        collector_data: DataActivationsGradients,
         model_ctx: ModelContext,
     ):
         """Get the appropriate data for each approximator type."""

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
 
 from src.hessians.computer.eshampoo import EShampooComputer
 from src.hessians.computer.kfac import KFACComputer
@@ -17,6 +16,7 @@ class ShampooComputer(KFACComputer):
 
     @staticmethod
     def _build(
-        compute_context: Tuple[DataActivationsGradients, DataActivationsGradients],
+        compute_context: DataActivationsGradients,
     ) -> EKFACData:
+        # TODO: Capture different collector data structure, i.e., dimensions of gradients (K, N, O)
         return EShampooComputer._build(compute_context)

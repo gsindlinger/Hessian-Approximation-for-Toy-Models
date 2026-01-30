@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Dict, Optional
 
 import jax
@@ -104,7 +105,7 @@ class HessianComputer:
         def loss_single(p, x, y):
             params_unflat = compute_context.unravel_fn(p)
             preds = compute_context.model_apply_fn(params_unflat, x[None, ...])
-            return compute_context.loss_fn(preds.squeeze(0), y)
+            return compute_context.loss_fn(preds, y[None, ...])
 
         # This computes the per-sample Hessian: ∂²L_i/∂θ²
         @jax.jit
@@ -199,12 +200,12 @@ class HessianComputer:
             return jnp.concatenate(outs, axis=0)
 
     @staticmethod
-    @jax.jit
+    @partial(jax.jit, static_argnames=["damping", "pseudo_inverse_factor"])
     def _compute_ihvp(
         compute_context: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
         damping: Float,
-        pseudo_inverse_factor: Float,
+        pseudo_inverse_factor: float,
     ) -> Float[Array, "batch_size n_params"]:
         """
         JIT-compiled Inverse Hessian-vector product (IHVP) computation.
@@ -218,7 +219,9 @@ class HessianComputer:
             eigvals_inv = jnp.where(
                 jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
             )
-            return (eigvecs * eigvals_inv) @ (eigvecs.T @ vectors.T).T
+            return jnp.einsum(
+                "ij,j,jk,nk->ni", eigvecs, eigvals_inv, eigvecs.T, vectors
+            )
         else:
             return jnp.linalg.solve(hessian, vectors.T).T
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional, Tuple
+from typing import Dict, Literal, Optional
 
 import jax.numpy as jnp
 from jaxtyping import Array, Float
@@ -23,7 +23,7 @@ class KFACComputer(CollectorBasedHessianEstimator):
 
     @staticmethod
     def _build(
-        compute_context: Tuple[DataActivationsGradients, DataActivationsGradients],
+        compute_context: DataActivationsGradients,
     ) -> EKFACData:
         return EKFACComputer._build(compute_context)
 
@@ -52,7 +52,7 @@ class KFACComputer(CollectorBasedHessianEstimator):
             data=self.precomputed_data,
             vectors=vectors,
             Lambdas=self._compute_lambdas(),
-            layer_names=self.compute_context[0].layer_names,
+            layer_names=self.compute_context.layer_names,
             method="hvp",
             damping=0.0 if damping is None else damping,
         )
@@ -70,15 +70,14 @@ class KFACComputer(CollectorBasedHessianEstimator):
         return EKFACComputer._compare_hessian_estimates(
             activations_eigenvectors=[
                 self.precomputed_data.activation_eigenvectors[layer]
-                for layer in self.compute_context[0].layer_names
+                for layer in self.compute_context.layer_names
             ],
             gradients_eigenvectors=[
                 self.precomputed_data.gradient_eigenvectors[layer]
-                for layer in self.compute_context[0].layer_names
+                for layer in self.compute_context.layer_names
             ],
             Lambdas=[
-                Lambdas_unordered[layer]
-                for layer in self.compute_context[0].layer_names
+                Lambdas_unordered[layer] for layer in self.compute_context.layer_names
             ],
             damping=0.0 if damping is None else damping,
             comparison_matrix=comparison_matrix,
@@ -102,7 +101,7 @@ class KFACComputer(CollectorBasedHessianEstimator):
             data=self.precomputed_data,
             vectors=vectors,
             Lambdas=self._compute_lambdas(),
-            layer_names=self.compute_context[0].layer_names,
+            layer_names=self.compute_context.layer_names,
             method="ihvp",
             damping=0.0 if damping is None else damping,
             pseudo_inverse_factor=(
@@ -135,13 +134,13 @@ class KFACComputer(CollectorBasedHessianEstimator):
         return EKFACComputer._compute_hessian_or_inverse_hessian_estimate(
             eigenvectors_activations=[
                 self.precomputed_data.activation_eigenvectors[layer]
-                for layer in self.compute_context[0].layer_names
+                for layer in self.compute_context.layer_names
             ],
             eigenvectors_gradients=[
                 self.precomputed_data.gradient_eigenvectors[layer]
-                for layer in self.compute_context[0].layer_names
+                for layer in self.compute_context.layer_names
             ],
-            Lambdas=[Lambdas[layer] for layer in self.compute_context[0].layer_names],
+            Lambdas=[Lambdas[layer] for layer in self.compute_context.layer_names],
             damping=damping,
             method=method,
         )

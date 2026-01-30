@@ -31,7 +31,9 @@ class HessianEstimator(ABC):
     precomputed_data: Optional[ApproximationData] = None
     precomputed_data_directory: Optional[str] = None
 
-    def build(self, base_directory: Optional[str] = None) -> HessianEstimator:
+    def build(
+        self, base_directory: Optional[str] = None, try_load: bool = True
+    ) -> HessianEstimator:
         """Build the Hessian approximation by computing the relevant components. Optionally saves the components and config to the specified directory."""
 
         # If already built, return self
@@ -51,7 +53,11 @@ class HessianEstimator(ABC):
             directory_path = f"{base_directory}/{directory_name}"
 
         # Check if data exists on disk, if so load it
-        if directory_path is not None and ApproximationData.exists(directory_path):
+        if (
+            directory_path is not None
+            and try_load
+            and ApproximationData.exists(directory_path)
+        ):
             assert self.precomputed_data is not None, (
                 "precomputed_data must be set to load from disk."
             )
@@ -202,11 +208,11 @@ class ModelBasedHessianEstimator(HessianEstimator):
 
 @dataclass
 class CollectorBasedHessianEstimator(HessianEstimator):
-    compute_context: Tuple[DataActivationsGradients, DataActivationsGradients]
+    compute_context: DataActivationsGradients
 
     @staticmethod
     def _build(
-        compute_context: Tuple[DataActivationsGradients, DataActivationsGradients],
+        compute_context: DataActivationsGradients,
     ) -> ApproximationData | None:
         """
         Method which takes the provided compute context and performs any additional,
