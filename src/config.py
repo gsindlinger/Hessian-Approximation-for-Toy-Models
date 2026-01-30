@@ -78,6 +78,27 @@ class HessianApproximationMethod(str, Enum):
             if approximator not in exclude_list
         ]
 
+    @staticmethod
+    def num_collector_runs(approximator: HessianApproximationMethod) -> int:
+        """Get the number of collector runs required for a given approximator."""
+        if approximator in {
+            HessianApproximationMethod.KFAC,
+            HessianApproximationMethod.EKFAC,
+            HessianApproximationMethod.TKFAC,
+            HessianApproximationMethod.ETKFAC,
+            HessianApproximationMethod.SHAMPOO,
+            HessianApproximationMethod.ESHAMPOO,
+        }:
+            return 2
+        elif approximator in {
+            HessianApproximationMethod.FIM,
+            HessianApproximationMethod.BLOCK_FIM,
+            HessianApproximationMethod.BLOCK_HESSIAN,
+        }:
+            return 1
+        else:
+            return 0
+
 
 class ComputationType(str, Enum):
     """Types of Hessian computations."""
