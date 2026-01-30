@@ -22,6 +22,8 @@ class EShampooComputer(EKFACComputer):
         gradient_batch_dict: Dict[str, Float[Array, "N O"]],
     ) -> Dict[str, Dict[str, Float[Array, "D D"]]]:
         """Compute covariance matrices - Shampoo version."""
+
+        # TODO: Capture different collector data structure, i.e., dimensions of gradients (K, N, O)
         activation_cov_dict = {}
         gradient_cov_dict = {}
         for layer in activation_batch_dict.keys():
@@ -58,6 +60,5 @@ class EShampooComputer(EKFACComputer):
             result["activation_cov"][layer] = (
                 result["activation_cov"][layer] / activation_trace
             )
-
 
         return result

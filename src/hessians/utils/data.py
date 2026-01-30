@@ -21,6 +21,7 @@ import numpy as np
 from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Float
 
+from src.config import PseudoTargetGenerationStrategy
 from src.utils.data.data import Dataset
 from src.utils.models.approximation_model import ApproximationModel
 
@@ -174,6 +175,7 @@ class ModelContext:
             model_apply_fn=model.apply,
             loss_fn=loss_fn,
             targets=targets,
+            model=model,
         )
 
 
@@ -197,7 +199,6 @@ class EKFACData(ApproximationData):
     mean_eigenvalues_aggregated: Float = field(
         default=0.0
     )  # mean eigenvalue over all layers
-
     mean_corrections: Dict[str, Float] = field(
         default_factory=dict
     )  # mean eigenvalue corrections per layer
@@ -227,9 +228,10 @@ class FIMData(ApproximationData):
     Data class to hold FIM related data.
     """
 
-    per_sample_grads: Float[Array, "N n_params"] = field(
+    per_sample_grads: Float[Array, "N n_params | N K n_params"] = field(
         default_factory=lambda: jnp.array([])
     )
+    probabilities: Optional[Float[Array, "N K"]] = field(default=None)
 
     @classmethod
     def name(cls) -> str:
@@ -239,14 +241,24 @@ class FIMData(ApproximationData):
 @dataclass
 class DataActivationsGradients(ApproximationData):
     """
-    Data class to hold FIM related data.
+    Data structure to hold activations and gradients per layer.
+
+    Attributes:
+    activations: Per-layer activations, shape (N, I_l) per layer
+    gradients: Per-layer gradients, shape (K, N, O_l) per layer (K depending on pseudo-target strategy)
+    probabilities: Predicted probabilities p(c|x), shape (N, K), optional (only need when ALL_CLASS strategy is used for pseudo-targets)
+    layer_names: Ordered list of layer names
     """
 
-    activations: Dict[str, Float[Array, "..."]] = field(
+    activations: Dict[str, Float[Array, "N I"]] = field(
         default_factory=dict
     )  # Only used for Block FIM
-    gradients: Dict[str, Float[Array, "..."]] = field(default_factory=dict)
+    gradients: Dict[str, Float[Array, "K N O"]] = field(default_factory=dict)
     layer_names: List[str] = field(default_factory=list)
+    probabilities: Optional[Float[Array, "N K"]] = field(default=None)
+    pseudo_target_strategy: PseudoTargetGenerationStrategy = field(
+        default=PseudoTargetGenerationStrategy.EMPIRICAL_FISHER
+    )
 
     @classmethod
     def name(cls) -> str:

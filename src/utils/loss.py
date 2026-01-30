@@ -11,17 +11,31 @@ from src.config import LossType
 
 @partial(jax.jit, static_argnames=("reduction",))
 def mse_loss(
-    pred: Float[Array, "batch ..."], target: Float[Array, "batch ..."], reduction="mean"
+    pred: Float[Array, "batch output_dim"], 
+    target: Float[Array, "batch output_dim"], 
+    reduction="mean"
 ) -> Float:
-    """MSE loss"""
+    """MSE loss - always averages over output dims, configurable batch reduction
+    
+    Assumes batch dimension is always present (axis 0).
+    """
+    squared_error = (pred - target) ** 2
+    
+    # Average always over output_dim
+    per_sample_mse = jnp.mean(squared_error, axis=-1)
+    
     if reduction == "mean":
-        return jnp.mean((pred - target) ** 2)
+        return jnp.mean(per_sample_mse)
+    elif reduction == "sum":
+        return jnp.sum(per_sample_mse)
+    elif reduction == "none":
+        return per_sample_mse
     else:
-        return jnp.sum((pred - target) ** 2)
+        raise ValueError(f"Unknown reduction: {reduction}")
 
 
 @partial(jax.jit, static_argnames=("reduction",))
-def cross_entropy_loss(pred, target, reduction="mean") -> Float:
+def cross_entropy_loss(pred: Float[Array, "batch n_classes"], target: Float[Array, "batch"], reduction="mean") -> Float:
     """Cross entropy loss"""
     if reduction == "mean":
         return optax.softmax_cross_entropy_with_integer_labels(pred, target).mean()

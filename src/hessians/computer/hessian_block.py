@@ -117,7 +117,9 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
                 eigvals_inv = jnp.where(
                     jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
                 )
-                y_block = (eigvecs * eigvals_inv) @ (eigvecs.T @ v_block.T).T
+                y_block = jnp.einsum(
+                    "ij,j,jk,nk->ni", eigvecs, eigvals_inv, eigvecs.T, v_block
+                )
             else:
                 y_block = jnp.linalg.solve(H_blocks[i], v_block.T).T
             results.append(y_block)
@@ -275,7 +277,7 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
         def loss_single(p, x, y):
             params_unflat = compute_context.unravel_fn(p)
             preds = compute_context.model_apply_fn(params_unflat, x[None, ...])
-            return compute_context.loss_fn(preds.squeeze(0), y)
+            return compute_context.loss_fn(preds, y[None, ...])
 
         def embed(v):
             full = jnp.zeros_like(p_flat)

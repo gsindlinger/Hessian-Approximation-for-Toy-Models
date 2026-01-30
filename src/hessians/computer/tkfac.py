@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
 
 from src.hessians.computer.etkfac import ETKFACComputer
 from src.hessians.computer.kfac import KFACComputer
@@ -17,6 +16,6 @@ class TKFACComputer(KFACComputer):
 
     @staticmethod
     def _build(
-        compute_context: Tuple[DataActivationsGradients, DataActivationsGradients],
+        compute_context: DataActivationsGradients,
     ) -> EKFACData:
         return ETKFACComputer._build(compute_context)
