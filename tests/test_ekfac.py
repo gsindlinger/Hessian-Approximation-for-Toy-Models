@@ -305,6 +305,32 @@ def test_kfac_via_kron_equals_eigenvector_method(
     ).build()
     eigenvector_method_H = kfac_computer.estimate_hessian(damping=0.0)
 
+    true_hessian_computer = HessianComputer(compute_context=model_context)
+    true_hessian_H = true_hessian_computer.compute_hessian(damping=0.0)
+
+    # plot all three matrices for visual inspection and save the plot (need the scale of the values)
+    import matplotlib.pyplot as plt
+
+    fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+    axs[0].imshow(kron_comparison_method_H, cmap="viridis", aspect="auto")
+    axs[0].set_title("Kron Comparison Method Hessian")
+    axs[1].imshow(eigenvector_method_H, cmap="viridis", aspect="auto")
+    axs[1].set_title("Eigenvector Method Hessian")
+    axs[2].imshow(true_hessian_H, cmap="viridis", aspect="auto")
+    axs[2].set_title("True Hessian")
+    plt.colorbar(
+        axs[0].imshow(kron_comparison_method_H, cmap="viridis", aspect="auto"),
+        ax=axs[0],
+    )
+    plt.colorbar(
+        axs[1].imshow(eigenvector_method_H, cmap="viridis", aspect="auto"), ax=axs[1]
+    )
+    plt.colorbar(
+        axs[2].imshow(true_hessian_H, cmap="viridis", aspect="auto"), ax=axs[2]
+    )
+    plt.tight_layout()
+    plt.savefig("kfac_hessian_comparison.png")
+
     assert jnp.allclose(
         kron_comparison_method_H,
         eigenvector_method_H,
