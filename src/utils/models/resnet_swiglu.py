@@ -38,6 +38,15 @@ class ResNetMLPSwiGLU(ApproximationModel):
 
         Returns the logits of the model.
         """
+        
+        # TODO: First embedding w/o residual (linear layer)
+        # hidden_dim = 64 -> W_Embedding(x)_shape(64, 10) -> (20,20,10) -> (10,10,10)
+        
+        # W_up = [10, 20]
+        # W_gate = [10, 20]
+        # W_down = [20, 10]
+        
+        
         if self.hidden_dim is not None:
             for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
                 residual = x

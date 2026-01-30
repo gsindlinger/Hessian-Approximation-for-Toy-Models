@@ -6,6 +6,7 @@ import pytest
 from jax import flatten_util
 
 from src.config import (
+    DatasetEnum,
     LossType,
     ModelArchitecture,
     ModelConfig,
@@ -17,6 +18,7 @@ from src.hessians.computer.fim import FIMComputer
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.utils.data.data import (
     Dataset,
+    DownloadableDataset,
     RandomClassificationDataset,
     RandomRegressionDataset,
 )
@@ -38,7 +40,7 @@ def config(request, tmp_path_factory):
 
     if request.param == "classification":
         architecture = ModelArchitecture.MLP
-        hidden_dim = [3]
+        hidden_dim = [8, 8]
         loss = LossType.CROSS_ENTROPY
         tol_hvp = 0.2
         tol_ihvp = 0.1
@@ -80,6 +82,11 @@ def dataset(config: Dict) -> Dataset:
     seed = 0
 
     if config["model_config"].loss == LossType.CROSS_ENTROPY:
+        dataset = DownloadableDataset.load(
+            dataset=DatasetEnum.SKLEARN_DIGITS,
+            directory="experiments/datasets/sklearn_digits",
+        )
+        return dataset
         return RandomClassificationDataset(
             n_samples=1500,
             n_features=20,
@@ -201,6 +208,58 @@ def reference_fim_from_autodiff(model_context: ModelContext, damping: float = 0.
     return F
 
 
+def reference_from_autodiff_all_classes(
+    model_context: ModelContext,
+    dataset: Dataset,
+    damping: float = 0.0,
+):
+    """
+    Compute true FIM by summing over all classes weighted by predicted probabilities.
+    FIM = E_x[Σ_c p(c|x) * g_c g_c^T]
+    """
+
+    def loss_single(p_flat, x, y):
+        params = model_context.unravel_fn(p_flat)
+        preds = model_context.model_apply_fn(params, x)
+        loss = model_context.loss_fn(preds, y, reduction="sum")
+        return loss
+
+    grad_fn = jax.grad(loss_single)
+
+    p_flat = model_context.params_flat
+    X = model_context.inputs
+    n_classes = dataset.output_dim()
+    n_params = p_flat.shape[0]
+
+    def per_sample_fim(x):
+        """Compute FIM contribution for single sample x"""
+        preds = model_context.model_apply_fn(model_context.unravel_fn(p_flat), x)
+        probs = jax.nn.softmax(preds)
+
+        # Initialize FIM for this sample
+        fim_x = jnp.zeros((n_params, n_params), dtype=p_flat.dtype)
+
+        for c in range(n_classes):
+            # Pass class index directly (not one-hot) for integer label loss
+            grad_c = grad_fn(p_flat, x, c)
+
+            # Apply MSE scaling correction if needed
+            if get_loss_name(model_context.loss_fn) == "mse":
+                grad_c = -0.5 * grad_c
+
+            # Accumulate: p(c|x) * g_c g_c^T
+            fim_x += probs[c] * jnp.outer(grad_c, grad_c)
+
+        return fim_x
+
+    # Average FIM over all samples
+    fim_per_sample = jax.vmap(per_sample_fim)(X)  # (N, n_params, n_params)
+    F = jnp.mean(fim_per_sample, axis=0)
+    F = F + damping * jnp.eye(F.shape[0], dtype=F.dtype)
+
+    return F
+
+
 # -----------------------------------------------------------------------------
 # Tests
 # -----------------------------------------------------------------------------
@@ -293,4 +352,44 @@ def test_fim_ihvp_matches_reference(
 
     assert VectorMetric.RELATIVE_ERROR.compute(fim_ihvp, ref_ihvp) < 1e-5, (
         "FIM IHVP does not match reference."
+    )
+
+
+def test_fim_with_pseudo_targets_for_all_classes(
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    dataset: Dataset,
+    model_context: ModelContext,
+):
+    """FIM computed with pseudo-targets for all classes must match direct autodiff reference."""
+    model, params, loss = model_params_loss
+
+    # Collect activations and gradients
+    collector = CollectorActivationsGradients(
+        model=model,
+        params=params,
+        loss_fn=loss,
+    )
+
+    fim_data = collector.collect(
+        inputs=pseudo_targets_dataset.inputs, targets=pseudo_targets_dataset.targets
+    )
+
+    assert isinstance(fim_data, DataActivationsGradients)
+
+    fim = FIMComputer(compute_context=(fim_data, DataActivationsGradients())).build()
+
+    F_collector_single = fim.estimate_hessian(damping=0.0)
+    F_collector_all_classes = reference_from_autodiff_all_classes(
+        ModelContext.create(
+            dataset=Dataset(inputs=dataset.inputs, targets=dataset.targets),
+            model=model,
+            params=params,
+            loss_fn=loss,
+        ),
+        dataset,
+        damping=0.0,
+    )
+
+    assert jnp.allclose(F_collector_single, F_collector_all_classes, atol=1e-5), (
+        "FIM matrix with all classes as pseudo-targets does not match reference."
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -11,6 +12,8 @@ from src.utils.metrics.vector_metrics import VectorMetric
 # -----------------------------------------------------------------------------
 # Enums for controlled choices
 # -----------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
 
 
 class LossType(str, Enum):
@@ -74,7 +77,31 @@ class HessianApproximationMethod(str, Enum):
             for approximator in HessianApproximationMethod
             if approximator not in exclude_list
         ]
-
+        
+    @staticmethod
+    def num_collector_runs(
+        approximator: HessianApproximationMethod
+    ) -> int:
+        """Get the number of collector runs required for a given approximator."""
+        if approximator in {
+            HessianApproximationMethod.KFAC,
+            HessianApproximationMethod.EKFAC,
+            HessianApproximationMethod.TKFAC,
+            HessianApproximationMethod.ETKFAC,
+            HessianApproximationMethod.SHAMPOO,
+            HessianApproximationMethod.ESHAMPOO,
+        }:
+            return 2
+        elif approximator in {
+            HessianApproximationMethod.FIM,
+            HessianApproximationMethod.BLOCK_FIM,
+            HessianApproximationMethod.BLOCK_HESSIAN,
+        }:
+            return 1
+        else:
+            return 0
+        
+    
 
 class ComputationType(str, Enum):
     """Types of Hessian computations."""
@@ -111,6 +138,13 @@ class VectorSamplingMethod(str, Enum):
 
     GRADIENTS = "gradients"
     RANDOM = "random"
+    
+class PseudoTargetGenerationStrategy(str, Enum):
+    """Strategies for generating pseudo-targets for IHVP computation."""
+    
+    MCMC = "mcmc" # Markov Chain Monte Carlo, i.e., repeated sampling (multiple repetitions as specified in the config)
+    ALL_CLASSES = "all_classes" # Generate pseudo-targets for all classes and their probabilities
+    EMPIRICAL_FISHER = "empirical_fisher" # Use true labels as targets (i.e. repetitions = 1)
 
 
 @dataclass
@@ -239,8 +273,27 @@ class HessianComputationConfig:
             ComputationType.IHVP,
         ]
     )
+    pseudo_target_generation_strategy: PseudoTargetGenerationStrategy = PseudoTargetGenerationStrategy.MCMC
+    pseudo_target_generation_repetitions: int = 5
     regularization_value: float = 0.1
     regularization_strategy: RegularizationStrategy = RegularizationStrategy.AUTO_MEAN_EIGENVALUE
+
+    def __post_init__(self):
+        if self.pseudo_target_generation_strategy == PseudoTargetGenerationStrategy.ALL_CLASSES:
+            if self.pseudo_target_generation_repetitions != 1:
+                logger.warning(
+                    "When using ALL_CLASSES strategy, pseudo_target_generation_repetitions is set to 1, "
+                    "since we generate pseudo-targets for all classes and their probabilities."
+                )
+                self.pseudo_target_generation_repetitions = 1
+        elif self.pseudo_target_generation_strategy == PseudoTargetGenerationStrategy.EMPIRICAL_FISHER:
+            if self.pseudo_target_generation_repetitions != 1:
+                logger.warning(
+                    "When using EMPIRICAL_FISHER strategy, pseudo_target_generation_repetitions is set to 1, "
+                    "since we use true labels as targets."
+                )
+                self.pseudo_target_generation_repetitions = 1
+
 
 
 @dataclass

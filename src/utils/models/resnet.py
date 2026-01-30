@@ -37,6 +37,8 @@ class ResNetMLP(ApproximationModel):
         Returns the logits of the model.
         """
         act_fn = self.get_activation_fn(self.activation)
+        
+        # TODO: First embedding w/o residual (linear layer)
 
         if self.hidden_dim is not None:
             for i, h in enumerate(self.hidden_dim):

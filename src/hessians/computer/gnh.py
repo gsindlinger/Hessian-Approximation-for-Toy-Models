@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Optional
 
 import jax
@@ -102,7 +103,7 @@ class GNHComputer(ModelBasedHessianEstimator):
         return result
 
     @staticmethod
-    @jax.jit
+    @partial(jax.jit, static_argnames=["damping", "pseudo_inverse_factor"])
     def _compute_ignhvp_batched(
         data: ModelContext,
         vectors: Float[Array, "batch_size n_params"],
@@ -120,7 +121,9 @@ class GNHComputer(ModelBasedHessianEstimator):
             eigvals_inv = jnp.where(
                 jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
             )
-            return (eigvecs * eigvals_inv) @ (eigvecs.T @ vectors.T).T
+            return jnp.einsum(
+                "ij,j,jk,nk->ni", eigvecs, eigvals_inv, eigvecs.T, vectors
+            )
         else:
             return jnp.linalg.solve(gnh, vectors.T).T
 
@@ -156,7 +159,7 @@ class GNHComputer(ModelBasedHessianEstimator):
                 return jax.vjp(lambda p: model_out(p, x_i), p_flat)[1](Jv)[0]
 
             # Build J^T @ J by computing columns
-            JtJ = jax.vmap(jvp_fn)(jnp.eye(p_flat.size))
+            JtJ = jax.vmap(jvp_fn)(jnp.eye(p_flat.size, dtype=p_flat.dtype))
 
             # Divide by n_outputs because J^T @ I @ J sums over output dimension
             return JtJ / n_outputs
@@ -168,6 +171,7 @@ class GNHComputer(ModelBasedHessianEstimator):
 
         p_flat = compute_context.params_flat
         X = compute_context.inputs
+        X = X.astype(jnp.float64)
         n_params = p_flat.size
 
         G0 = jnp.zeros((n_params, n_params))
@@ -211,7 +215,7 @@ class GNHComputer(ModelBasedHessianEstimator):
                 return jax.vjp(lambda p: model_out(p, x_i), p_flat)[1](HJv)[0]
 
             # Build J^T @ H_z @ J by computing columns
-            return jax.vmap(jvp_fn)(jnp.eye(p_flat.size))
+            return jax.vmap(jvp_fn)(jnp.eye(p_flat.size, dtype=p_flat.dtype))
 
         def scan_body(carry, xy):
             p_flat, G = carry
@@ -239,28 +243,28 @@ class GNHComputer(ModelBasedHessianEstimator):
         Computes full Gauss-Newton Hessian for any loss w.r.t. outputs.
         """
 
-        def model_out(p_flat, x):
+        def model_out_single(p_flat, x):
             params_unflat = compute_context.unravel_fn(p_flat)
             return compute_context.model_apply_fn(params_unflat, x[None, ...]).squeeze(
                 0
             )
 
         def loss_wrt_output(z, y):
-            return compute_context.loss_fn(z, y)
+            return compute_context.loss_fn(z[None, ...], y[None, ...])
 
         @jax.jit
         def per_sample_gn(p_flat, x_i, y_i):
-            z = model_out(p_flat, x_i)
+            z = model_out_single(p_flat, x_i)
             H_z = jax.hessian(lambda z_: loss_wrt_output(z_, y_i))(z)
 
             # Compute J.T @ H_z @ J without materializing J
             def jvp_fn(v):
                 # J @ v (forward mode)
-                _, Jv = jax.jvp(lambda p: model_out(p, x_i), (p_flat,), (v,))
+                _, Jv = jax.jvp(lambda p: model_out_single(p, x_i), (p_flat,), (v,))
                 # H_z @ (J @ v)
                 HJv = H_z @ Jv
                 # J.T @ (H_z @ J @ v) (backward mode)
-                return jax.vjp(lambda p: model_out(p, x_i), p_flat)[1](HJv)[0]
+                return jax.vjp(lambda p: model_out_single(p, x_i), p_flat)[1](HJv)[0]
 
             # Build GNH by computing columns
             return jax.vmap(jvp_fn)(jnp.eye(p_flat.size))

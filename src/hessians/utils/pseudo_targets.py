@@ -1,78 +1,70 @@
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 
 import jax
 import jax.numpy as jnp
 from chex import PRNGKey
-from flax import linen as nn
 from jax import flatten_util
 from jaxtyping import Array, Float, Int
 
 from src.config import VectorAnalysisConfig, VectorSamplingMethod
-from src.utils.data.data import Dataset
 from src.utils.loss import get_loss_name
 from src.utils.models.approximation_model import ApproximationModel
 
 
-def generate_pseudo_targets_dataset(
-    model: nn.Module,
-    params: Dict,
-    dataset: Dataset,
-    loss_fn: Callable,
-    rng_key: Array | None = None,
-    monte_carlo_repetitions: int = 1,
-):
-    """
-    Generate pseudo-targets for an entire dataset based on the model's output distribution.
-
-    This is used to compute the true Fisher Information Matrix rather than
-    the empirical Fisher (which would use true labels).
-    """
-    if rng_key is None:
-        rng_key = jax.random.PRNGKey(0)
-        
-    keys = jax.random.split(rng_key, monte_carlo_repetitions)
-    pseudo_targets = jax.vmap(
-        lambda key: generate_pseudo_targets(
-            model, params, dataset.inputs, loss_fn, rng_key=key
-        )
-    )(keys)
-    
-    # provide dataset with inputs repeated and corresponding pseudo targets
-    # first bring pseudo_targets to shape (n_samples * monte_carlo_repetitions, target_shape)
-    repeated_inputs = jnp.tile(dataset.inputs, (monte_carlo_repetitions, 1))
-    # now bring pseudo_targets from shape (monte_carlo_repetitions, n_samples) to (n_samples * monte_carlo_repetitions,)
-    pseudo_targets = pseudo_targets.reshape(-1, *pseudo_targets.shape[2:])
-    return dataset.__class__(inputs=repeated_inputs, targets=pseudo_targets)
-    
-
 def generate_pseudo_targets(
-    model: nn.Module,
+    model: ApproximationModel,
     params: Dict,
     inputs: Float[Array, "n_samples features"],
     loss_fn: Callable,
     rng_key: Array | None = None,
+    repetitions: int = 1,
+    noise_std: Optional[Float] = None,
 ) -> Float[Array, "n_samples targets"] | Int[Array, "n_samples"]:
     """
     Generate pseudo-targets based on the model's output distribution.
 
     This is used to compute the true Fisher Information Matrix rather than
     the empirical Fisher (which would use true labels).
+
+    Returns either regression targets (Float array) or classification targets (Int array)
     """
     if rng_key is None:
         rng_key = jax.random.PRNGKey(0)
-        
+
     loss_name = get_loss_name(loss_fn)
+
     if loss_name == "cross_entropy":
-        return _generate_classification_pseudo_targets(model, params, inputs, rng_key)
+        compute_fn = lambda rng_key: _generate_classification_pseudo_targets(
+            model=model, params=params, inputs=inputs, rng_key=rng_key
+        )
     elif loss_name == "mse":
-        return _generate_regression_pseudo_targets(model, params, inputs, rng_key)
+        compute_fn = lambda rng_key: _generate_regression_pseudo_targets(
+            model=model,
+            params=params,
+            inputs=inputs,
+            rng_key=rng_key,
+            noise_std=noise_std,
+        )
     else:
         raise ValueError(f"Unsupported loss function for EKFAC: {loss_name}")
-        
+
+    if repetitions == 1:
+        # No batch dimension for single repetition
+        return compute_fn(rng_key)
+    else:
+        # Add batch dimension for multiple repetitions
+        rng_keys = jax.random.split(rng_key, repetitions)
+        pseudo_targets_list = []
+        for i in range(repetitions):
+            pseudo_targets = compute_fn(rng_keys[i])
+            pseudo_targets_list.append(pseudo_targets)
+
+        pseudo_targets = jnp.concatenate(pseudo_targets_list, axis=0)
+        return pseudo_targets
 
 
 def _generate_classification_pseudo_targets(
-    model: nn.Module,
+    model: ApproximationModel,
     params: Dict,
     inputs: Float[Array, "n_samples features"],
     rng_key: Array,
@@ -81,22 +73,24 @@ def _generate_classification_pseudo_targets(
     logits = model.apply(params, inputs)
     if not isinstance(logits, jnp.ndarray):
         raise ValueError("Model predictions must be a jnp.ndarray for classification.")
+
     return jax.random.categorical(rng_key, logits, axis=-1)
 
 
 def _generate_regression_pseudo_targets(
-    model: nn.Module,
+    model: ApproximationModel,
     params: Dict,
     inputs: Float[Array, "n_samples features"],
     rng_key: Array,
-    noise_std: float = 1.0,
+    noise_std: Optional[Float] = None,
 ) -> Float[Array, "n_samples"]:
     """Generate pseudo-targets by adding Gaussian noise to predictions."""
+    if noise_std is None:
+        noise_std = jnp.sqrt(model.output_dim * 0.5)
     preds = model.apply(params, inputs)
     if not isinstance(preds, jnp.ndarray):
         raise ValueError("Model predictions must be a jnp.ndarray for regression.")
-    noise = noise_std * jax.random.normal(rng_key, preds.shape)
-    return preds + noise
+    return preds + noise_std * jax.random.normal(rng_key, preds.shape)
 
 
 def sample_vectors(
