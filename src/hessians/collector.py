@@ -505,7 +505,11 @@ class CollectorActivationsGradients(CollectorBase[DataActivationsGradients]):
                 activations[layer_name] = jnp.array(loaded[k])
             elif k.startswith("gradients_"):
                 layer_name = k[len("gradients_") :]
-                gradients[layer_name] = jnp.array(loaded[k])
+                arr = jnp.array(loaded[k])
+                # Backward compatibility: old format stored (N, O) 2D; new format is (k, N, O) 3D
+                if arr.ndim == 2:
+                    arr = arr[None]  # (N, O) -> (1, N, O)
+                gradients[layer_name] = arr
 
         # Convert strategy string back to enum if present
         pseudo_target_strategy = PseudoTargetGenerationStrategy.MCMC  # default
