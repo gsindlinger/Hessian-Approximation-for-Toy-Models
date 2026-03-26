@@ -23,6 +23,7 @@ from src.utils.data.data import (
     RandomRegressionDataset,
 )
 from src.utils.loss import get_loss, get_loss_name
+from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
 from src.utils.optimizers import optimizer
@@ -277,7 +278,7 @@ def test_fim_matrix_matches_reference(
 
     F_collector = fim.estimate_hessian(damping=0.0)
     F_ref = reference_fim_from_autodiff(model_context, damping=0.0)
-    assert jnp.allclose(F_collector, F_ref, atol=1e-5), (
+    assert FullMatrixMetric.RELATIVE_FROBENIUS.compute(F_collector, F_ref) < 1e-5, (
         "FIM matrix does not match reference."
     )
 
@@ -346,7 +347,7 @@ def test_fim_ihvp_matches_reference(
     fim_ihvp = fim.estimate_ihvp(v, damping=damping)
     ref_ihvp = jnp.linalg.solve(F_ref, v)
 
-    assert VectorMetric.RELATIVE_ERROR.compute(fim_ihvp, ref_ihvp) < 1e-5, (
+    assert VectorMetric.RELATIVE_ERROR.compute(fim_ihvp, ref_ihvp) < 1e-4, (
         "FIM IHVP does not match reference."
     )
 

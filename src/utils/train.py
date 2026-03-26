@@ -41,7 +41,7 @@ def train_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn
 
     loss_value, grads = jax.value_and_grad(loss_fn_wrapper)(state.params)
     # Check gradient norms
-    grad_norm = optax.global_norm(grads)
+    grad_norm = optax.tree.norm(grads)
 
     state = state.apply_gradients(grads=grads)
 
@@ -98,8 +98,6 @@ def train_model(
                 params=state.params,
                 epoch=epoch,
             )
-            
-        
 
     assert isinstance(state.params, Dict)
     return model, state.params, loss_history

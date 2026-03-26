@@ -1,10 +1,9 @@
 from enum import Enum
-from typing import Callable, List, Optional, Dict, Any
+from typing import Callable, List, Optional
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
-from matplotlib import axis
 
 
 class VectorMetric(str, Enum):
@@ -16,7 +15,9 @@ class VectorMetric(str, Enum):
     INNER_PRODUCT_DIFF = "inner_product_diff"  # |⟨x, v_1⟩ - ⟨x, v_2⟩|
     RELATIVE_ENERGY_DIFF = "relative_energy_diff"  # |‖v_1‖² - ‖v_2‖²| / ‖v_1‖²
     INNER_PRODUCT_RATIO = "inner_product_ratio"  # ⟨x, v_2⟩ / ⟨x, v_1⟩
-    RELATIVE_INNER_PRODUCT_DIFF = "relative_inner_product_diff"  # |⟨x, v_1⟩ - ⟨x, v_2⟩| / |⟨x, v_1⟩|
+    RELATIVE_INNER_PRODUCT_DIFF = (
+        "relative_inner_product_diff"  # |⟨x, v_1⟩ - ⟨x, v_2⟩| / |⟨x, v_1⟩|
+    )
 
     def compute_fn(self) -> Callable:
         """Return to the corresponding enum belonging metric as function / callable."""
@@ -27,8 +28,10 @@ class VectorMetric(str, Enum):
 
         # ||v_1 - v_2|| / ||v_1||
         def relative_error(v1, v2, x=None, power: float = 1.0, **kwargs):
-            norm_res = jnp.linalg.norm(v1 - v2, axis=-1) / (jnp.linalg.norm(v1, axis=-1) + 1e-10)
-            return norm_res ** power
+            norm_res = jnp.linalg.norm(v1 - v2, axis=-1) / (
+                jnp.linalg.norm(v1, axis=-1) + 1e-10
+            )
+            return norm_res**power
 
         # ⟨v_1, v_2⟩ / (||v_1|| * ||v_2||)
         def cosine_similarity(v1, v2, x=None, **kwargs):
@@ -43,10 +46,12 @@ class VectorMetric(str, Enum):
             ip1 = jnp.sum(x * v1, axis=-1)
             ip2 = jnp.sum(x * v2, axis=-1)
             return jnp.abs(ip1 - ip2)
-        
+
         def relative_inner_product_diff(v1, v2, x, **kwargs):
             if x is None:
-                raise ValueError("relative_inner_product_diff requires auxiliary vector x")
+                raise ValueError(
+                    "relative_inner_product_diff requires auxiliary vector x"
+                )
             ip1 = jnp.sum(x * v1, axis=-1)
             ip2 = jnp.sum(x * v2, axis=-1)
             return jnp.abs(ip1 - ip2) / (jnp.abs(ip1) + 1e-10)
@@ -96,7 +101,7 @@ class VectorMetric(str, Enum):
     ) -> Float:
         """
         Compute metric for a single pair of vectors.
-        
+
         Args:
             v1: First vector (ground truth)
             v2: Second vector (approximation)
@@ -143,7 +148,7 @@ class VectorMetric(str, Enum):
             x_axis = 0  # x is already batched
 
         fn = lambda v1, v2, x: self.compute_single(v1, v2, x, **metric_kwargs)
-        
+
         batched_fn = jax.vmap(fn, in_axes=(0, 0, x_axis))
         values = batched_fn(v1, v2, x)
 
