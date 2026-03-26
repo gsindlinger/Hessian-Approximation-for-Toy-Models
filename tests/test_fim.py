@@ -11,6 +11,7 @@ from src.config import (
     ModelArchitecture,
     ModelConfig,
     OptimizerType,
+    PseudoTargetGenerationStrategy,
     TrainingConfig,
 )
 from src.hessians.collector import CollectorActivationsGradients
@@ -19,7 +20,6 @@ from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.utils.data.data import (
     Dataset,
     DownloadableDataset,
-    RandomClassificationDataset,
     RandomRegressionDataset,
 )
 from src.utils.loss import get_loss, get_loss_name
@@ -62,8 +62,8 @@ def config(request, tmp_path_factory):
         training=TrainingConfig(
             learning_rate=1e-3,
             optimizer=OptimizerType.SGD,
-            epochs=50,
-            batch_size=128,
+            epochs=300,
+            batch_size=32,
         ),
         directory=str(base / "model"),
     )
@@ -87,19 +87,12 @@ def dataset(config: Dict) -> Dataset:
             directory="experiments/datasets/sklearn_digits",
         )
         return dataset
-        return RandomClassificationDataset(
-            n_samples=1500,
-            n_features=20,
-            n_informative=10,
-            n_classes=5,
-            seed=seed,
-        )
     else:  # MSE / regression
         return RandomRegressionDataset(
             n_samples=1500,
             n_features=10,
             n_targets=2,
-            noise=5.0,
+            noise=1.0,
             seed=seed,
         )
 
@@ -150,21 +143,23 @@ def model_context(
 def fim_data_model_context_without_pseudo_targets(
     dataset: Dataset,
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
-) -> Tuple[Tuple[DataActivationsGradients, DataActivationsGradients], ModelContext]:
+) -> Tuple[DataActivationsGradients, ModelContext]:
     """Collect FIM data with pseudo targets and create reference context."""
     model, params, loss = model_params_loss
 
     # Collect activations and gradients
-    collector = CollectorActivationsGradients(model=model, params=params, loss_fn=loss)
-
-    fim_data = collector.collect(
-        inputs=dataset.inputs,
-        targets=dataset.targets,
+    collector = CollectorActivationsGradients(
+        model=model,
+        params=params,
+        loss_fn=loss,
+        pseudo_target_strategy=PseudoTargetGenerationStrategy.EMPIRICAL_FISHER,
     )
+
+    fim_data = collector.collect(dataset=dataset)
 
     assert isinstance(fim_data, DataActivationsGradients)
 
-    return (fim_data, DataActivationsGradients()), ModelContext.create(
+    return fim_data, ModelContext.create(
         dataset=Dataset(inputs=dataset.inputs, targets=dataset.targets),
         model=model,
         params=params,
@@ -200,8 +195,11 @@ def reference_fim_from_autodiff(model_context: ModelContext, damping: float = 0.
     grads = jax.vmap(lambda x, y: grad_fn(p_flat, x, y))(X, Y)
 
     # Apply MSE scaling correction if needed
+    # log p(y|x) = -1/2 * ||y - f(x)||^2, L_n = (1/D)*||y-f||^2 => grad_log_p = -(D/2) * grad_L
     if get_loss_name(model_context.loss_fn) == "mse":
-        grads = -0.5 * grads
+        assert Y is not None
+        output_dim = Y.shape[-1]
+        grads = -(output_dim / 2.0) * grads
 
     F = grads.T @ grads / grads.shape[0]
     F = F + damping * jnp.eye(F.shape[0], dtype=F.dtype)
@@ -217,6 +215,10 @@ def reference_from_autodiff_all_classes(
     Compute true FIM by summing over all classes weighted by predicted probabilities.
     FIM = E_x[Σ_c p(c|x) * g_c g_c^T]
     """
+
+    assert get_loss_name(model_context.loss_fn) == "cross_entropy", (
+        "Reference with all classes is only implemented for classification."
+    )
 
     def loss_single(p_flat, x, y):
         params = model_context.unravel_fn(p_flat)
@@ -243,10 +245,6 @@ def reference_from_autodiff_all_classes(
             # Pass class index directly (not one-hot) for integer label loss
             grad_c = grad_fn(p_flat, x, c)
 
-            # Apply MSE scaling correction if needed
-            if get_loss_name(model_context.loss_fn) == "mse":
-                grad_c = -0.5 * grad_c
-
             # Accumulate: p(c|x) * g_c g_c^T
             fim_x += probs[c] * jnp.outer(grad_c, grad_c)
 
@@ -267,7 +265,7 @@ def reference_from_autodiff_all_classes(
 
 def test_fim_matrix_matches_reference(
     fim_data_model_context_without_pseudo_targets: Tuple[
-        Tuple[DataActivationsGradients, DataActivationsGradients], ModelContext
+        DataActivationsGradients, ModelContext
     ],
 ):
     """Full FIM matrix must match autodiff reference."""
@@ -279,16 +277,14 @@ def test_fim_matrix_matches_reference(
 
     F_collector = fim.estimate_hessian(damping=0.0)
     F_ref = reference_fim_from_autodiff(model_context, damping=0.0)
-
     assert jnp.allclose(F_collector, F_ref, atol=1e-5), (
         "FIM matrix does not match reference."
     )
 
 
 def test_fim_hvp_matches_reference(
-    config: Dict,
     fim_data_model_context_without_pseudo_targets: Tuple[
-        Tuple[DataActivationsGradients, DataActivationsGradients], ModelContext
+        DataActivationsGradients, ModelContext
     ],
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ):
@@ -326,7 +322,7 @@ def test_fim_hvp_matches_reference(
 def test_fim_ihvp_matches_reference(
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
     fim_data_model_context_without_pseudo_targets: Tuple[
-        Tuple[DataActivationsGradients, DataActivationsGradients], ModelContext
+        DataActivationsGradients, ModelContext
     ],
 ):
     """Inverse FIM-vector product must match direct solve reference."""
@@ -355,10 +351,10 @@ def test_fim_ihvp_matches_reference(
     )
 
 
+@pytest.mark.parametrize("config", ["classification"], indirect=True)
 def test_fim_with_pseudo_targets_for_all_classes(
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
     dataset: Dataset,
-    model_context: ModelContext,
 ):
     """FIM computed with pseudo-targets for all classes must match direct autodiff reference."""
     model, params, loss = model_params_loss
@@ -368,15 +364,16 @@ def test_fim_with_pseudo_targets_for_all_classes(
         model=model,
         params=params,
         loss_fn=loss,
+        pseudo_target_strategy=PseudoTargetGenerationStrategy.ALL_CLASSES,
     )
 
     fim_data = collector.collect(
-        inputs=pseudo_targets_dataset.inputs, targets=pseudo_targets_dataset.targets
+        dataset=dataset,
     )
 
     assert isinstance(fim_data, DataActivationsGradients)
 
-    fim = FIMComputer(compute_context=(fim_data, DataActivationsGradients())).build()
+    fim = FIMComputer(compute_context=fim_data).build()
 
     F_collector_single = fim.estimate_hessian(damping=0.0)
     F_collector_all_classes = reference_from_autodiff_all_classes(
