@@ -275,10 +275,6 @@ class FIMBlockComputer(CollectorBasedHessianEstimator):
 
             v_block = vectors[..., offset : offset + D]
 
-            # Add batch dimension if vectors has no batch dimension
-            if v_block.ndim == 1:
-                v_block = v_block[None, :]  # (D,) -> (1, D)
-
             # Compute per-sample vecs and FIM block
             act_expanded = jnp.broadcast_to(act[None, :, :], (K, N, I))
             per_sample_vecs = jnp.einsum("kni,kno->knio", act_expanded, grad).reshape(
@@ -327,7 +323,7 @@ class FIMBlockComputer(CollectorBasedHessianEstimator):
 
         for act, grad in zip(activations, gradients):
             N, I = act.shape
-            K, _, O = grad.shape
+            K, _, _ = grad.shape
 
             # Expand activations: (N, I) -> (K, N, I)
             act_expanded = jnp.broadcast_to(act[None, :, :], (K, N, I))

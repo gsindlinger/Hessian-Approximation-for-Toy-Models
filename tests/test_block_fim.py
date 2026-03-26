@@ -503,7 +503,6 @@ def test_fim_block_ihvp_batched(
 
 @pytest.mark.parametrize("config", ["linear"], indirect=True)
 def test_fim_block_all_strategies_finite(
-    config: ModelConfig,
     fim_data_empirical: DataActivationsGradients,
     fim_data_mcmc: DataActivationsGradients,
     fim_data_all_classes: DataActivationsGradients,
@@ -524,13 +523,25 @@ def test_fim_block_all_strategies_finite(
 
 
 @pytest.mark.parametrize("config", ["linear"], indirect=True)
-def test_fim_block_pseudo_inverse(
-    config: ModelConfig,
+def test_fim_block_pseudo_inverse_idempotent_projector(
     fim_data_empirical: DataActivationsGradients,
 ):
-    """Test pseudo-inverse functionality."""
-    pseudo_inverse_factor = 1e-5
+    """
+    Test that F @ F⁺ is an idempotent projector onto the range of F.
 
+    For a symmetric PSD matrix, the Moore-Penrose pseudo-inverse satisfies
+    F @ F⁺ @ F = F, which implies that P = F @ F⁺ is an orthogonal projector
+    onto range(F) with P² = P.
+
+    We verify this by checking that applying P twice gives the same result as
+    applying it once:
+
+        F @ F⁺ @ (F @ F⁺ @ v) ≈ F @ F⁺ @ v  for any v
+
+    This is equivalent to checking P²v = Pv, and holds for *any* v — unlike the
+    naive round-trip F @ F⁺ @ v ≈ v, which only holds when v ∈ range(F).
+    """
+    pseudo_inverse_factor = 1e-5
     block_fim = FIMBlockComputer(compute_context=fim_data_empirical).build()
 
     dim = (
@@ -539,17 +550,53 @@ def test_fim_block_pseudo_inverse(
     )
     v = jax.random.normal(jax.random.PRNGKey(0), (dim,))
 
-    # Compute IHVP with pseudo-inverse
+    # P @ v = F @ F⁺ @ v
+    ihvp = block_fim.estimate_ihvp(v, pseudo_inverse_factor=pseudo_inverse_factor)
+    v_proj = block_fim.estimate_hvp(ihvp, damping=0.0)
+
+    # P² @ v = F @ F⁺ @ (F @ F⁺ @ v)
+    ihvp2 = block_fim.estimate_ihvp(v_proj, pseudo_inverse_factor=pseudo_inverse_factor)
+    roundtrip = block_fim.estimate_hvp(ihvp2, damping=0.0)
+
+    assert jnp.isfinite(roundtrip).all()
+    assert VectorMetric.RELATIVE_ERROR.compute(roundtrip, v_proj) < 1e-5
+
+
+@pytest.mark.parametrize("config", ["linear"], indirect=True)
+def test_fim_block_pseudo_inverse_moore_penrose(
+    fim_data_empirical: DataActivationsGradients,
+):
+    """
+    Test the Moore-Penrose condition F⁺ @ F @ F⁺ = F⁺ via matrix-vector products.
+
+    The four Moore-Penrose conditions fully characterise the pseudo-inverse.
+    This test verifies one of them:
+
+        F⁺ @ F @ F⁺ @ v ≈ F⁺ @ v  for any v
+
+    Intuitively: applying F⁺, then F, then F⁺ again should give the same result
+    as applying F⁺ once — because F @ F⁺ is the projector onto range(F), and
+    F⁺ already maps into range(F), so the projection is a no-op on F⁺ @ v.
+
+    Unlike the idempotency test above, this checks a property of F⁺ itself rather
+    than of the projector F @ F⁺, and is well-defined for any v regardless of
+    whether v ∈ range(F).
+    """
+    pseudo_inverse_factor = 1e-5
+    block_fim = FIMBlockComputer(compute_context=fim_data_empirical).build()
+
+    dim = (
+        fim_data_empirical.activations[fim_data_empirical.layer_names[0]].shape[1]
+        * fim_data_empirical.gradients[fim_data_empirical.layer_names[0]].shape[2]
+    )
+    v = jax.random.normal(jax.random.PRNGKey(0), (dim,))
+
+    # F⁺ @ v
     ihvp = block_fim.estimate_ihvp(v, pseudo_inverse_factor=pseudo_inverse_factor)
 
-    assert jnp.isfinite(ihvp).all(), (
-        "IHVP with pseudo-inverse contains non-finite values"
-    )
+    # F⁺ @ F @ F⁺ @ v
+    fv = block_fim.estimate_hvp(ihvp, damping=0.0)
+    ihvp2 = block_fim.estimate_ihvp(fv, pseudo_inverse_factor=pseudo_inverse_factor)
 
-    # Round-trip should still work reasonably well
-    roundtrip = block_fim.estimate_hvp(ihvp)
-
-    # Relaxed tolerance due to pseudo-inverse
-    assert VectorMetric.RELATIVE_ERROR.compute(roundtrip, v) < 1e-3, (
-        "Round-trip with pseudo-inverse failed"
-    )
+    assert jnp.isfinite(ihvp2).all()
+    assert VectorMetric.RELATIVE_ERROR.compute(ihvp2, ihvp) < 1e-5
