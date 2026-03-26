@@ -397,47 +397,11 @@ class HessianExperimentConfig:
 
 
 @dataclass
-class LDSAnalysisConfig:
-    """Configuration for Linear Datamodeling Score (LDS) analysis."""
-
-    # Approximation methods to evaluate
-    approximators: List[HessianApproximationMethod] = field(
-        default_factory=lambda: (
-            HessianApproximationMethod.get_approximator_list_except_exact()
-        )
-    )
-
-    # LDS sampling parameters
-    num_subsets: int = 100  # Number of random subsets to sample (m in paper)
-    reps_per_model: int = 1  # Number of repetitions per model
-    subset_fraction: float = (
-        0.5  # Fraction of training data in each subset (α in paper)
-    )
-    num_test_examples: int = 50  # Number of test examples to compute LDS for
-
-    # Damping configuration
-    damping: float = 0.1
-    damping_strategy: DampingStrategy = DampingStrategy.AUTO_MEAN_EIGENVALUE
-
-    # Storage
-    results_output_dir: str = "experiments/results/lds_analysis"
-
-    def __post_init__(self):
-        if self.num_subsets <= 0:
-            raise ValueError("num_subsets must be positive")
-        if not 0.0 < self.subset_fraction < 1.0:
-            raise ValueError("subset_fraction must be in (0, 1)")
-        if self.num_test_examples <= 0:
-            raise ValueError("num_test_examples must be positive")
-
-
-@dataclass
 class LDSExperimentConfig:
-    """Top-level configuration for LDS experiments."""
+    """Configuration for LDS experiments."""
 
     # Experiment identification
     experiment_name: str = "lds_experiment"
-    base_output_dir: str = "experiments"
     seed: int = 42
 
     # Dataset
@@ -450,5 +414,30 @@ class LDSExperimentConfig:
     # List of model directories to analyze
     models: List[str] = field(default_factory=list)
 
-    # LDS analysis configuration
-    lds_analysis: LDSAnalysisConfig = field(default_factory=LDSAnalysisConfig)
+    # Approximation methods to evaluate
+    approximators: List[HessianApproximationMethod] = field(
+        default_factory=lambda: (
+            HessianApproximationMethod.get_approximator_list_except_exact()
+        )
+    )
+
+    # ELSO sampling parameters
+    num_subsets: int = 100
+    reps_per_model: int = 1
+    subset_fraction: float = 0.5
+    num_test_examples: int = 50
+
+    # Damping configuration
+    damping: float = 0.1
+    damping_strategy: RegularizationStrategy = RegularizationStrategy.AUTO_MEAN_EIGENVALUE
+
+    # Storage
+    results_output_dir: str = "experiments/results/lds_analysis"
+
+    def __post_init__(self):
+        if self.num_subsets <= 0:
+            raise ValueError("num_subsets must be positive")
+        if not 0.0 < self.subset_fraction < 1.0:
+            raise ValueError("subset_fraction must be in (0, 1)")
+        if self.num_test_examples <= 0:
+            raise ValueError("num_test_examples must be positive")

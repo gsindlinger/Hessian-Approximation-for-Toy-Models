@@ -151,18 +151,22 @@ class CollectorActivationsGradients:
             O = g_np.shape[-1] if g_np.ndim > 1 else 1
             self._act_memmap[name] = np.lib.format.open_memmap(
                 self._memmap_dir / f"activations_{name}.npy",
-                mode="w+", dtype=a_np.dtype, shape=(self._total_n, I),
+                mode="w+",
+                dtype=a_np.dtype,
+                shape=(self._total_n, I),
             )
             self._grad_memmap[name] = np.lib.format.open_memmap(
                 self._memmap_dir / f"gradients_{name}.npy",
-                mode="w+", dtype=g_np.dtype, shape=(self._total_n, O),
+                mode="w+",
+                dtype=g_np.dtype,
+                shape=(self._total_n, O),
             )
             self._offsets[name] = 0
 
         B = a_np.shape[0]
         off = self._offsets[name]
-        self._act_memmap[name][off:off + B] = a_np
-        self._grad_memmap[name][off:off + B] = g_np.reshape(B, -1)
+        self._act_memmap[name][off : off + B] = a_np
+        self._grad_memmap[name][off : off + B] = g_np.reshape(B, -1)
         self._offsets[name] = off + B
 
     # ------------------------------------------------------------------
@@ -306,7 +310,9 @@ class CollectorActivationsGradients:
             grad_mm = self._grad_memmap[layer_name]
             O_dim = grad_mm.shape[-1]
             activations_final[layer_name] = act_mm[:n_samples]
-            gradients_final[layer_name] = grad_mm.reshape(k, n_samples, O_dim).transpose(1, 2, 0)
+            gradients_final[layer_name] = grad_mm.reshape(
+                k, n_samples, O_dim
+            ).transpose(1, 2, 0)
 
         # Unified probs: (N, k).  ALL_CLASSES uses softmax; EF/MCMC use ones.
         # FLAGGED: MCMC normalization convention deferred.

@@ -5,6 +5,7 @@ from enum import Enum
 from typing import List, Optional, Tuple, get_args, get_type_hints
 
 import jax
+import numpy as np
 import yaml
 from jax.tree_util import tree_map
 from omegaconf import DictConfig, OmegaConf
@@ -12,7 +13,6 @@ from typing_extensions import get_origin
 
 from src.config import DatasetConfig
 from src.utils.utils import get_peak_bytes_in_use
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,20 @@ def _convert_value(target_type, value):
 def load_experiment_override_from_yaml(
     path: str,
 ) -> Tuple[List[str], DatasetConfig, int | None, Optional[List[int]]]:
+    """Load experiment override configuration from a YAML file.
+
+    The YAML file can specify:
+    - models: List of model directory paths.
+    - dataset: Dataset configuration (name, path, test_size, etc.).
+    - seed: Random seed for reproducibility.
+    - epochs: Optional number of training epochs (if applicable).
+
+    Returns:
+    - models: List of model directory paths.
+    - dataset: DatasetConfig instance with dataset settings.
+    - seed: Random seed value or None if not specified.
+    - epochs: Optional list of epoch counts for each model or None if not specified.
+    """
     with open(path, "r") as f:
         data = yaml.safe_load(f)
 
@@ -121,7 +135,7 @@ def load_experiment_override_from_yaml(
 
     if "dataset" in data:
         dataset = to_dataclass(DatasetConfig, data["dataset"])
-        
+
     # if any of the keys of data contain epochs or epochs as substring of the key, set epochs
     epochs = None
     for key in data.keys():
@@ -131,7 +145,8 @@ def load_experiment_override_from_yaml(
 
     seed = data.get("seed", None)
 
-    return models, dataset, seed, epochs # type: ignore
+    return models, dataset, seed, epochs  # type: ignore
+
 
 def cleanup_memory(stage: str | None = None):
     """Force garbage collection and clear JAX caches."""
@@ -152,6 +167,7 @@ def block_tree(x, name: str):
         raise
     return x
 
+
 def json_safe(obj):
     # JAX arrays
     if isinstance(obj, jax.Array):
@@ -169,7 +185,7 @@ def json_safe(obj):
 
     # Dataclasses
     if is_dataclass(obj):
-        return asdict(obj) # type: ignore
+        return asdict(obj)  # type: ignore
 
     # Sets / tuples
     if isinstance(obj, (set, tuple)):
