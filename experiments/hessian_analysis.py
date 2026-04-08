@@ -128,14 +128,14 @@ def collect_data(
 
     # Collect Activation & Gradients
     logger.info("[HESSIAN] Collecting Activations & Gradients")
-    strategy = hessian_config.computation_config.pseudo_target_generation_strategy
+    strategy = hessian_config.computation_config.estimators_config.pseudo_target_generation_strategy
 
     def _make_collector():
         return CollectorActivationsGradients(
             model=model,
             params=params,
             loss_fn=loss_fn,
-            pseudo_target_repetitions=hessian_config.computation_config.pseudo_target_generation_repetitions,
+            pseudo_target_repetitions=hessian_config.computation_config.estimators_config.pseudo_target_generation_repetitions,
             pseudo_target_strategy=strategy,
         )
 
@@ -191,7 +191,7 @@ def compute_hessian_comparison_for_single_model(
     # Use EKFAC as base for damping selection
     pseudo_inverse_factor: Optional[float] = None
     damping: Optional[float] = None
-    if hessian_config.computation_config.regularization_strategy in (
+    if hessian_config.computation_config.estimators_config.regularization_strategy in (
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
     ):
@@ -201,23 +201,27 @@ def compute_hessian_comparison_for_single_model(
         )
         ekfac_computer.build(base_directory=build_base_dir)
         damping = ekfac_computer.get_damping(
-            damping_strategy=hessian_config.computation_config.regularization_strategy,
-            factor=hessian_config.computation_config.regularization_value,
+            damping_strategy=hessian_config.computation_config.estimators_config.regularization_strategy,
+            factor=hessian_config.computation_config.estimators_config.regularization_value,
         )
         logger.info(f"[HESSIAN] Using damping: {damping:.6f}")
         results.setdefault("damping", damping)  # type: ignore
     elif (
-        hessian_config.computation_config.regularization_strategy
+        hessian_config.computation_config.estimators_config.regularization_strategy
         == RegularizationStrategy.FIXED
     ):
-        damping = hessian_config.computation_config.regularization_value
+        damping = (
+            hessian_config.computation_config.estimators_config.regularization_value
+        )
         logger.info(f"[HESSIAN] Using fixed damping: {damping:.6f}")
         results.setdefault("damping", damping)  # type: ignore
     elif (
-        hessian_config.computation_config.regularization_strategy
+        hessian_config.computation_config.estimators_config.regularization_strategy
         == RegularizationStrategy.PSEUDO_INVERSE
     ):
-        pseudo_inverse_factor = hessian_config.computation_config.regularization_value
+        pseudo_inverse_factor = (
+            hessian_config.computation_config.estimators_config.regularization_value
+        )
         logger.info(
             f"[HESSIAN] Using pseudo-inverse with factor: {pseudo_inverse_factor:.6f}"
         )
@@ -245,7 +249,9 @@ def compute_hessian_comparison_for_single_model(
             )
 
             matrix_approxs = [
-                a for a in comp_config.approximators if a != reference_approx
+                a
+                for a in comp_config.estimators_config.approximators
+                if a != reference_approx
             ]
             bar = tqdm(
                 matrix_approxs,
@@ -289,7 +295,9 @@ def compute_hessian_comparison_for_single_model(
             )
 
             hvp_approxs = [
-                a for a in comp_config.approximators if a != reference_approx
+                a
+                for a in comp_config.estimators_config.approximators
+                if a != reference_approx
             ]
             bar = tqdm(
                 hvp_approxs,
@@ -345,7 +353,9 @@ def compute_hessian_comparison_for_single_model(
                 f"{reference_approx.value}_ihvp",
             )
             ihvp_approxs = [
-                a for a in comp_config.approximators if a != reference_approx
+                a
+                for a in comp_config.estimators_config.approximators
+                if a != reference_approx
             ]
             bar = tqdm(
                 ihvp_approxs,

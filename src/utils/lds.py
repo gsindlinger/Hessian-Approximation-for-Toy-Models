@@ -330,7 +330,8 @@ def compute_lds_for_model(
         model=model,
         params=params,
         loss_fn=loss_fn,
-        pseudo_target_repetitions=2,
+        pseudo_target_repetitions=config.hessian_estimators.pseudo_target_generation_repetitions,
+        pseudo_target_strategy=config.hessian_estimators.pseudo_target_generation_strategy,
     )
 
     collector_data = collector.collect(
@@ -348,8 +349,8 @@ def compute_lds_for_model(
     )
     damping = EKFACComputer.get_damping(
         ekfac_data=ekfac_computer.precomputed_data,
-        damping_strategy=config.damping_strategy,
-        factor=config.damping,
+        damping_strategy=config.hessian_estimators.regularization_strategy,
+        factor=config.hessian_estimators.regularization_value,
     )
     logger.info("[LDS] Damping: %.6f", damping)
 
@@ -385,7 +386,7 @@ def compute_lds_for_model(
     # ── 6. LDS per approximation method ────────────────────────────────────
     lds_scores: Dict = {}
 
-    for approx in config.approximators:
+    for approx in config.hessian_estimators.approximators:
         logger.info("[LDS] Attribution method: %s", approx.value)
 
         compute_ctx = HessianComputerRegistry.get_compute_context(

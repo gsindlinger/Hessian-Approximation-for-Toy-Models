@@ -26,8 +26,7 @@ hessian_analysis:
     - ihvp
     regularization_value: 0.1
     regularization_strategy: auto_mean_eigenvalue_correction
-    pseudo_target_generation_strategy: mcmc
-    pseudo_target_generation_repetitions: 1
+    pseudo_target_generation_strategy: all_classes
   matrix_config:
     metrics:
     - frobenius

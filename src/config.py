@@ -255,26 +255,15 @@ class MatrixAnalysisConfig:
 
 
 @dataclass
-class HessianComputationConfig:
-    """Configuration specifying which Hessian computations to perform."""
+class HessianEstimatorsConfig:
+    """Shared hessian estimators settings combining
+    multiple settings for a single experiment (approximation or lds):
+    which approximators to use, pseudo-target strategy, and regularization."""
 
     approximators: List[HessianApproximationMethod] = field(
         default_factory=lambda: (
             HessianApproximationMethod.get_approximator_list_except_exact()
         )
-    )
-    comparison_references: List[HessianApproximationMethod] = field(
-        default_factory=lambda: [
-            HessianApproximationMethod.EXACT,
-            HessianApproximationMethod.GNH,
-        ]
-    )
-    computation_types: List[ComputationType] = field(
-        default_factory=lambda: [
-            ComputationType.MATRIX,
-            ComputationType.HVP,
-            ComputationType.IHVP,
-        ]
     )
     pseudo_target_generation_strategy: PseudoTargetGenerationStrategy = (
         PseudoTargetGenerationStrategy.MCMC
@@ -306,6 +295,28 @@ class HessianComputationConfig:
                     "since we use true labels as targets."
                 )
                 self.pseudo_target_generation_repetitions = 1
+
+
+@dataclass
+class HessianComputationConfig:
+    """Configuration specifying which Hessian computations to perform."""
+
+    estimators_config: HessianEstimatorsConfig = field(
+        default_factory=HessianEstimatorsConfig
+    )
+    comparison_references: List[HessianApproximationMethod] = field(
+        default_factory=lambda: [
+            HessianApproximationMethod.EXACT,
+            HessianApproximationMethod.GNH,
+        ]
+    )
+    computation_types: List[ComputationType] = field(
+        default_factory=lambda: [
+            ComputationType.MATRIX,
+            ComputationType.HVP,
+            ComputationType.IHVP,
+        ]
+    )
 
 
 @dataclass
@@ -414,11 +425,9 @@ class LDSExperimentConfig:
     # List of model directories to analyze
     models: List[str] = field(default_factory=list)
 
-    # Approximation methods to evaluate
-    approximators: List[HessianApproximationMethod] = field(
-        default_factory=lambda: (
-            HessianApproximationMethod.get_approximator_list_except_exact()
-        )
+    # Hessian estimators configuration (approximators, pseudo-target strategy, regularization)
+    hessian_estimators: HessianEstimatorsConfig = field(
+        default_factory=HessianEstimatorsConfig
     )
 
     # ELSO sampling parameters
@@ -426,10 +435,6 @@ class LDSExperimentConfig:
     reps_per_model: int = 1
     subset_fraction: float = 0.5
     num_test_examples: int = 50
-
-    # Damping configuration
-    damping: float = 0.1
-    damping_strategy: RegularizationStrategy = RegularizationStrategy.AUTO_MEAN_EIGENVALUE
 
     # Storage
     results_output_dir: str = "experiments/results/lds_analysis"

@@ -19,6 +19,7 @@ from src.config import (
     HessianAnalysisConfig,
     HessianApproximationMethod,
     HessianComputationConfig,
+    HessianEstimatorsConfig,
     HessianExperimentConfig,
     LDSExperimentConfig,
     LossType,
@@ -730,20 +731,22 @@ def lds_digits_simple():
             path="experiments/datasets/sklearn_digits",
         ),
         models=[],
-        approximators=[
-            HessianApproximationMethod.EXACT,
-            HessianApproximationMethod.GNH,
-            HessianApproximationMethod.FIM,
-            HessianApproximationMethod.BLOCK_FIM,
-            HessianApproximationMethod.KFAC,
-            HessianApproximationMethod.EKFAC,
-        ],
+        hessian_estimators=HessianEstimatorsConfig(
+            approximators=[
+                HessianApproximationMethod.EXACT,
+                HessianApproximationMethod.GNH,
+                HessianApproximationMethod.FIM,
+                HessianApproximationMethod.BLOCK_FIM,
+                HessianApproximationMethod.KFAC,
+                HessianApproximationMethod.EKFAC,
+            ],
+            regularization_value=0.1,
+            regularization_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
+        ),
         num_subsets=20,
         reps_per_model=2,
         subset_fraction=0.5,
         num_test_examples=10,
-        damping=0.1,
-        damping_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
         results_output_dir="experiments/data/results/lds_analysis/digits_simple",
     )
 
@@ -758,20 +761,22 @@ def lds_digits_sweep():
             path="experiments/datasets/sklearn_digits",
         ),
         models=[],
-        approximators=[
-            HessianApproximationMethod.EXACT,
-            HessianApproximationMethod.GNH,
-            HessianApproximationMethod.FIM,
-            HessianApproximationMethod.BLOCK_FIM,
-            HessianApproximationMethod.KFAC,
-            HessianApproximationMethod.EKFAC,
-        ],
+        hessian_estimators=HessianEstimatorsConfig(
+            approximators=[
+                HessianApproximationMethod.EXACT,
+                HessianApproximationMethod.GNH,
+                HessianApproximationMethod.FIM,
+                HessianApproximationMethod.BLOCK_FIM,
+                HessianApproximationMethod.KFAC,
+                HessianApproximationMethod.EKFAC,
+            ],
+            regularization_value=0.1,
+            regularization_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
+        ),
         num_subsets=100,
         reps_per_model=3,
         subset_fraction=0.5,
         num_test_examples=20,
-        damping=0.1,
-        damping_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
         results_output_dir="experiments/data/results/lds_analysis/digits",
     )
 
@@ -793,9 +798,11 @@ def hessian_analysis_sweep():
                 )
             ),
             computation_config=HessianComputationConfig(
-                regularization_value=0.1,
-                regularization_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
-                approximators=HessianApproximationMethod.get_approximator_list_except_exact(),
+                estimators_config=HessianEstimatorsConfig(
+                    approximators=HessianApproximationMethod.get_approximator_list_except_exact(),
+                    regularization_value=0.1,
+                    regularization_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
+                ),
                 computation_types=[
                     ComputationType.MATRIX,
                     ComputationType.HVP,
