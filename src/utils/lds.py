@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import asdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -17,7 +17,7 @@ from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.registry import HessianComputerRegistry
-from src.hessians.utils.data import EKFACData, ModelContext
+from src.hessians.utils.data import DataActivationsGradients, EKFACData, ModelContext
 from src.utils.data.data import Dataset
 from src.utils.data.jax_dataloader import JAXDataLoader
 from src.utils.influence import compute_influence_matrix, compute_per_example_flat_grads
@@ -28,6 +28,7 @@ from src.utils.train import (
     load_model_checkpoint,
     train_model,
 )
+from src.utils.utils import collector_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -254,11 +255,12 @@ def compute_lds_for_model(
     train_dataset: Dataset,
     test_dataset: Dataset,
     config: LDSExperimentConfig,
+    epoch: Optional[int] = None,
 ) -> Dict:
     """Compute ELSO LDS scores for a single pre-trained model.
 
     Steps:
-      1. Load the base model (trained on full D).
+      1. Load the base model (trained on full D), optionally at a specific epoch.
       2. Generate K random subsets S_j.
       3. Evaluate baseline per-query losses from the full model.
       4. ELSO: for each S_j retrain R models on D\\S_j → Δm_j.
@@ -269,11 +271,14 @@ def compute_lds_for_model(
     """
     from experiments.utils import cleanup_memory
 
-    params, model, model_config, metadata = load_model_checkpoint(model_directory)
+    params, model, model_config, metadata = load_model_checkpoint(
+        model_directory, epoch=epoch
+    )
     loss_fn = get_loss(model_config.loss)
 
+    epoch_str = f"epoch_{epoch}" if epoch is not None else "final"
     logger.info("=" * 70)
-    logger.info("[LDS] %s", model_config.get_model_display_name())
+    logger.info("[LDS] %s (%s)", model_config.get_model_display_name(), epoch_str)
     logger.info("[LDS] dir: %s", model_directory)
     logger.info("=" * 70)
 
@@ -322,10 +327,13 @@ def compute_lds_for_model(
 
     # ── 4. Hessian / damping setup ──────────────────────────────────────────
     logger.info("[LDS] Building EKFAC for damping estimation.")
-    collector_dir_base = os.path.join(model_directory, "lds_collector")
+    collector_dir_base = collector_cache_dir(
+        model_directory=model_directory,
+        pseudo_target_strategy=config.hessian_estimators.pseudo_target_generation_strategy.value,
+        pseudo_target_repetitions=config.hessian_estimators.pseudo_target_generation_repetitions,
+        epoch=epoch,
+    )
 
-    # MCMC with 2 repetitions: EKFACComputer splits them internally (first half
-    # for covariances, second half for eigenvalue corrections).
     collector = CollectorActivationsGradients(
         model=model,
         params=params,
@@ -334,11 +342,11 @@ def compute_lds_for_model(
         pseudo_target_strategy=config.hessian_estimators.pseudo_target_generation_strategy,
     )
 
-    collector_data = collector.collect(
+    collector_data: DataActivationsGradients = collector.collect(
         dataset=train_dataset,
-        rng_key=PRNGKey(config.seed),
-        save_directory=os.path.join(collector_dir_base, "run1"),
+        save_directory=collector_dir_base,
         try_load=True,
+        rng_key=PRNGKey(config.seed),
     )
 
     ekfac_computer = EKFACComputer(compute_context=collector_data).build(
@@ -436,6 +444,7 @@ def compute_lds_for_model(
     return {
         "model_name": model_config.get_model_display_name(),
         "model_directory": model_directory,
+        "epoch": epoch,
         "model_config": asdict(model_config),
         "damping": float(damping),
         "num_subsets": len(subsets),

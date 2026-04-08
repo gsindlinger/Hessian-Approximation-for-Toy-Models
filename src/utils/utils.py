@@ -3,7 +3,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import jax
 import matplotlib.pyplot as plt
@@ -19,6 +19,31 @@ def hash_data(data: Dict[str, Any], length: int = 10) -> str:
     )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return digest[:length]
+
+
+def collector_cache_dir(
+    model_directory: str,
+    pseudo_target_strategy: str,
+    pseudo_target_repetitions: int,
+    epoch: Optional[int] = None,
+) -> str:
+    """Return a content-addressed collector cache directory.
+
+    The path encodes both the epoch checkpoint (so different parameter snapshots
+    never share data) and a hash of the pseudo-target config (so runs with
+    different strategies/repetitions also get separate directories).
+
+    Both hessian_analysis and lds_analysis resolve to the same path when they
+    use the same model checkpoint and the same pseudo-target settings, allowing
+    them to share cached activations/gradients.
+
+    Structure: {model_directory}/collector/{epoch_str}/{config_hash}/
+    """
+    epoch_str = f"epoch_{epoch}" if epoch is not None else "final"
+    cfg_hash = hash_data(
+        {"strategy": pseudo_target_strategy, "reps": pseudo_target_repetitions}
+    )
+    return os.path.join(model_directory, "collector", epoch_str, cfg_hash)
 
 
 def plot_training_curve(train_losses, val_losses, title="Training Curve"):

@@ -55,7 +55,9 @@ def compute_influence_matrix(
 ) -> np.ndarray:
     """Compute the (n_test, n_train) influence score matrix.
 
-    τ(z_q, z_i) = -(H^{-1} ∇L(z_q))ᵀ ∇L(z_i)
+    Assumes that a data point is removed from the training set, i.e.,
+    epsilon = -1 in influence function derivation.
+    τ(z_q, z_i) = (H^{-1} ∇L(z_q))ᵀ ∇L(z_i)
 
     Args:
         test_flat_grads:  Shape (n_test, n_params).
@@ -80,4 +82,4 @@ def compute_influence_matrix(
                 "HessianComputer not built. Please call the 'build' method before computing influence scores."
             )
         ihvps = computer.estimate_ihvp(test_flat_grads, damping)  # (n_test, n_params)
-    return -(np.array(ihvps) @ np.array(train_flat_grads).T)  # (n_test, n_train)
+    return np.array(ihvps) @ np.array(train_flat_grads).T  # (n_test, n_train)

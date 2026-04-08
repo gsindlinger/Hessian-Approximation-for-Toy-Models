@@ -83,6 +83,7 @@ from src.utils.data.data import Dataset, DownloadableDataset
 from src.utils.loss import get_loss
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.train import check_saved_model, load_model_checkpoint
+from src.utils.utils import collector_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -468,10 +469,12 @@ def analyze_single_model(
         "directory must be set in model_config for Hessian analysis."
     )
 
-    # Create epoch-specific collector directories
-    collector_dir = os.path.join(model_config.directory, "collector")
-    if epoch is not None:
-        collector_dir = os.path.join(collector_dir, f"epoch_{epoch}")
+    collector_dir = collector_cache_dir(
+        model_directory=model_config.directory,
+        pseudo_target_strategy=hessian_config.computation_config.estimators_config.pseudo_target_generation_strategy.value,
+        pseudo_target_repetitions=hessian_config.computation_config.estimators_config.pseudo_target_generation_repetitions,
+        epoch=epoch,
+    )
 
     grads_1, grads_2, collector_data, model_ctx = collect_data(
         model=model,

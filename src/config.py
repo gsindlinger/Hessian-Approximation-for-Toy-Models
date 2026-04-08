@@ -437,6 +437,9 @@ class LDSExperimentConfig:
     subset_fraction: float = 0.5
     num_test_examples: int = 50
 
+    # If specified, run LDS at each of these epoch checkpoints instead of the final model
+    epochs: Optional[List[int]] = None
+
     # Storage
     results_output_dir: str = "experiments/results/lds_analysis"
 
