@@ -10,7 +10,7 @@ ELSO formulation (Bae et al. 2022):
   LDS:           Spearman({Δm_j}, {g_τ_j}) averaged over query points
 
 Influence scores use the standard Newton approximation:
-  τ(z_q, z_i) = -(H^{-1} ∇_θ L(z_q, θ)) · ∇_θ L(z_i, θ)
+  τ(z_q, z_i) = (H^{-1} ∇_θ L(z_q, θ)) · ∇_θ L(z_i, θ)
 
 Where H is the (approximate) Hessian of the average training loss.
 
@@ -26,6 +26,13 @@ Usage:
         --config-path=../configs \\
         +override_config=path/to/best_models.yaml
 
+    # Analyze specific epoch checkpoints
+    uv run python -m experiments.lds_analysis \\
+        --config-name=lds_experiment \\
+        --config-path=../configs \\
+        +override_config=path/to/best_models.yaml \\
+        epochs=[10,100,1000]
+
     # Override LDS parameters from CLI
     uv run python -m experiments.lds_analysis \\
         --config-name=lds_experiment \\
@@ -34,14 +41,10 @@ Usage:
         reps_per_model=5 \\
         subset_fraction=0.3
 
-    # Combine override file with CLI parameter changes
-    uv run python -m experiments.lds_analysis \\
-        --config-name=lds_experiment \\
-        --config-path=../configs \\
-        +override_config=path/to/best_models.yaml \\
-        num_test_examples=50
-
 Notes:
+    - epochs=None (default): analyzes only final checkpoints
+    - epochs=[10,100,1000]: analyzes each model at those epoch checkpoints
+    - All specified epoch checkpoints must exist (saved via train_models save_epochs)
     - The override_config YAML file specifies model paths, dataset config, and seed
     - Results are saved as timestamped JSON files in lds_analysis.results_output_dir
     - Core LDS/ELSO logic lives in src/utils/lds.py; influence utilities in src/utils/influence.py
@@ -52,7 +55,7 @@ import logging
 import os
 import time
 from dataclasses import asdict
-from typing import Dict
+from typing import Dict, List, Optional, Tuple
 
 import hydra
 import numpy as np
@@ -75,6 +78,15 @@ cs = ConfigStore.instance()
 cs.store(name="lds_experiment", node=LDSExperimentConfig)
 
 
+def _expand_models_with_epochs(
+    model_directories: List[str], epochs: Optional[List[int]]
+) -> List[Tuple[str, Optional[int]]]:
+    """Expand model list to (model_dir, epoch) pairs. epoch=None means final checkpoint."""
+    if not epochs:
+        return [(d, None) for d in model_directories]
+    return [(d, e) for d in model_directories for e in epochs]
+
+
 @hydra.main(version_base="1.3", config_name="lds_experiment", config_path="../configs")
 def main(cfg: DictConfig) -> Dict:
     OmegaConf.resolve(cfg)
@@ -82,14 +94,16 @@ def main(cfg: DictConfig) -> Dict:
     override_file = cfg.get("override_config", None)
     if override_file:
         logger.info("[CONFIG] Loading overrides from: %s", override_file)
-        model_directories, dataset_config, seed, _ = load_experiment_override_from_yaml(
-            override_file
+        model_directories, dataset_config, seed, epochs = (
+            load_experiment_override_from_yaml(override_file)
         )
         cfg.models = model_directories
         if dataset_config is not None:
             cfg.dataset = asdict(dataset_config)
         if seed is not None:
             cfg.seed = seed
+        if epochs is not None:
+            cfg.epochs = epochs
 
     config: LDSExperimentConfig = to_dataclass(LDSExperimentConfig, cfg)  # type: ignore
 
@@ -99,7 +113,25 @@ def main(cfg: DictConfig) -> Dict:
     logger.info(
         "Dataset: %s | Models: %d", config.dataset.name.value, len(config.models)
     )
+    if config.epochs:
+        logger.info(
+            "Epochs: %s  (total analyses: %d)",
+            config.epochs,
+            len(config.models) * len(config.epochs),
+        )
+    else:
+        logger.info("Analyzing final checkpoints only")
     logger.info("=" * 70)
+
+    # Validate epoch checkpoints exist before doing any expensive retraining
+    if config.epochs:
+        from src.utils.train import check_saved_model
+
+        for model_dir in config.models:
+            if not check_saved_model(model_dir, config.epochs):
+                raise FileNotFoundError(
+                    f"Missing epoch checkpoints {config.epochs} in {model_dir}"
+                )
 
     full_dataset = DownloadableDataset.load(
         dataset=config.dataset.name,
@@ -116,14 +148,18 @@ def main(cfg: DictConfig) -> Dict:
         len(test_dataset.inputs),
     )
 
+    model_epoch_pairs = _expand_models_with_epochs(config.models, config.epochs)
+
     lds_results = []
-    for i, model_dir in enumerate(config.models, 1):
-        logger.info("[MODEL %d/%d] %s", i, len(config.models), model_dir)
+    for i, (model_dir, epoch) in enumerate(model_epoch_pairs, 1):
+        epoch_str = f"epoch_{epoch}" if epoch is not None else "final"
+        logger.info("[%d/%d] %s (%s)", i, len(model_epoch_pairs), model_dir, epoch_str)
         result = compute_lds_for_model(
             model_directory=model_dir,
             train_dataset=train_dataset,
             test_dataset=test_dataset,
             config=config,
+            epoch=epoch,
         )
         lds_results.append(result)
         cleanup_memory(f"model_{i}")
@@ -148,7 +184,8 @@ def main(cfg: DictConfig) -> Dict:
     logger.info("LDS SUMMARY")
     logger.info("=" * 70)
     for result in lds_results:
-        logger.info("%s:", result["model_name"])
+        epoch_label = f" epoch={result['epoch']}" if result.get("epoch") else ""
+        logger.info("%s%s:", result["model_name"], epoch_label)
         for method, s in result["lds_scores"].items():
             lo = float(np.mean(s["per_query_ci_low"]))
             hi = float(np.mean(s["per_query_ci_high"]))

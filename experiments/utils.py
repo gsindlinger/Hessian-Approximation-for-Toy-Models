@@ -185,11 +185,18 @@ def json_safe(obj):
 
     # Dataclasses
     if is_dataclass(obj):
-        return asdict(obj)  # type: ignore
+        return json_safe(asdict(obj))  # recurse after converting to dict
 
-    # Sets / tuples
-    if isinstance(obj, (set, tuple)):
-        return list(obj)
+    # Dicts — recurse into values
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
 
-    # Fallback
+    # Lists / sets / tuples — recurse into elements
+    if isinstance(obj, (list, set, tuple)):
+        return [json_safe(item) for item in obj]
+
+    # Native JSON-serializable scalars
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
