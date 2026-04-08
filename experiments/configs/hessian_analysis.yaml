@@ -6,17 +6,21 @@ dataset:
 experiment_name: ''
 hessian_analysis:
   computation_config:
-    approximators:
-    - kfac
-    - ekfac
-    # - gnh
-    - fim
-    # - block_fim
-    # - block_hessian
-    # - shampoo
-    # - eshampoo
-    # - tkfac
-    # - etkfac
+    solver:
+      approximators:
+      - kfac
+      - ekfac
+      # - gnh
+      - fim
+      # - block_fim
+      # - block_hessian
+      # - shampoo
+      # - eshampoo
+      # - tkfac
+      # - etkfac
+      regularization_value: 0.1
+      regularization_strategy: auto_mean_eigenvalue_correction
+      pseudo_target_generation_strategy: all_classes
     comparison_references:
     - exact
     - gnh
@@ -24,9 +28,6 @@ hessian_analysis:
     - matrix
     - hvp
     - ihvp
-    regularization_value: 0.1
-    regularization_strategy: auto_mean_eigenvalue_correction
-    pseudo_target_generation_strategy: all_classes
   matrix_config:
     metrics:
     - frobenius
