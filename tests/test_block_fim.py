@@ -1,4 +1,4 @@
-from typing import Callable, Dict, Optional, Tuple
+from typing import Optional
 
 import jax
 import jax.numpy as jnp
@@ -6,114 +6,23 @@ import pytest
 from jax.random import PRNGKey
 from jaxtyping import Array
 
-from src.config import (
-    LossType,
-    ModelArchitecture,
-    ModelConfig,
-    OptimizerType,
-    PseudoTargetGenerationStrategy,
-    TrainingConfig,
-)
+from src.config import ModelConfig, PseudoTargetGenerationStrategy
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.computer.fim_block import FIMBlockComputer
-from src.hessians.utils.data import DataActivationsGradients, ModelContext
-from src.utils.data.data import Dataset, RandomClassificationDataset
-from src.utils.loss import get_loss
+from src.hessians.utils.data import DataActivationsGradients
+from src.utils.data.data import Dataset
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
-from src.utils.models.approximation_model import ApproximationModel
-from src.utils.optimizers import optimizer
-from src.utils.train import train_model
 
 # ---------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------
 
 
-@pytest.fixture(params=["linear", "multi_layer"], scope="session")
-def config(request, tmp_path_factory):
-    """Create model configuration for testing."""
-    base = tmp_path_factory.mktemp(request.param)
-
-    if request.param == "linear":
-        architecture = ModelArchitecture.LINEAR
-        hidden_dim = []
-    else:
-        architecture = ModelArchitecture.MLP
-        hidden_dim = [10]
-
-    return ModelConfig(
-        architecture=architecture,
-        input_dim=-1,  # Will be updated from dataset
-        hidden_dim=hidden_dim if hidden_dim else None,
-        output_dim=-1,  # Will be updated from dataset
-        loss=LossType.CROSS_ENTROPY,
-        training=TrainingConfig(
-            learning_rate=1e-3,
-            optimizer=OptimizerType.SGD,
-            epochs=30,
-            batch_size=128,
-        ),
-        directory=str(base / "model"),
-    )
-
-
-@pytest.fixture(scope="session")
-def dataset() -> Dataset:
-    """Create a random classification dataset for testing."""
-    return RandomClassificationDataset(
-        n_samples=1000,
-        n_features=10,
-        n_informative=5,
-        n_classes=2,
-        seed=123,
-    )
-
-
-@pytest.fixture(scope="session")
-def model_params_loss(
-    config: ModelConfig, dataset: Dataset
-) -> Tuple[ApproximationModel, Dict, Callable]:
-    """Train a model and return it with its parameters and loss function."""
-    # Update dimensions from dataset
-    config.input_dim = dataset.input_dim()
-    config.output_dim = dataset.output_dim()
-
-    # Train the model
-    model, params, _ = train_model(
-        model_config=config,
-        dataloader=dataset.get_dataloader(
-            batch_size=config.training.batch_size, seed=123
-        ),
-        loss_fn=get_loss(config.loss),
-        optimizer=optimizer(
-            config.training.optimizer, lr=config.training.learning_rate
-        ),
-        epochs=config.training.epochs,
-    )
-
-    return model, params, get_loss(config.loss)
-
-
-@pytest.fixture(scope="session")
-def model_context(
-    dataset: Dataset, model_params_loss: Tuple[ApproximationModel, Dict, Callable]
-) -> ModelContext:
-    """Create a ModelContext for Hessian computation."""
-    model, params, loss = model_params_loss
-
-    return ModelContext.create(
-        dataset=dataset,
-        model=model,
-        params=params,
-        loss_fn=loss,
-    )
-
-
 def _collect_fim_data(
     config: ModelConfig,
-    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+    model_params_loss,
     dataset: Dataset,
     suffix: str = "",
     pseudo_target_strategy: PseudoTargetGenerationStrategy = PseudoTargetGenerationStrategy.EMPIRICAL_FISHER,
@@ -148,15 +57,15 @@ def _collect_fim_data(
 
 @pytest.fixture(scope="session")
 def fim_data_empirical(
-    config: ModelConfig,
-    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
-    dataset: Dataset,
+    block_test_config: ModelConfig,
+    block_test_model_params_loss,
+    block_test_dataset: Dataset,
 ) -> DataActivationsGradients:
     """Collect FIM data using EMPIRICAL_FISHER strategy."""
     return _collect_fim_data(
-        config,
-        model_params_loss,
-        dataset,
+        block_test_config,
+        block_test_model_params_loss,
+        block_test_dataset,
         suffix="_empirical",
         pseudo_target_strategy=PseudoTargetGenerationStrategy.EMPIRICAL_FISHER,
         pseudo_target_repetitions=1,
@@ -165,15 +74,15 @@ def fim_data_empirical(
 
 @pytest.fixture(scope="session")
 def fim_data_mcmc(
-    config: ModelConfig,
-    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
-    dataset: Dataset,
+    block_test_config: ModelConfig,
+    block_test_model_params_loss,
+    block_test_dataset: Dataset,
 ) -> DataActivationsGradients:
     """Collect FIM data using MCMC strategy."""
     return _collect_fim_data(
-        config,
-        model_params_loss,
-        dataset,
+        block_test_config,
+        block_test_model_params_loss,
+        block_test_dataset,
         suffix="_mcmc",
         pseudo_target_strategy=PseudoTargetGenerationStrategy.MCMC,
         pseudo_target_repetitions=5,
@@ -183,15 +92,15 @@ def fim_data_mcmc(
 
 @pytest.fixture(scope="session")
 def fim_data_all_classes(
-    config: ModelConfig,
-    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
-    dataset: Dataset,
+    block_test_config: ModelConfig,
+    block_test_model_params_loss,
+    block_test_dataset: Dataset,
 ) -> DataActivationsGradients:
     """Collect FIM data using ALL_CLASSES strategy."""
     return _collect_fim_data(
-        config,
-        model_params_loss,
-        dataset,
+        block_test_config,
+        block_test_model_params_loss,
+        block_test_dataset,
         suffix="_all_classes",
         pseudo_target_strategy=PseudoTargetGenerationStrategy.ALL_CLASSES,
     )
@@ -202,8 +111,9 @@ def fim_data_all_classes(
 # ---------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 def test_fim_block_computation_empirical_fisher(
+    block_test_config: ModelConfig,
     fim_data_empirical: DataActivationsGradients,
 ):
     """Test that FIM block approximation matches full FIM for linear models (EMPIRICAL_FISHER)."""
@@ -222,8 +132,9 @@ def test_fim_block_computation_empirical_fisher(
     )
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 def test_fim_block_computation_mcmc(
+    block_test_config: ModelConfig,
     fim_data_mcmc: DataActivationsGradients,
 ):
     """Test that FIM block approximation works with MCMC strategy."""
@@ -243,9 +154,9 @@ def test_fim_block_computation_mcmc(
     )
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 def test_fim_block_computation_all_classes(
-    config: ModelConfig,
+    block_test_config: ModelConfig,
     fim_data_all_classes: DataActivationsGradients,
 ):
     """Test that FIM block approximation works with ALL_CLASSES strategy."""
@@ -265,8 +176,9 @@ def test_fim_block_computation_all_classes(
     )
 
 
-@pytest.mark.parametrize("config", ["multi_layer"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["multi_layer"], indirect=True)
 def test_fim_block_computation_multi_layer(
+    block_test_config: ModelConfig,
     fim_data_empirical: DataActivationsGradients,
 ):
     """Test FIM block approximation for multi-layer models."""
@@ -305,13 +217,13 @@ def test_fim_block_computation_multi_layer(
 # ---------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 @pytest.mark.parametrize(
     "strategy_fixture",
     ["fim_data_empirical", "fim_data_mcmc", "fim_data_all_classes"],
 )
 def test_fim_block_hvp_consistency(
-    config: ModelConfig,
+    block_test_config: ModelConfig,
     strategy_fixture: str,
     request: pytest.FixtureRequest,
 ):
@@ -340,13 +252,13 @@ def test_fim_block_hvp_consistency(
     )
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 @pytest.mark.parametrize(
     "strategy_fixture",
     ["fim_data_empirical", "fim_data_mcmc", "fim_data_all_classes"],
 )
 def test_fim_block_ihvp_consistency(
-    config: ModelConfig,
+    block_test_config: ModelConfig,
     strategy_fixture: str,
     request: pytest.FixtureRequest,
 ):
@@ -375,13 +287,13 @@ def test_fim_block_ihvp_consistency(
     )
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 @pytest.mark.parametrize(
     "strategy_fixture",
     ["fim_data_empirical", "fim_data_mcmc", "fim_data_all_classes"],
 )
 def test_fim_block_roundtrip(
-    config: ModelConfig,
+    block_test_config: ModelConfig,
     strategy_fixture: str,
     request: pytest.FixtureRequest,
 ):
@@ -414,13 +326,13 @@ def test_fim_block_roundtrip(
 # ---------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 @pytest.mark.parametrize(
     "strategy_fixture",
     ["fim_data_empirical", "fim_data_mcmc", "fim_data_all_classes"],
 )
 def test_fim_block_hvp_batched(
-    config: ModelConfig,
+    block_test_config: ModelConfig,
     strategy_fixture: str,
     request: pytest.FixtureRequest,
 ):
@@ -454,13 +366,13 @@ def test_fim_block_hvp_batched(
         ), f"Batched HVP does not match individual HVP for vector {i} ({strategy_name})"
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 @pytest.mark.parametrize(
     "strategy_fixture",
     ["fim_data_empirical", "fim_data_mcmc", "fim_data_all_classes"],
 )
 def test_fim_block_ihvp_batched(
-    config: ModelConfig,
+    block_test_config: ModelConfig,
     strategy_fixture: str,
     request: pytest.FixtureRequest,
 ):
@@ -501,8 +413,9 @@ def test_fim_block_ihvp_batched(
 # ---------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 def test_fim_block_all_strategies_finite(
+    block_test_config: ModelConfig,
     fim_data_empirical: DataActivationsGradients,
     fim_data_mcmc: DataActivationsGradients,
     fim_data_all_classes: DataActivationsGradients,
@@ -522,8 +435,9 @@ def test_fim_block_all_strategies_finite(
         assert H.shape[0] == H.shape[1], f"FIM is not square ({name})"
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 def test_fim_block_pseudo_inverse_idempotent_projector(
+    block_test_config: ModelConfig,
     fim_data_empirical: DataActivationsGradients,
 ):
     """
@@ -562,8 +476,9 @@ def test_fim_block_pseudo_inverse_idempotent_projector(
     assert VectorMetric.RELATIVE_ERROR.compute(roundtrip, v_proj) < 1e-5
 
 
-@pytest.mark.parametrize("config", ["linear"], indirect=True)
+@pytest.mark.parametrize("block_test_config", ["linear"], indirect=True)
 def test_fim_block_pseudo_inverse_moore_penrose(
+    block_test_config: ModelConfig,
     fim_data_empirical: DataActivationsGradients,
 ):
     """

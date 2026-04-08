@@ -14,16 +14,17 @@ from src.config import (
     TrainingConfig,
 )
 from src.utils.data.data import Dataset, RandomRegressionDataset
-from src.utils.loss import get_loss
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.optimizers import optimizer
-from src.utils.train import train_model
+from tests._helpers import cached_train_model_for_dataset
 
 
 class TestLinearRegression:
     """Tests for basic linear regression implementations."""
 
-    @pytest.fixture(params=["simple_regression", "multi_feature_regression"])
+    @pytest.fixture(
+        params=["simple_regression", "multi_feature_regression"],
+        scope="session",
+    )
     def config(self, request, tmp_path_factory):
         """Create model configuration for testing."""
         base = tmp_path_factory.mktemp(request.param)
@@ -53,7 +54,7 @@ class TestLinearRegression:
             "n_features": n_features,
         }
 
-    @pytest.fixture
+    @pytest.fixture(scope="session")
     def dataset(self, config):
         """Create a random regression dataset for testing."""
         seed = 0
@@ -76,28 +77,20 @@ class TestLinearRegression:
                 seed=seed,
             )
 
-    @pytest.fixture
+    @pytest.fixture(scope="session")
     def model_and_params(
-        self, config, dataset: Dataset
+        self,
+        trained_model_registry,
+        config,
+        dataset: Dataset,
     ) -> Tuple[ApproximationModel, dict, Dataset]:
         """Train a model and return it with its parameters and dataset."""
-        model_config = config["model_config"]
-
-        # Verify dimensions match
-        assert model_config.input_dim == dataset.input_dim()
-        assert model_config.output_dim == dataset.output_dim()
-
-        # Train the model
-        model, params, _ = train_model(
-            model_config=model_config,
-            dataloader=dataset.get_dataloader(
-                batch_size=model_config.training.batch_size, seed=0, shuffle=True
-            ),
-            loss_fn=get_loss(model_config.loss),
-            optimizer=optimizer(
-                model_config.training.optimizer, lr=model_config.training.learning_rate
-            ),
-            epochs=model_config.training.epochs,
+        model, params, _ = cached_train_model_for_dataset(
+            config["model_config"],
+            dataset,
+            trained_model_registry,
+            seed=0,
+            shuffle=True,
         )
 
         return model, params, dataset

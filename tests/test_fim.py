@@ -6,123 +6,62 @@ import pytest
 from jax import flatten_util
 
 from src.config import (
-    DatasetEnum,
-    LossType,
-    ModelArchitecture,
-    ModelConfig,
-    OptimizerType,
     PseudoTargetGenerationStrategy,
-    TrainingConfig,
 )
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
-from src.utils.data.data import (
-    Dataset,
-    DownloadableDataset,
-    RandomRegressionDataset,
-)
-from src.utils.loss import get_loss, get_loss_name
+from src.utils.data.data import Dataset
+from src.utils.loss import get_loss_name
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.optimizers import optimizer
-from src.utils.train import train_model
+from tests._helpers import (
+    cached_train_model_for_dataset,
+    create_model_context,
+)
+from tests.conftest import TrainingScenario
 
 # ---------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------
 
 
-@pytest.fixture(params=["classification", "regression"], scope="session")
-def config(request, tmp_path_factory):
-    """Create model configuration for testing."""
-    base = tmp_path_factory.mktemp(request.param)
-
-    if request.param == "classification":
-        architecture = ModelArchitecture.MLP
-        hidden_dim = [8, 8]
-        loss = LossType.CROSS_ENTROPY
-        tol_hvp = 0.2
-        tol_ihvp = 0.1
-        tol_cosine = 0.95
-    else:  # regression
-        architecture = ModelArchitecture.LINEAR
-        hidden_dim = [5]
-        loss = LossType.MSE
-        tol_hvp = 0.6
-        tol_ihvp = 0.1
-        tol_cosine = 0.95
-
-    model_config = ModelConfig(
-        architecture=architecture,
-        input_dim=10,  # Will be updated from dataset
-        hidden_dim=hidden_dim,
-        output_dim=2,  # Will be updated from dataset
-        loss=loss,
-        training=TrainingConfig(
-            learning_rate=1e-3,
-            optimizer=OptimizerType.SGD,
-            epochs=300,
-            batch_size=32,
-        ),
-        directory=str(base / "model"),
-    )
-
-    return {
-        "model_config": model_config,
-        "tol_hvp": tol_hvp,
-        "tol_ihvp": tol_ihvp,
-        "tol_cosine": tol_cosine,
-    }
+@pytest.fixture(
+    params=[
+        pytest.param("fim_classification_scenario", id="classification"),
+        pytest.param("fim_regression_scenario", id="regression"),
+    ],
+    scope="session",
+)
+def training_scenario(request) -> TrainingScenario:
+    return request.getfixturevalue(request.param)
 
 
 @pytest.fixture(scope="session")
-def dataset(config: Dict) -> Dataset:
-    """Create a random dataset for testing (classification or regression)."""
-    seed = 0
+def config(training_scenario: TrainingScenario) -> Dict:
+    return {"model_config": training_scenario.model_config}
 
-    if config["model_config"].loss == LossType.CROSS_ENTROPY:
-        dataset = DownloadableDataset.load(
-            dataset=DatasetEnum.SKLEARN_DIGITS,
-            directory="experiments/datasets/sklearn_digits",
-        )
-        return dataset
-    else:  # MSE / regression
-        return RandomRegressionDataset(
-            n_samples=1500,
-            n_features=10,
-            n_targets=2,
-            noise=1.0,
-            seed=seed,
-        )
+
+@pytest.fixture(scope="session")
+def dataset(training_scenario: TrainingScenario) -> Dataset:
+    """Create a random dataset for testing (classification or regression)."""
+    return training_scenario.dataset
 
 
 @pytest.fixture(scope="session")
 def model_params_loss(
-    config: Dict, dataset: Dataset
+    trained_model_registry: Dict[Tuple, Tuple[ApproximationModel, Dict, Callable]],
+    training_scenario: TrainingScenario,
 ) -> Tuple[ApproximationModel, Dict, Callable]:
     """Train a model and return it with its parameters and loss function."""
-    model_config = config["model_config"]
-
-    # Update dimensions from dataset
-    model_config.input_dim = dataset.input_dim()
-    model_config.output_dim = dataset.output_dim()
-
-    # Train the model
-    model, params, _ = train_model(
-        model_config=model_config,
-        dataloader=dataset.get_dataloader(
-            batch_size=model_config.training.batch_size, seed=0
-        ),
-        loss_fn=get_loss(model_config.loss),
-        optimizer=optimizer(
-            model_config.training.optimizer, lr=model_config.training.learning_rate
-        ),
-        epochs=model_config.training.epochs,
+    return cached_train_model_for_dataset(
+        training_scenario.model_config,
+        training_scenario.dataset,
+        trained_model_registry,
+        seed=training_scenario.train_seed,
+        shuffle=training_scenario.shuffle,
     )
-
-    return model, params, get_loss(model_config.loss)
 
 
 @pytest.fixture(scope="session")
@@ -130,14 +69,7 @@ def model_context(
     dataset: Dataset, model_params_loss: Tuple[ApproximationModel, Dict, Callable]
 ) -> ModelContext:
     """Create a ModelContext for reference computations."""
-    model, params, loss = model_params_loss
-
-    return ModelContext.create(
-        dataset=dataset,
-        model=model,
-        params=params,
-        loss_fn=loss,
-    )
+    return create_model_context(dataset, model_params_loss)
 
 
 @pytest.fixture(scope="session")
@@ -352,12 +284,15 @@ def test_fim_ihvp_matches_reference(
     )
 
 
-@pytest.mark.parametrize("config", ["classification"], indirect=True)
 def test_fim_with_pseudo_targets_for_all_classes(
+    training_scenario: TrainingScenario,
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
     dataset: Dataset,
 ):
     """FIM computed with pseudo-targets for all classes must match direct autodiff reference."""
+    if training_scenario.model_config.loss.value != "cross_entropy":
+        pytest.skip("This check only applies to the classification FIM scenario.")
+
     model, params, loss = model_params_loss
 
     # Collect activations and gradients
