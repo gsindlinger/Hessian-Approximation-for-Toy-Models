@@ -73,7 +73,6 @@ from src.config import (
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
-from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import (
@@ -204,23 +203,16 @@ def compute_hessian_comparison_for_single_model(
         reference_computer = HessianComputerRegistry.get_computer(
             reference_approx, reference_data
         )
-        if isinstance(reference_computer, HessianEstimator):
-            reference_computer.build(base_directory=build_base_dir)
+        reference_computer.build(base_directory=build_base_dir)
 
         # Matrix comparisons
         if ComputationType.MATRIX in comp_config.computation_types:
             logger.info(f"[HESSIAN] Computing {reference_approx.value} matrix")
 
-            if isinstance(reference_computer, HessianComputer):
-                ref_hessian = block_tree(
-                    reference_computer.compute_hessian(),
-                    f"{reference_approx.value}_matrix",
-                )
-            elif isinstance(reference_computer, HessianEstimator):
-                ref_hessian = block_tree(
-                    reference_computer.estimate_hessian(),
-                    f"{reference_approx.value}_matrix",
-                )
+            ref_hessian = block_tree(
+                reference_computer.estimate_hessian(),
+                f"{reference_approx.value}_matrix",
+            )
 
             for approx in comp_config.approximators:
                 if approx == reference_approx:
@@ -236,12 +228,7 @@ def compute_hessian_comparison_for_single_model(
                 approx_computer = HessianComputerRegistry.get_computer(
                     approx, approx_data
                 )
-                if isinstance(approx_computer, HessianEstimator):
-                    approx_computer.build(base_directory=build_base_dir)
-                else:
-                    raise RuntimeError(
-                        "Matrix comparisons require HessianEstimator, don't use exact Hessian as approximation method."
-                    )
+                approx_computer.build(base_directory=build_base_dir)
 
                 # Evaluate metrics
                 for metric in hessian_config.matrix_config.metrics:
@@ -264,16 +251,10 @@ def compute_hessian_comparison_for_single_model(
         if ComputationType.HVP in comp_config.computation_types:
             logger.info(f"[HESSIAN] Computing {reference_approx.value} HVP")
 
-            if isinstance(reference_computer, HessianComputer):
-                ref_hvp = block_tree(
-                    reference_computer.compute_hvp(grads_1),
-                    f"{reference_approx.value}_hvp",
-                )
-            elif isinstance(reference_computer, HessianEstimator):
-                ref_hvp = block_tree(
-                    reference_computer.estimate_hvp(grads_1),
-                    f"{reference_approx.value}_hvp",
-                )
+            ref_hvp = block_tree(
+                reference_computer.estimate_hvp(grads_1),
+                f"{reference_approx.value}_hvp",
+            )
 
             for approx in comp_config.approximators:
                 if approx == reference_approx:
@@ -320,16 +301,10 @@ def compute_hessian_comparison_for_single_model(
         if ComputationType.IHVP in comp_config.computation_types:
             logger.info(f"[HESSIAN] Computing {reference_approx.value} IHVP")
 
-            if isinstance(reference_computer, HessianComputer):
-                ref_ihvp = block_tree(
-                    reference_computer.compute_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
-                    f"{reference_approx.value}_ihvp",
-                )
-            elif isinstance(reference_computer, HessianEstimator):
-                ref_ihvp = block_tree(
-                    reference_computer.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
-                    f"{reference_approx.value}_ihvp",
-                )
+            ref_ihvp = block_tree(
+                reference_computer.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
+                f"{reference_approx.value}_ihvp",
+            )
 
             for approx in comp_config.approximators:
                 if approx == reference_approx:
@@ -369,14 +344,9 @@ def compute_hessian_comparison_for_single_model(
 
                 if compute_approximation_error:
                     # Compute round-trip approximation error
-                    if isinstance(reference_computer, HessianComputer):
-                        round_trip_V = reference_computer.compute_hvp(
-                            approx_ihvp
-                        )
-                    else:
-                        round_trip_V = reference_computer.estimate_hvp(
-                            approx_ihvp
-                        )
+                    round_trip_V = reference_computer.estimate_hvp(
+                        approx_ihvp
+                    )
                     approx_error = VectorMetric.RELATIVE_ERROR.compute(
                         grads_1, round_trip_V, x=None, power=2.0
                     )

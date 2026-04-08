@@ -26,7 +26,7 @@ from src.hessians.utils.data import (
 
 class HessianComputerRegistry:
     REGISTRY: Dict[
-        HessianApproximationMethod, Callable[..., HessianEstimator | HessianComputer]
+        HessianApproximationMethod, Callable[..., HessianEstimator]
     ] = {
         HessianApproximationMethod.KFAC: KFACComputer,
         HessianApproximationMethod.EKFAC: EKFACComputer,
@@ -61,7 +61,7 @@ class HessianComputerRegistry:
     def get_computer(
         approximator: HessianApproximationMethod,
         compute_context: ModelContext | DataActivationsGradients,
-    ) -> HessianEstimator | HessianComputer:
+    ) -> HessianEstimator:
         computer_cls = HessianComputerRegistry.REGISTRY[approximator]
         precomputed_data_type, precomputed_data_dir = (
             HessianComputerRegistry.get_precomputed_data_type(approximator)

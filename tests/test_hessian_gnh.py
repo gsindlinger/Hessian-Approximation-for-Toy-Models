@@ -145,10 +145,10 @@ def test_exact_hessian_vs_gnh_matrix_equivalence(
     model_context: ModelContext,
 ):
     """For linear models, exact Hessian should closely match GNH."""
-    hessian = HessianComputer(compute_context=model_context)
+    hessian = HessianComputer(compute_context=model_context).build()
     gnh = GNHComputer(compute_context=model_context).build()
 
-    H = hessian.compute_hessian()
+    H = hessian.estimate_hessian()
     G = gnh.estimate_hessian()
 
     diff_fro = FullMatrixMetric.RELATIVE_FROBENIUS.compute(H, G)
@@ -162,14 +162,14 @@ def test_batched_ihvp_matches_full_inverse(
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ):
     """Test that batched IHVP matches explicit inverse multiplication for the Hessian computation."""
-    hessian = HessianComputer(compute_context=model_context)
+    hessian = HessianComputer(compute_context=model_context).build()
     _, params, _ = model_params_loss
     params_flat, _ = flatten_util.ravel_pytree(params)
 
     V = jax.random.normal(PRNGKey(0), shape=(10, params_flat.shape[0]))
 
-    IHVP = hessian.compute_ihvp(V, damping=1e-2)
-    H = hessian.compute_hessian(damping=1e-2)
+    IHVP = hessian.estimate_ihvp(V, damping=1e-2)
+    H = hessian.estimate_hessian(damping=1e-2)
     Hinv = jnp.linalg.inv(H)
 
     IHVP_ref = (Hinv @ V.T).T
@@ -183,14 +183,14 @@ def test_batched_hvp_matches_full_hessian(
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ):
     """Test that batched HVP matches explicit Hessian multiplication for the Hessian computation."""
-    hessian = HessianComputer(compute_context=model_context)
+    hessian = HessianComputer(compute_context=model_context).build()
     _, params, _ = model_params_loss
     params_flat, _ = flatten_util.ravel_pytree(params)
 
     V = jax.random.normal(PRNGKey(1), shape=(10, params_flat.shape[0]))
-    HVP = hessian.compute_hvp(V)
+    HVP = hessian.estimate_hvp(V)
 
-    H = hessian.compute_hessian()
+    H = hessian.estimate_hessian()
     HVP_ref = (H @ V.T).T
 
     err = VectorMetric.RELATIVE_ERROR.compute(HVP, HVP_ref)
@@ -201,13 +201,13 @@ def test_hessian_ihvp_roundtrip_unit_vectors(
     model_context: ModelContext,
 ):
     """Test that IHVP on identity matrix gives inverse Hessian."""
-    hessian = HessianComputer(compute_context=model_context)
+    hessian = HessianComputer(compute_context=model_context).build()
 
     n_params = model_context.params_flat.size
     I = jnp.eye(n_params)
 
-    IHVP = hessian.compute_ihvp(I, damping=1e-2)
-    Hinv = jnp.linalg.inv(hessian.compute_hessian(damping=1e-2))
+    IHVP = hessian.estimate_ihvp(I, damping=1e-2)
+    Hinv = jnp.linalg.inv(hessian.estimate_hessian(damping=1e-2))
 
     diff = jnp.max(jnp.abs(Hinv - IHVP.T))
     assert diff < 1e-6, f"IHVP roundtrip error: {diff:.6e}"
@@ -218,7 +218,7 @@ def test_hessian_vs_gnh_ihvp_consistency(
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ):
     """Test that Hessian and GNH IHVP implementations are close to equal for linear models."""
-    hessian = HessianComputer(compute_context=model_context)
+    hessian = HessianComputer(compute_context=model_context).build()
     gnh = GNHComputer(compute_context=model_context).build()
 
     _, params, _ = model_params_loss
@@ -226,7 +226,7 @@ def test_hessian_vs_gnh_ihvp_consistency(
 
     V = jax.random.normal(PRNGKey(2), shape=(10, params_flat.shape[0]))
 
-    ihvp_h = hessian.compute_ihvp(V, damping=1e-2)
+    ihvp_h = hessian.estimate_ihvp(V, damping=1e-2)
     ihvp_g = gnh.estimate_ihvp(V, damping=1e-2)
 
     err = VectorMetric.RELATIVE_ERROR.compute(ihvp_h, ihvp_g)

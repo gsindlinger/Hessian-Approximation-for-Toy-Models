@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import ModelBasedHessianEstimator
-from src.hessians.utils.data import ModelContext
+from src.hessians.layer_matrix import LayerMatrix, LayerVector
+from src.hessians.utils.data import ModelContext, layer_shapes_from_model_context
 from src.utils.loss import get_loss_name
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
@@ -28,23 +29,49 @@ class GNHComputer(ModelBasedHessianEstimator):
 
     For exponential family losses (e.g., CrossEntropy), GNH equals FIM.
     GNH is always positive semi-definite, unlike the full Hessian.
+
+    Note: this estimator materializes the full GNH and slices it into per-layer
+    `(I_i*O_i, I_j*O_j)` `DenseBlock`s via `LayerMatrix.from_dense`.  For big
+    models where materialization is not affordable, the lazy `_compute_gnhvp`
+    helper below remains available — a future big-model subclass can override
+    `_estimate_hvp` to call it directly and bypass `LayerMatrix` entirely.
     """
+
+    # ------------------------------------------------------------------
+    # LayerMatrix construction
+    # ------------------------------------------------------------------
+
+    def get_layer_names(self) -> List[str]:
+        return list(self.compute_context.model.get_layer_names())
+
+    def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
+        return layer_shapes_from_model_context(self.compute_context)
+
+    def _get_layer_matrix(self) -> LayerMatrix:
+        """Materialize the full GNH and slice it into per-layer DenseBlocks."""
+        loss_name = get_loss_name(self.compute_context.loss_fn)
+        if loss_name == "mse":
+            dense = self._compute_gnh_mse(self.compute_context, 0.0)
+        elif loss_name == "cross_entropy":
+            dense = self._compute_gnh_cross_entropy(self.compute_context, 0.0)
+        else:
+            dense = self._compute_gnh(self.compute_context, 0.0)
+        return LayerMatrix.from_dense(
+            dense,
+            param_groups=self.get_layer_names(),
+            layer_shapes=self._layer_shapes(),
+        )
+
+    # ------------------------------------------------------------------
+    # HessianEstimator interface (thin wrappers over LayerMatrix)
+    # ------------------------------------------------------------------
 
     def _estimate_hessian(
         self,
         damping: Optional[Float] = None,
-    ) -> jnp.ndarray:
-        """
-        Compute the Generalized Gauss-Newton approximation of the Hessian.
-        """
-
-        damping = damping if damping is not None else 0.0
-        if get_loss_name(self.compute_context.loss_fn) == "mse":
-            return self._compute_gnh_mse(self.compute_context, damping)
-        elif get_loss_name(self.compute_context.loss_fn) == "cross_entropy":
-            return self._compute_gnh_cross_entropy(self.compute_context, damping)
-        else:
-            return self._compute_gnh(self.compute_context, damping)
+    ) -> Float[Array, "n_params n_params"]:
+        d = 0.0 if damping is None else damping
+        return self._get_layer_matrix().damped(d).to_dense()
 
     def _compare_full_hessian_estimates(
         self,
@@ -52,80 +79,45 @@ class GNHComputer(ModelBasedHessianEstimator):
         damping: Optional[Float] = None,
         metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
     ) -> Float:
-        """
-        Compare the Gauss-Newton Hessian with another Hessian matrix using the specified metric.
-        """
-        damping = 0.0 if damping is None else damping
-
-        return metric.compute_fn()(
-            comparison_matrix,
-            self._compute_gnh(self.compute_context, damping),
-        )
+        d = 0.0 if damping is None else damping
+        gnh = self._estimate_hessian(d)
+        return metric.compute_fn()(comparison_matrix, gnh)
 
     def _estimate_hvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
-        """
-        Compute the Gauss-Newton-vector product (GNVP).
-        """
-        # Normalize to 2D: add batch dimension if needed
-        is_single = vectors.ndim == 1
-        vectors_2D: Float[Array, "batch_size n_params"] = (
-            vectors[None, :] if is_single else vectors
+        d = 0.0 if damping is None else damping
+        lmat = self._get_layer_matrix().damped(d)
+        lvec = LayerVector.from_flat(
+            flat=vectors,
+            shapes=lmat.vector_shapes(),
+            param_groups=self.get_layer_names(),
         )
-
-        result_2D = self._compute_gnhvp(
-            self.compute_context,
-            vectors_2D,
-            damping=0.0 if damping is None else damping,
-        )
-        return result_2D.squeeze(0) if is_single else result_2D
+        return (lmat @ lvec).to_flat()
 
     def _estimate_ihvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
         pseudo_inverse_factor: Optional[float] = None,
-    ) -> jnp.ndarray:
-        """
-        Compute the inverse Gauss-Newton-vector product (GNVP).
-        """
-        result = self._compute_ignhvp_batched(
-            data=self.compute_context,
-            vectors=vectors,
-            damping=0.0 if damping is None else damping,
-            pseudo_inverse_factor=(
-                0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
-            ),
+    ) -> Float[Array, "*batch_size n_params"]:
+        d = 0.0 if damping is None else damping
+        p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+        lmat = self._get_layer_matrix().inverse(
+            damping=d, pseudo_inverse_factor=p
         )
-        return result
+        lvec = LayerVector.from_flat(
+            flat=vectors,
+            shapes=lmat.vector_shapes(),
+            param_groups=self.get_layer_names(),
+        )
+        return (lmat @ lvec).to_flat()
 
-    @staticmethod
-    @partial(jax.jit, static_argnames=["damping", "pseudo_inverse_factor"])
-    def _compute_ignhvp_batched(
-        data: ModelContext,
-        vectors: Float[Array, "batch_size n_params"],
-        damping: Float,
-        pseudo_inverse_factor: Float,
-    ) -> Float[Array, "batch_size n_params"]:
-        """
-        Compute inverse Gauss-Newton-vector products for a batch of vectors.
-        """
-        gnh = GNHComputer._compute_gnh(data, damping)
-        if pseudo_inverse_factor > 0.0:
-            jax.config.update("jax_enable_x64", True)
-            eigvals, eigvecs = jnp.linalg.eigh(gnh)
-            jax.config.update("jax_enable_x64", False)
-            eigvals_inv = jnp.where(
-                jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
-            )
-            return jnp.einsum(
-                "ij,j,jk,nk->ni", eigvecs, eigvals_inv, eigvecs.T, vectors
-            )
-        else:
-            return jnp.linalg.solve(gnh, vectors.T).T
+    # ------------------------------------------------------------------
+    # Materialization helpers (used by _get_layer_matrix)
+    # ------------------------------------------------------------------
 
     @staticmethod
     @jax.jit
@@ -289,6 +281,11 @@ class GNHComputer(ModelBasedHessianEstimator):
         G_full = G_full / X.shape[0]
         return G_full + damping * jnp.eye(n_params)
 
+    # ------------------------------------------------------------------
+    # Lazy HVP escape hatch (retained for future big-model overrides;
+    # not used by the refactored `_estimate_hvp` path).
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _compute_gnhvp(
         compute_context: ModelContext,
@@ -301,6 +298,10 @@ class GNHComputer(ModelBasedHessianEstimator):
         - Handles mse and cross_entropy losses analytically.
         - Avoids nested Hessian inside scans.
         - Uses vmap over vectors with chunking for memory efficiency.
+
+        Currently unused — retained as the lazy HVP escape hatch for a future
+        big-model subclass that overrides `_estimate_hvp` to bypass
+        `LayerMatrix`.
         """
         p_flat = compute_context.params_flat
         X = compute_context.inputs

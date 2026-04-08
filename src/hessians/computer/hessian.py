@@ -2,21 +2,38 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import flatten_util
 from jaxtyping import Array, Float
 
-from src.hessians.utils.data import ModelContext
+from src.hessians.computer.computer import ModelBasedHessianEstimator
+from src.hessians.layer_matrix import LayerMatrix, LayerVector
+from src.hessians.utils.data import ModelContext, layer_shapes_from_model_context
+from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
 @dataclass
-class HessianComputer:
-    """Hessian Calculation via automatic differentiation (JAX native)."""
+class HessianComputer(ModelBasedHessianEstimator):
+    """
+    Exact Hessian computation via JAX automatic differentiation.
 
-    compute_context: ModelContext
+    Materializes the full `(n_params, n_params)` Hessian and slices it into
+    per-layer `(I_i*O_i, I_j*O_j)` `DenseBlock`s via `LayerMatrix.from_dense`.
+    For big models where materialization is not affordable, the lazy
+    `_compute_hvp` helper below remains available — a future big-model
+    subclass can override `_estimate_hvp` to call it directly and bypass
+    `LayerMatrix` entirely.
+    """
+
+    def __post_init__(self):
+        # HessianComputer has nothing to precompute — auto-build so that
+        # legacy `HessianComputer(ctx).compute_*(...)` call sites work
+        # without an explicit `.build()`.
+        if not self.is_built:
+            self.build()
 
     @staticmethod
     def get_param_index_mapping(params: Dict):
@@ -41,60 +58,109 @@ class HessianComputer:
 
         return index_mapping, flat_params.size
 
-    def compute_hessian(
+    # ------------------------------------------------------------------
+    # LayerMatrix construction
+    # ------------------------------------------------------------------
+
+    def get_layer_names(self) -> List[str]:
+        return list(self.compute_context.model.get_layer_names())
+
+    def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
+        return layer_shapes_from_model_context(self.compute_context)
+
+    def _get_layer_matrix(self) -> LayerMatrix:
+        """Materialize the full Hessian and slice it into per-layer DenseBlocks."""
+        dense = self._compute_hessian(self.compute_context, 0.0)
+        return LayerMatrix.from_dense(
+            dense,
+            param_groups=self.get_layer_names(),
+            layer_shapes=self._layer_shapes(),
+        )
+
+    # ------------------------------------------------------------------
+    # HessianEstimator interface (thin wrappers over LayerMatrix)
+    # ------------------------------------------------------------------
+
+    def _estimate_hessian(
         self,
         damping: Optional[Float] = None,
-    ) -> jnp.ndarray:
-        """
-        Compute the exact Hessian matrix of the loss function for the whole model.
-        Args:
-            damping: Optional damping factor to add to the diagonal for numerical stability.
-        """
-        return self._compute_hessian(
-            compute_context=self.compute_context,
-            damping=0.0 if damping is None else damping,
+    ) -> Float[Array, "n_params n_params"]:
+        d = 0.0 if damping is None else damping
+        return self._get_layer_matrix().damped(d).to_dense()
+
+    def _compare_full_hessian_estimates(
+        self,
+        comparison_matrix: Float[Array, "n_params n_params"],
+        damping: Optional[Float] = None,
+        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
+    ) -> Float:
+        d = 0.0 if damping is None else damping
+        H = self._estimate_hessian(d)
+        return metric.compute_fn()(comparison_matrix, H)
+
+    def _estimate_hvp(
+        self,
+        vectors: Float[Array, "*batch_size n_params"],
+        damping: Optional[Float] = None,
+    ) -> Float[Array, "*batch_size n_params"]:
+        d = 0.0 if damping is None else damping
+        lmat = self._get_layer_matrix().damped(d)
+        lvec = LayerVector.from_flat(
+            flat=vectors,
+            shapes=lmat.vector_shapes(),
+            param_groups=self.get_layer_names(),
         )
+        return (lmat @ lvec).to_flat()
+
+    def _estimate_ihvp(
+        self,
+        vectors: Float[Array, "*batch_size n_params"],
+        damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
+    ) -> Float[Array, "*batch_size n_params"]:
+        d = 0.0 if damping is None else damping
+        p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+        lmat = self._get_layer_matrix().inverse(
+            damping=d, pseudo_inverse_factor=p
+        )
+        lvec = LayerVector.from_flat(
+            flat=vectors,
+            shapes=lmat.vector_shapes(),
+            param_groups=self.get_layer_names(),
+        )
+        return (lmat @ lvec).to_flat()
+
+    # ------------------------------------------------------------------
+    # Backwards-compatibility aliases (deprecated — delete in follow-up).
+    # The notebook and any stray callers still use the old `compute_*` names.
+    # ------------------------------------------------------------------
+
+    def compute_hessian(
+        self, damping: Optional[Float] = None
+    ) -> Float[Array, "n_params n_params"]:
+        """Deprecated alias for `estimate_hessian`."""
+        return self.estimate_hessian(damping)
 
     def compute_hvp(
         self,
-        vectors: Float[Array, "n_params"],
+        vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
-    ) -> Float[Array, "n_params"]:
-        """
-        Compute the Hessian-vector product (HVP).
-        """
-
-        # Normalize to 2D: add batch dimension if needed
-        is_single = vectors.ndim == 1
-        vectors_2D: Float[Array, "batch_size n_params"] = (
-            vectors[None, :] if is_single else vectors
-        )
-
-        # Compute batched HVP
-        result: Float[Array, "batch_size n_params"] = self._compute_hvp(
-            compute_context=self.compute_context,
-            vectors=vectors_2D,
-            damping=0.0 if damping is None else damping,
-        )
-        return result.squeeze(0) if is_single else result
+    ) -> Float[Array, "*batch_size n_params"]:
+        """Deprecated alias for `estimate_hvp`."""
+        return self.estimate_hvp(vectors, damping)
 
     def compute_ihvp(
         self,
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
         pseudo_inverse_factor: Optional[float] = None,
-    ) -> Float[Array, "n_params"]:
-        """
-        Compute the inverse Hessian-vector product (IHVP).
-        """
-        return self._compute_ihvp(
-            self.compute_context,
-            vectors,
-            damping=0.0 if damping is None else damping,
-            pseudo_inverse_factor=(
-                0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
-            ),
-        )
+    ) -> Float[Array, "*batch_size n_params"]:
+        """Deprecated alias for `estimate_ihvp`."""
+        return self.estimate_ihvp(vectors, damping, pseudo_inverse_factor)
+
+    # ------------------------------------------------------------------
+    # Materialization helper (used by `_get_layer_matrix`)
+    # ------------------------------------------------------------------
 
     @staticmethod
     @jax.jit
@@ -131,6 +197,11 @@ class HessianComputer:
         H_full = 0.5 * (H_full + H_full.T)  # Ensure symmetry
         return H_full + damping * jnp.eye(H_full.shape[0])
 
+    # ------------------------------------------------------------------
+    # Lazy HVP / IHVP escape hatches (retained for future big-model
+    # overrides; not used by the refactored `_estimate_*` paths).
+    # ------------------------------------------------------------------
+
     @staticmethod
     @jax.jit
     def _compute_hvp(
@@ -141,6 +212,10 @@ class HessianComputer:
         """
         Memory-efficient Hessian-vector product computation.
         Uses scan over samples and vmap over vectors, matching GNH strategy.
+
+        Currently unused — retained as the lazy HVP escape hatch for a future
+        big-model subclass that overrides `_estimate_hvp` to bypass
+        `LayerMatrix`.
         """
         p_flat = compute_context.params_flat
         X = compute_context.inputs
@@ -209,6 +284,9 @@ class HessianComputer:
     ) -> Float[Array, "batch_size n_params"]:
         """
         JIT-compiled Inverse Hessian-vector product (IHVP) computation.
+
+        Currently unused — retained as the lazy IHVP escape hatch for a future
+        big-model subclass.
         """
         # Vectorize over the batch dimension
         hessian = HessianComputer._compute_hessian(compute_context, damping)
@@ -224,6 +302,10 @@ class HessianComputer:
             )
         else:
             return jnp.linalg.solve(hessian, vectors.T).T
+
+    # ------------------------------------------------------------------
+    # Persistence helpers (unchanged)
+    # ------------------------------------------------------------------
 
     def save_hessian(
         self, hessian: Optional[Float[Array, "n_params n_params"]], path: str

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from functools import partial
 from typing import Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
 import jax
@@ -11,6 +10,7 @@ from jaxtyping import Array, Float
 
 from src.config import PseudoTargetGenerationStrategy, RegularizationStrategy
 from src.hessians.computer.computer import CollectorBasedHessianEstimator
+from src.hessians.layer_matrix import KroneckerFactors, LayerMatrix, LayerVector
 from src.hessians.utils.data import (
     DataActivationsGradients,
     EKFACData,
@@ -226,6 +226,42 @@ class EKFACComputer(CollectorBasedHessianEstimator):
             mean_corrections_aggregated=mean_corrections_aggregated,
         )
 
+    def _get_lambdas(self) -> Dict[str, Float[Array, "I O"]]:
+        """
+        Per-layer eigenvalues used to build the `LayerMatrix`.
+
+        For EKFAC these are the eigenvalue corrections; `KFACComputer`
+        overrides this to return `outer(λ_A, λ_G)` instead.
+        """
+        assert self.precomputed_data is not None, (
+            "EKFAC data not computed. Please build the computer first."
+        )
+        return self.precomputed_data.eigenvalue_corrections
+
+    def _get_layer_matrix(self) -> LayerMatrix:
+        """Build a block-diagonal `LayerMatrix` from `precomputed_data`.
+
+        Each diagonal block is a `KroneckerFactors` with `Q_A`, `Q_G`, and
+        `Lambda` taken from the precomputed data (or, for KFAC, computed
+        via `_get_lambdas`).
+        """
+        assert self.precomputed_data is not None, (
+            "EKFAC data not computed. Please build the computer first."
+        )
+        layer_names = self.get_layer_names()
+        lambdas = self._get_lambdas()
+        diag_blocks: Dict[str, KroneckerFactors] = {
+            layer: KroneckerFactors.from_eigendecomposition(
+                Q_A=self.precomputed_data.activation_eigenvectors[layer],
+                Q_G=self.precomputed_data.gradient_eigenvectors[layer],
+                Lambda=lambdas[layer],
+            )
+            for layer in layer_names
+        }
+        return LayerMatrix.block_diagonal(
+            diag_blocks=diag_blocks, param_groups=layer_names
+        )
+
     def _estimate_hessian(
         self, damping: Optional[Float] = None
     ) -> Float[Array, "n_params n_params"]:
@@ -241,46 +277,14 @@ class EKFACComputer(CollectorBasedHessianEstimator):
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """Compute Hessian-vector product."""
-        assert self.precomputed_data is not None, (
-            "EKFAC data not computed. Please build the computer first."
+        damping_f = 0.0 if damping is None else damping
+        lmat = self._get_layer_matrix().damped(damping_f)
+        lvec = LayerVector.from_flat(
+            flat=vectors,
+            shapes=lmat.vector_shapes(),
+            param_groups=self.get_layer_names(),
         )
-        return self.compute_ihvp_or_hvp(
-            data=self.precomputed_data,
-            vectors=vectors,
-            layer_names=self.get_layer_names(),
-            Lambdas=self.precomputed_data.eigenvalue_corrections,
-            method="hvp",
-            damping=0.0 if damping is None else damping,
-        )
-
-    def _compare_full_hessian_estimates(
-        self,
-        comparison_matrix: Float[Array, "n_params n_params"],
-        damping: Optional[Float] = None,
-        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
-    ) -> float:
-        """Compare the EKFAC Hessian approximation to a given comparison matrix."""
-        assert self.precomputed_data is not None, (
-            "EKFAC data not computed. Please build the computer first."
-        )
-        return self._compare_hessian_estimates(
-            activations_eigenvectors=[
-                self.precomputed_data.activation_eigenvectors[layer]
-                for layer in self.get_layer_names()
-            ],
-            gradients_eigenvectors=[
-                self.precomputed_data.gradient_eigenvectors[layer]
-                for layer in self.get_layer_names()
-            ],
-            Lambdas=[
-                self.precomputed_data.eigenvalue_corrections[layer]
-                for layer in self.get_layer_names()
-            ],
-            damping=0.0 if damping is None else damping,
-            comparison_matrix=comparison_matrix,
-            metric=metric.compute_fn(),
-            method="normal",
-        )
+        return (lmat @ lvec).to_flat()
 
     def _estimate_ihvp(
         self,
@@ -289,20 +293,29 @@ class EKFACComputer(CollectorBasedHessianEstimator):
         pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """Compute inverse Hessian-vector product."""
-        assert self.precomputed_data is not None, (
-            "EKFAC data not computed. Please build the computer first."
+        damping_f = 0.0 if damping is None else damping
+        pseudo_f = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+        lmat = self._get_layer_matrix().inverse(
+            damping=damping_f, pseudo_inverse_factor=pseudo_f
         )
-        return self.compute_ihvp_or_hvp(
-            data=self.precomputed_data,
-            vectors=vectors,
-            Lambdas=self.precomputed_data.eigenvalue_corrections,
-            layer_names=self.get_layer_names(),
-            method="ihvp",
-            damping=0.0 if damping is None else damping,
-            pseudo_inverse_factor=0.0
-            if pseudo_inverse_factor is None
-            else pseudo_inverse_factor,
+        lvec = LayerVector.from_flat(
+            flat=vectors,
+            shapes=lmat.vector_shapes(),
+            param_groups=self.get_layer_names(),
         )
+        return (lmat @ lvec).to_flat()
+
+    def _compare_full_hessian_estimates(
+        self,
+        comparison_matrix: Float[Array, "n_params n_params"],
+        damping: Optional[Float] = None,
+        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
+    ) -> float:
+        """Compare the EKFAC Hessian approximation to a given comparison matrix."""
+        damping_f = 0.0 if damping is None else damping
+        kfac_hessian = self._get_layer_matrix().damped(damping_f).to_dense()
+        true_hessian = comparison_matrix + damping_f * jnp.eye(kfac_hessian.shape[0])
+        return metric.compute_fn()(true_hessian, kfac_hessian)
 
     def estimate_inverse_hessian(
         self,
@@ -319,202 +332,17 @@ class EKFACComputer(CollectorBasedHessianEstimator):
         method: Literal["normal", "inverse"],
         damping: Float,
     ) -> Float[Array, "n_params n_params"]:
-        """Unified helper method to compute either the full Hessian or its inverse."""
-        assert self.precomputed_data is not None, (
-            "EKFAC data not computed. Please build the computer first."
-        )
-        return self._compute_hessian_or_inverse_hessian_estimate(
-            eigenvectors_activations=[
-                self.precomputed_data.activation_eigenvectors[layer]
-                for layer in self.get_layer_names()
-            ],
-            eigenvectors_gradients=[
-                self.precomputed_data.gradient_eigenvectors[layer]
-                for layer in self.get_layer_names()
-            ],
-            Lambdas=[
-                self.precomputed_data.eigenvalue_corrections[layer]
-                for layer in self.get_layer_names()
-            ],
-            damping=damping,
-            method=method,
-        )
+        """Compute the full Hessian estimate (`"normal"`) or its inverse.
 
-    @staticmethod
-    @partial(jax.jit, static_argnames=["method"])
-    def _compute_hessian_or_inverse_hessian_estimate(
-        eigenvectors_activations: List[Float[Array, "I I"]],
-        eigenvectors_gradients: List[Float[Array, "O O"]],
-        Lambdas: List[Float[Array, "I O"]],
-        damping: Float[Array, ""],
-        method: Literal["normal", "inverse"],
-    ):
+        Kept as a public method because the notebook
+        `tests/pytorch_jax_nn_geometry_comparison.ipynb` uses it directly.
         """
-        Computes a block-diagonal estimate for the Hessian or its inverse
-        using Kronecker-factored eigenvectors and eigenvalues / corrections.
-        """
-        hessian_list = [
-            EKFACComputer._compute_layer_hessian_estimate(
-                layer_eigv_activations,
-                layer_eigv_gradients,
-                EKFACComputer._get_damped_lambda(layer_lambda, damping, method),
-            )
-            for layer_eigv_activations, layer_eigv_gradients, layer_lambda in zip(
-                eigenvectors_activations,
-                eigenvectors_gradients,
-                Lambdas,
-            )
-        ]
-
-        return jax.scipy.linalg.block_diag(*hessian_list)
-
-    @staticmethod
-    def _get_damped_lambda(
-        Lambda: Float[Array, "I O"],
-        damping: Float[Array, ""],
-        method: Literal["normal", "inverse"],
-    ) -> Float[Array, "I O"]:
-        """Compute the damped version of Lambda for the Hessian or its inverse."""
+        lmat = self._get_layer_matrix()
         if method == "inverse":
-            return 1.0 / (Lambda + damping)
+            lmat = lmat.inverse(damping=damping)
         else:
-            return Lambda + damping
-
-    @staticmethod
-    @jax.jit
-    def _compute_layer_hessian_estimate(
-        eigenvectors_A: Float[Array, "I I"],
-        eigenvectors_G: Float[Array, "O O"],
-        Lambda: Float[Array, "I O"],
-    ) -> Float[Array, "n_params n_params"]:
-        """
-        Computes the layer Hessian approximation given eigenvectors of activations and gradients,
-        and the eigenvalue / correction matrix.
-        """
-        return jnp.einsum(
-            "ij,j,jk->ik",
-            jnp.kron(eigenvectors_A, eigenvectors_G),
-            Lambda.flatten(),
-            jnp.kron(eigenvectors_A, eigenvectors_G).T,
-        )
-
-    @staticmethod
-    def compute_ihvp_or_hvp(
-        data: EKFACData,
-        vectors: Float[Array, "*batch_size n_params"],
-        Lambdas: Dict[str, Float[Array, "I O"]],
-        layer_names: List[str],
-        method: Literal["ihvp", "hvp"],
-        damping: Float = 0.0,
-        pseudo_inverse_factor: Float = 0.0,
-    ) -> Float[Array, "*batch_size n_params"]:
-        """Compute inverse Hessian-vector product or Hessian-vector product."""
-
-        Q_activations_list = []
-        Q_gradients_list = []
-        Lambda_list = []
-        v_layers = []
-
-        offset = 0
-        for layer_name in layer_names:
-            Lambda = Lambdas[layer_name]
-
-            if method == "ihvp":
-                # if pseudo-inverse is requested, set lambdas below the threshold to zero
-                if pseudo_inverse_factor > 0.0:
-                    Lambda = jnp.where(
-                        jnp.abs(Lambda) > pseudo_inverse_factor,
-                        1 / (Lambda + damping),
-                        0,
-                    )
-                else:
-                    Lambda = 1 / (Lambda + damping)
-            else:  # method == "hvp"
-                Lambda = Lambda + damping
-            input_dim, output_dim = Lambda.shape  # type: ignore
-            size = input_dim * output_dim
-
-            # Extract and reshape vector for this layer
-            v_flat: Float[Array, "*batch_size I*O"] = vectors[
-                ..., offset : offset + size
-            ]
-            v_layer: Float[Array, "*batch_size I O"] = v_flat.reshape(
-                v_flat.shape[:-1] + (input_dim, output_dim)
-            )
-
-            # Collect all components
-            Q_activations_list.append(data.activation_eigenvectors[layer_name])
-            Q_gradients_list.append(data.gradient_eigenvectors[layer_name])
-            Lambda_list.append(Lambda)
-            v_layers.append(v_layer)
-            offset += size
-
-        # Compute (I)HVP for all layers
-        vp_pieces = EKFACComputer.compute_ihvp_or_hvp_all_layers(
-            v_layers=v_layers,
-            Q_activations=Q_activations_list,
-            Q_gradients=Q_gradients_list,
-            Lambdas=Lambda_list,
-        )
-
-        # Concatenate all layer results
-        return jnp.concatenate(vp_pieces, axis=-1)
-
-    @staticmethod
-    @jax.jit
-    def compute_ihvp_or_hvp_all_layers(
-        v_layers: list[Float[Array, "*batch_size I O"]],
-        Q_activations: list[Float[Array, "I I"]],
-        Q_gradients: list[Float[Array, "O O"]],
-        Lambdas: list[Float[Array, "I O"]],
-    ) -> list[Float[Array, "*batch_size num_params"]]:
-        """
-        Computes the inverse Hessian-vector product (IHVP) or Hessian-vector product (HVP) for multiple layers.
-        """
-        vp_pieces = []
-
-        for v_layer, Q_A, Q_G, Lambda in zip(
-            v_layers, Q_activations, Q_gradients, Lambdas
-        ):
-            # Transform to eigenbasis
-            V_tilde: Float[Array, "*batch_size I O"] = Q_A.T @ v_layer @ Q_G
-
-            # Scale by eigenvalues / corrections
-            scaled: Float[Array, "*batch_size I O"] = V_tilde * Lambda
-
-            # Transform back to original basis
-            vector_product: Float[Array, "*batch_size I O"] = Q_A @ scaled @ Q_G.T
-
-            # Flatten last two dimensions
-            batch_shape = vector_product.shape[:-2]
-            flat_size = vector_product.shape[-2] * vector_product.shape[-1]
-            vp_flat = vector_product.reshape(*batch_shape, flat_size)
-            vp_pieces.append(vp_flat)
-
-        return vp_pieces
-
-    @staticmethod
-    @partial(jax.jit, static_argnames=["method", "metric"])
-    def _compare_hessian_estimates(
-        activations_eigenvectors: List[Float[Array, "I I"]],
-        gradients_eigenvectors: List[Float[Array, "O O"]],
-        Lambdas: List[Float[Array, "I O"]],
-        damping: Float[Array, ""],
-        comparison_matrix: Float[Array, "n_params n_params"],
-        metric: Callable[[jnp.ndarray, jnp.ndarray], float],
-        method: Literal["normal", "inverse"] = "normal",
-    ) -> float:
-        """Compare (E)KFAC Hessian or its inverse to a given comparison matrix."""
-        kfac_hessian = EKFACComputer._compute_hessian_or_inverse_hessian_estimate(
-            activations_eigenvectors,
-            gradients_eigenvectors,
-            Lambdas,
-            damping=damping,
-            method=method,
-        )
-
-        true_hessian = comparison_matrix + damping * jnp.eye(kfac_hessian.shape[0])
-        return metric(true_hessian, kfac_hessian)
+            lmat = lmat.damped(damping)
+        return lmat.to_dense()
 
     @staticmethod
     def get_damping(

@@ -16,6 +16,7 @@ from typing import (
 )
 
 import flax.struct as struct
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.flatten_util import ravel_pytree
@@ -179,6 +180,65 @@ class ModelContext:
         )
 
 
+def layer_shapes_from_model_context(
+    ctx: ModelContext,
+) -> Dict[str, Tuple[int, int]]:
+    """
+    Walk the Flax param tree and return `{layer_name: (I_aug, O)}` matching
+    the KFAC layer convention (kernel + optional bias as a single
+    bias-augmented block).
+
+    Uses `ctx.model.get_layer_names()` for the canonical layer ordering and
+    `ctx.unravel_fn(ctx.params_flat)` to read shapes.  Asserts that the
+    layer-aggregated total matches `params_flat.size`, so callers can rely
+    on each layer's parameters being contiguous in `params_flat` (which is
+    the standard Flax tree-flatten ordering for sequential models).
+    """
+    if ctx.model is None:
+        raise ValueError(
+            "ModelContext.model is required to derive layer shapes."
+        )
+    params = ctx.unravel_fn(ctx.params_flat)
+    if "params" in params:
+        params_root = params["params"]
+    else:
+        params_root = params
+    leaves_with_paths, _ = jax.tree_util.tree_flatten_with_path(params_root)
+    layer_names = ctx.model.get_layer_names()
+
+    shapes: Dict[str, Tuple[int, int]] = {}
+    for layer in layer_names:
+        layer_leaves = [
+            leaf
+            for path, leaf in leaves_with_paths
+            if "/".join(k.key for k in path[:-1]) == layer
+        ]
+        if not layer_leaves:
+            raise ValueError(
+                f"No leaves found for layer '{layer}' in Flax param tree."
+            )
+        # Expected: one kernel (I, O) and optional bias (O,).
+        kernel_candidates = [l for l in layer_leaves if l.ndim == 2]
+        if not kernel_candidates:
+            raise ValueError(
+                f"Layer '{layer}' has no 2-D kernel leaf — cannot derive (I, O)."
+            )
+        kernel = kernel_candidates[0]
+        I, O = kernel.shape
+        has_bias = any(l.ndim == 1 for l in layer_leaves)
+        shapes[layer] = ((I + 1) if has_bias else I, O)
+
+    total = sum(I * O for (I, O) in shapes.values())
+    if total != ctx.params_flat.size:
+        raise ValueError(
+            f"Sum of layer sizes ({total}) does not match params_flat.size "
+            f"({ctx.params_flat.size}).  Either the model has parameters "
+            f"outside named layers, or layers are not contiguous in the "
+            f"flattened param vector."
+        )
+    return shapes
+
+
 @dataclass
 class EKFACData(ApproximationData):
     """
@@ -269,9 +329,16 @@ class DataActivationsGradients(ApproximationData):
 class BlockHessianData(ApproximationData):
     """
     Data class to hold Block Hessian related data.
+
+    `blocks[i]` is the `(start, end)` flat-index range for the i-th
+    layer (kernel + optional bias merged).  `layer_names[i]` is the
+    matching layer name.  `layer_shapes[name]` is the per-layer
+    `(I_aug, O)` shape used for `LayerVector` reshapes.
     """
 
     blocks: List[Tuple[int, int]] = field(default_factory=list)
+    layer_names: List[str] = field(default_factory=list)
+    layer_shapes: Dict[str, Tuple[int, int]] = field(default_factory=dict)
     n_params: int = 0
     block_mask: Float[Array, "n_params n_params"] = field(
         default_factory=lambda: jnp.array([[]])

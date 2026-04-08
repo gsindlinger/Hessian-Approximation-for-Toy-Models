@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -8,6 +8,7 @@ from jaxtyping import Array, Float
 
 from src.config import PseudoTargetGenerationStrategy
 from src.hessians.computer.computer import CollectorBasedHessianEstimator
+from src.hessians.layer_matrix import LayerMatrix, LayerVector
 from src.hessians.utils.data import DataActivationsGradients, FIMData
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
@@ -69,25 +70,51 @@ class FIMComputer(CollectorBasedHessianEstimator):
 
         return FIMData(per_sample_grads=grads_all, probabilities=probabilities)
 
+    # ------------------------------------------------------------------
+    # LayerMatrix construction
+    # ------------------------------------------------------------------
+
+    def get_layer_names(self) -> List[str]:
+        return self.compute_context.layer_names
+
+    def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
+        return {
+            l: (
+                int(self.compute_context.activations[l].shape[-1]),
+                int(self.compute_context.gradients[l].shape[-1]),
+            )
+            for l in self.get_layer_names()
+        }
+
+    def _get_layer_matrix(self) -> LayerMatrix:
+        """Materialize the FIM and slice it into per-layer DenseBlocks."""
+        gradients = self.precomputed_data.per_sample_grads  # (k, N, n_params)
+        strategy = self.compute_context.pseudo_target_strategy
+        if strategy == PseudoTargetGenerationStrategy.ALL_CLASSES:
+            dense = self._compute_fim_all_classes(
+                gradients=gradients,
+                probabilities=self.precomputed_data.probabilities,
+                damping=0.0,
+            )
+        else:
+            dense = self._compute_fim_unweighted(gradients, 0.0)
+        return LayerMatrix.from_dense(
+            dense,
+            param_groups=self.get_layer_names(),
+            layer_shapes=self._layer_shapes(),
+        )
+
+    # ------------------------------------------------------------------
+    # HessianEstimator interface (thin wrappers over LayerMatrix)
+    # ------------------------------------------------------------------
+
     def _estimate_hessian(
         self,
         damping: Optional[Float] = None,
-    ) -> jnp.ndarray:
-        """
-        Compute the Fisher Information Matrix from pre-collected gradients.
-        """
-        gradients = self.precomputed_data.per_sample_grads  # (k, N, n_params)
-        damping = 0.0 if damping is None else damping
-        strategy = self.compute_context.pseudo_target_strategy
-
-        if strategy == PseudoTargetGenerationStrategy.ALL_CLASSES:
-            return self._compute_fim_all_classes(
-                gradients=gradients,
-                probabilities=self.precomputed_data.probabilities,
-                damping=damping,
-            )
-        else:
-            return self._compute_fim_unweighted(gradients, damping)
+    ) -> Float[Array, "n_params n_params"]:
+        """Materialized FIM (optionally damped)."""
+        d = 0.0 if damping is None else damping
+        return self._get_layer_matrix().damped(d).to_dense()
 
     def _compare_full_hessian_estimates(
         self,
@@ -95,12 +122,9 @@ class FIMComputer(CollectorBasedHessianEstimator):
         damping: Optional[Float] = None,
         metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
     ) -> Float:
-        """
-        Compare the Fisher Information Matrix with another Hessian matrix using the specified metric.
-        """
-        damping = 0.0 if damping is None else damping
-        fim = self._estimate_hessian(damping)
-
+        """Compare the FIM against `comparison_matrix` under the given metric."""
+        d = 0.0 if damping is None else damping
+        fim = self._estimate_hessian(d)
         return metric.compute_fn()(comparison_matrix, fim)
 
     @staticmethod
@@ -177,34 +201,15 @@ class FIMComputer(CollectorBasedHessianEstimator):
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
-        """
-        Compute the Fisher-vector product (FVP) from pre-collected gradients.
-        """
-        gradients = self.precomputed_data.per_sample_grads  # (k, N, n_params)
-        damping = 0.0 if damping is None else damping
-        strategy = self.compute_context.pseudo_target_strategy
-
-        # Normalize to 2D: add batch dimension if needed
-        is_single = vectors.ndim == 1
-        vectors_2D: Float[Array, "batch_size n_params"] = (
-            vectors[None, :] if is_single else vectors
+        """Fisher-vector product via the materialized `LayerMatrix`."""
+        d = 0.0 if damping is None else damping
+        lmat = self._get_layer_matrix().damped(d)
+        lvec = LayerVector.from_flat(
+            flat=vectors,
+            shapes=lmat.vector_shapes(),
+            param_groups=self.get_layer_names(),
         )
-
-        if strategy == PseudoTargetGenerationStrategy.ALL_CLASSES:
-            # For ALL_CLASSES, use special computation that averages over N only
-            result = self._compute_fvp_all_classes(
-                gradients=gradients,
-                probabilities=self.precomputed_data.probabilities,
-                damping=damping,
-                vectors=vectors_2D,
-            )
-        else:
-            # For EMPIRICAL_FISHER and MCMC, average over k*N
-            result = self._compute_fvp_unweighted(
-                gradients=gradients, vectors=vectors_2D, damping=damping
-            )
-
-        return result.squeeze(0) if is_single else result
+        return (lmat @ lvec).to_flat()
 
     def _estimate_ihvp(
         self,
@@ -212,27 +217,18 @@ class FIMComputer(CollectorBasedHessianEstimator):
         damping: Optional[Float] = None,
         pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
-        """
-        Compute the inverse Fisher-vector product (IFVP) using direct solve.
-        """
-        damping = 0.0 if damping is None else damping
-        pseudo_inverse_factor = (
-            0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+        """Inverse Fisher-vector product via the materialized `LayerMatrix`."""
+        d = 0.0 if damping is None else damping
+        p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+        lmat = self._get_layer_matrix().inverse(
+            damping=d, pseudo_inverse_factor=p
         )
-
-        # Normalize to 2D: add batch dimension if needed
-        is_single = vectors.ndim == 1
-        vectors_2D: Float[Array, "batch_size n_params"] = (
-            vectors[None, :] if is_single else vectors
+        lvec = LayerVector.from_flat(
+            flat=vectors,
+            shapes=lmat.vector_shapes(),
+            param_groups=self.get_layer_names(),
         )
-
-        # Compute FIM
-        fim = self._estimate_hessian(damping)
-
-        # Solve FIM^{-1} @ v
-        result_2D = self._solve_fim_inv(fim, vectors_2D, pseudo_inverse_factor)
-
-        return result_2D.squeeze(0) if is_single else result_2D
+        return (lmat @ lvec).to_flat()
 
     @staticmethod
     @partial(jax.jit, static_argnames=["pseudo_inverse_factor"])
