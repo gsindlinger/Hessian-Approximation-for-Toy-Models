@@ -6,27 +6,15 @@ import pytest
 from jax import flatten_util
 from jax.random import PRNGKey
 
-from src.config import (
-    LossType,
-    ModelArchitecture,
-    ModelConfig,
-    OptimizerType,
-    TrainingConfig,
-)
 from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.utils.data import ModelContext
-from src.utils.data.data import (
-    Dataset,
-    RandomClassificationDataset,
-    RandomRegressionDataset,
-)
-from src.utils.loss import get_loss
+from src.utils.data.data import Dataset
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.optimizers import optimizer
-from src.utils.train import train_model
+from tests.conftest import TrainingScenario
+from tests._helpers import cached_train_model_for_dataset, create_model_context
 
 # ---------------------------------------------------------------------
 # Fixtures
@@ -34,90 +22,43 @@ from src.utils.train import train_model
 
 
 @pytest.fixture(
-    params=["random_regression", "classification"],
+    params=[
+        pytest.param(
+            "hessian_gnh_random_regression_scenario",
+            id="random_regression",
+        ),
+        pytest.param("hessian_gnh_classification_scenario", id="classification"),
+    ],
     scope="session",
 )
-def config(request, tmp_path_factory):
-    """Create model configuration for testing."""
-    base = tmp_path_factory.mktemp(request.param)
-
-    if request.param == "random_regression":
-        architecture = ModelArchitecture.LINEAR
-        hidden_dim = []
-        loss = LossType.MSE
-    else:  # classification
-        architecture = ModelArchitecture.LINEAR
-        hidden_dim = []
-        loss = LossType.CROSS_ENTROPY
-
-    model_config = ModelConfig(
-        architecture=architecture,
-        input_dim=10,  # Will be updated from dataset
-        hidden_dim=hidden_dim if hidden_dim else None,
-        output_dim=2,  # Will be updated from dataset
-        loss=loss,
-        training=TrainingConfig(
-            learning_rate=1e-3,
-            optimizer=OptimizerType.SGD,
-            epochs=50,
-            batch_size=128,
-        ),
-        directory=str(base / "model"),
-    )
-
-    return {
-        "model_config": model_config,
-    }
+def training_scenario(request) -> TrainingScenario:
+    return request.getfixturevalue(request.param)
 
 
 @pytest.fixture(scope="session")
-def dataset(config: Dict) -> Dataset:
-    """Create a random dataset for testing (classification or regression)."""
-    seed = 42
+def config(training_scenario: TrainingScenario) -> Dict:
+    return {"model_config": training_scenario.model_config}
 
-    if config["model_config"].loss == LossType.MSE:
-        return RandomRegressionDataset(
-            n_samples=1200,
-            n_features=100,
-            n_targets=10,
-            noise=20.0,
-            seed=seed,
-        )
-    else:  # CROSS_ENTROPY / classification
-        return RandomClassificationDataset(
-            n_samples=1000,
-            n_features=20,
-            n_informative=10,
-            n_classes=5,
-            seed=seed,
-        )
+
+@pytest.fixture(scope="session")
+def dataset(training_scenario: TrainingScenario) -> Dataset:
+    """Create a random dataset for testing (classification or regression)."""
+    return training_scenario.dataset
 
 
 @pytest.fixture(scope="session")
 def model_params_loss(
-    config: Dict, dataset: Dataset
+    trained_model_registry: Dict[Tuple, Tuple[ApproximationModel, Dict, Callable]],
+    training_scenario: TrainingScenario,
 ) -> Tuple[ApproximationModel, Dict, Callable]:
     """Train a model and return it with its parameters and loss function."""
-    model_config: ModelConfig = config["model_config"]
-
-    # Update dimensions from dataset
-    model_config.input_dim = dataset.input_dim()
-    model_config.output_dim = dataset.output_dim()
-
-    # Train the model
-    model, params, _ = train_model(
-        model_config=model_config,
-        dataloader=dataset.get_dataloader(
-            batch_size=model_config.training.batch_size, seed=42
-        ),
-        loss_fn=get_loss(model_config.loss),
-        optimizer=optimizer(
-            model_config.training.optimizer, lr=model_config.training.learning_rate
-        ),
-        epochs=model_config.training.epochs,
+    return cached_train_model_for_dataset(
+        training_scenario.model_config,
+        training_scenario.dataset,
+        trained_model_registry,
+        seed=training_scenario.train_seed,
+        shuffle=training_scenario.shuffle,
     )
-
-    return model, params, get_loss(model_config.loss)
 
 
 @pytest.fixture(scope="session")
@@ -125,14 +66,7 @@ def model_context(
     dataset: Dataset, model_params_loss: Tuple[ApproximationModel, Dict, Callable]
 ) -> ModelContext:
     """Create a ModelContext for Hessian/GNH computation."""
-    model, params, loss = model_params_loss
-
-    return ModelContext.create(
-        dataset=dataset,
-        model=model,
-        params=params,
-        loss_fn=loss,
-    )
+    return create_model_context(dataset, model_params_loss)
 
 
 # ---------------------------------------------------------------------

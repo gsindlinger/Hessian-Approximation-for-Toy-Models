@@ -7,14 +7,8 @@ from jax import flatten_util
 from jax.random import PRNGKey
 
 from src.config import (
-    ActivationFunction,
-    DatasetEnum,
-    LossType,
-    ModelArchitecture,
     ModelConfig,
-    OptimizerType,
     PseudoTargetGenerationStrategy,
-    TrainingConfig,
 )
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator
@@ -26,97 +20,56 @@ from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import (
     sample_gradients,
 )
-from src.utils.data.data import (
-    Dataset,
-    DownloadableDataset,
-    RandomClassificationDataset,
-)
-from src.utils.loss import get_loss
+from src.utils.data.data import Dataset
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.optimizers import optimizer
-from src.utils.train import train_model
+from tests.conftest import TrainingScenario
+from tests._helpers import (
+    cached_train_model_for_dataset,
+    create_model_context,
+)
 
 # ---------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------
 
 
-@pytest.fixture(params=["linear", "multi_layer"], scope="session")
-def config(request, tmp_path_factory):
-    """Create model configuration for testing."""
-    base = tmp_path_factory.mktemp(request.param)
-
-    if request.param == "linear":
-        architecture = ModelArchitecture.LINEAR
-        hidden_dim = []
-        activation = None
-    else:
-        architecture = ModelArchitecture.MLP
-        activation = ActivationFunction.TANH
-        hidden_dim = [16] * 2
-
-    return ModelConfig(
-        architecture=architecture,
-        input_dim=10,  # Will be updated from dataset
-        hidden_dim=hidden_dim if hidden_dim else None,
-        activation=activation,
-        output_dim=2,  # Will be updated from dataset
-        loss=LossType.CROSS_ENTROPY,
-        training=TrainingConfig(
-            learning_rate=1e-3,
-            weight_decay=0,
-            optimizer=OptimizerType.ADAMW,
-            epochs=100,
-            batch_size=32,
-        ),
-        directory=str(base / "model"),
-    )
+@pytest.fixture(
+    params=[
+        pytest.param("ekfac_linear_scenario", id="linear"),
+        pytest.param("ekfac_multi_layer_scenario", id="multi_layer"),
+    ],
+    scope="session",
+)
+def training_scenario(request) -> TrainingScenario:
+    return request.getfixturevalue(request.param)
 
 
 @pytest.fixture(scope="session")
-def dataset() -> Dataset:
+def config(training_scenario: TrainingScenario) -> ModelConfig:
+    return training_scenario.model_config
+
+
+@pytest.fixture(scope="session")
+def dataset(training_scenario: TrainingScenario) -> Dataset:
     """Create a random classification dataset for testing."""
-    sklearn_dataset = DownloadableDataset.load(
-        dataset=DatasetEnum.SKLEARN_DIGITS,
-        directory="./experiments/datasets/sklearn_digits",
-        store_on_disk=True,
-    )
-    sklearn_dataset, _ = sklearn_dataset.train_test_split(test_size=0.1, seed=42)
-    return sklearn_dataset
-    return RandomClassificationDataset(
-        n_samples=1000,
-        n_features=10,
-        n_informative=5,
-        n_classes=2,
-        seed=123,
-    )
+    return training_scenario.dataset
 
 
 @pytest.fixture(scope="session")
 def model_params_loss(
-    config: ModelConfig, dataset: Dataset
+    trained_model_registry: Dict[Tuple, Tuple[ApproximationModel, Dict, Callable]],
+    training_scenario: TrainingScenario,
 ) -> Tuple[ApproximationModel, Dict, Callable]:
     """Train a model and return it with its parameters and loss function."""
-    # Update dimensions from dataset
-    config.input_dim = dataset.input_dim()
-    config.output_dim = dataset.output_dim()
-
-    # Train the model
-    model, params, _ = train_model(
-        model_config=config,
-        dataloader=dataset.get_dataloader(
-            batch_size=config.training.batch_size, seed=42
-        ),
-        loss_fn=get_loss(config.loss),
-        optimizer=optimizer(
-            config.training.optimizer, lr=config.training.learning_rate
-        ),
-        epochs=config.training.epochs,
+    return cached_train_model_for_dataset(
+        training_scenario.model_config,
+        training_scenario.dataset,
+        trained_model_registry,
+        seed=training_scenario.train_seed,
+        shuffle=training_scenario.shuffle,
     )
-
-    return model, params, get_loss(config.loss)
 
 
 @pytest.fixture(scope="session")
@@ -124,14 +77,7 @@ def model_context(
     dataset: Dataset, model_params_loss: Tuple[ApproximationModel, Dict, Callable]
 ) -> ModelContext:
     """Create a ModelContext for Hessian computation."""
-    model, params, loss = model_params_loss
-
-    return ModelContext.create(
-        dataset=dataset,
-        model=model,
-        params=params,
-        loss_fn=loss,
-    )
+    return create_model_context(dataset, model_params_loss)
 
 
 def _collector_data(
@@ -184,23 +130,6 @@ def collector_data_single(
         run_suffix="_single",
         pseudo_target_strategy=PseudoTargetGenerationStrategy.EMPIRICAL_FISHER,
         pseudo_target_repetitions=1,
-    )
-
-
-@pytest.fixture(scope="session")
-def collector_data_single_with_pseudo_targets(
-    config: ModelConfig,
-    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
-    dataset: Dataset,
-) -> DataActivationsGradients:
-    """Collect EK-FAC data (single batch collection with pseudo targets)."""
-    return _collector_data(
-        config=config,
-        model_params_loss=model_params_loss,
-        dataset=dataset,
-        run_suffix="_single_with_pseudo_targets",
-        pseudo_target_strategy=PseudoTargetGenerationStrategy.MCMC,
-        pseudo_target_repetitions=10,
     )
 
 
@@ -261,22 +190,10 @@ def compute_full_implicit_matrices(
 
 
 def test_ekfac_existence(
-    config: ModelConfig,
-    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
-    dataset: Dataset,
+    collector_data_single: DataActivationsGradients,
 ):
     """Test if EKFAC Hessian approximation can be computed without errors."""
-
-    collector_data = _collector_data(
-        config=config,
-        model_params_loss=model_params_loss,
-        dataset=dataset,
-        run_suffix="_existence_test",
-    )
-
-    ekfac_computer = EKFACComputer(compute_context=collector_data).build(
-        base_directory=config.directory
-    )
+    ekfac_computer = EKFACComputer(compute_context=collector_data_single).build()
 
     H = ekfac_computer.estimate_hessian(damping=1e-3)
     assert jnp.isfinite(H).all()
@@ -284,8 +201,8 @@ def test_ekfac_existence(
 
 def test_gradient_consistency(
     model_params_loss: Tuple[ApproximationModel, Dict, Callable],
-    config: ModelConfig,
     dataset: Dataset,
+    collector_data_single: DataActivationsGradients,
 ):
     """
     Verify E-KFAC collector vs true gradients (sanity test).
@@ -298,15 +215,6 @@ def test_gradient_consistency(
         - s_l = preactivation gradients = ∇_{W_l a_{l-1}} log p(y | x; θ)
     """
     model, params, loss = model_params_loss
-
-    collector_data_single = _collector_data(
-        config=config,
-        model_params_loss=model_params_loss,
-        dataset=dataset,
-        run_suffix="_gradient_consistency",
-        pseudo_target_strategy=PseudoTargetGenerationStrategy.EMPIRICAL_FISHER,
-        pseudo_target_repetitions=1,
-    )
 
     def loss_fn_apply(p):
         return loss(model.apply(p, dataset.inputs), dataset.targets, reduction="sum")
@@ -529,9 +437,9 @@ def test_kfac_hvp_ihvp_consistency(
     hvp = comp.estimate_hvp(v, damping)
 
     ihvp_round_trip = H @ ihvp
-    assert jnp.allclose(ihvp_round_trip, v, atol=1e-4, rtol=1e-1)
+    assert jnp.allclose(ihvp_round_trip, v, atol=1e-6, rtol=1e-1)
     hvp_round_trip = Hinv @ hvp
-    assert jnp.allclose(hvp_round_trip, v, atol=1e-4, rtol=1e-1)
+    assert jnp.allclose(hvp_round_trip, v, atol=1e-6, rtol=1e-1)
 
 
 def test_ekfac_explicit_vs_implicit_equivalence(
@@ -628,7 +536,7 @@ def test_ekfac_ihvp_batched_vs_single_consistency(
     for i in range(V.shape[0]):
         IHVP_single = comp.estimate_ihvp(V[i], pseudo_inverse_factor=1e-4)
 
-        assert VectorMetric.RELATIVE_ERROR.compute(IHVP_batch[i], IHVP_single) < 1e-3
+        assert VectorMetric.RELATIVE_ERROR.compute(IHVP_batch[i], IHVP_single) < 1e-4
 
 
 def test_ekfac_ihvp_hessian_roundtrip_batched(
@@ -744,7 +652,7 @@ def test_ekfac_better_approximation_than_kfac(
     print(f"  Improvement: {(error_kfac - error_ekfac) / error_kfac * 100:.2f}%")
 
     # EKFAC should be at least as good as KFAC
-    assert error_ekfac <= error_kfac * 1.05, (
+    assert error_ekfac <= error_kfac * 1.00, (
         f"EKFAC should provide better or equal approximation to GNH than KFAC. "
         f"KFAC error: {error_kfac:.6f}, EKFAC error: {error_ekfac:.6f}"
     )
@@ -795,7 +703,7 @@ def test_ekfac_better_approximation_than_kfac_relative(
     )
 
     # EKFAC should be at least as good as KFAC
-    assert error_ekfac_rel <= error_kfac_rel * 1.01, (
+    assert error_ekfac_rel <= error_kfac_rel * 1.00, (
         f"EKFAC should provide better or equal approximation to GNH than KFAC. "
         f"KFAC relative error: {error_kfac_rel:.6f}, EKFAC relative error: {error_ekfac_rel:.6f}"
     )
