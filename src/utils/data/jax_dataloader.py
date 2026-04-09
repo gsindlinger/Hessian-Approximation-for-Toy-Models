@@ -1,4 +1,5 @@
 import jax
+import jax.numpy as jnp
 
 
 class JAXDataLoader:
@@ -14,17 +15,36 @@ class JAXDataLoader:
         batch_size=None,
         shuffle=True,
         rng_key=jax.random.PRNGKey(42),
+        pad_to_batch_size: bool = False,
     ):
-        self.data = inputs
-        self.targets = targets
+        # Move data to device once here so that per-epoch shuffling and
+        # per-batch slicing are fully device-side (no repeated host→device
+        # copies when inputs/targets are numpy arrays).
+        self.data = jnp.asarray(inputs)
+        self.targets = jnp.asarray(targets)
 
         self.shuffle = shuffle
-        self.n_samples = len(self.data)
         if batch_size is None:
             self.batch_size = JAXDataLoader.get_batch_size()
         else:
             self.batch_size = batch_size
-        self.n_batches = (self.n_samples + self.batch_size - 1) // self.batch_size
+
+        # Pad dataset so its length is an exact multiple of batch_size.
+        # This guarantees every batch has the same shape, avoiding XLA
+        # recompilation triggered by a variable-size last batch on GPU.
+        # Padding wraps around from the start of the dataset; the duplicated
+        # samples have negligible effect on gradient quality.
+        if pad_to_batch_size:
+            remainder = len(self.data) % self.batch_size
+            if remainder != 0:
+                pad = self.batch_size - remainder
+                self.data = jnp.concatenate([self.data, self.data[:pad]], axis=0)
+                self.targets = jnp.concatenate(
+                    [self.targets, self.targets[:pad]], axis=0
+                )
+
+        self.n_samples = len(self.data)
+        self.n_batches = self.n_samples // self.batch_size
         self.rng_key = rng_key
 
     def __iter__(self):
@@ -44,8 +64,7 @@ class JAXDataLoader:
             raise StopIteration
 
         start_idx = self.current_idx
-        end_idx = min(start_idx + self.batch_size, self.n_samples)
-
+        end_idx = start_idx + self.batch_size
         batch_data = self.data[start_idx:end_idx]
         batch_targets = self.targets[start_idx:end_idx]
 

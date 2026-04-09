@@ -31,8 +31,14 @@ def create_train_state(model, params, optimizer):
     )
 
 
-@partial(jax.jit, static_argnums=(3,))
-def train_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn):
+@partial(jax.jit, static_argnums=(3, 4))
+def train_step(
+    state: train_state.TrainState,
+    batch_data,
+    batch_targets,
+    loss_fn,
+    compute_grad_norm: bool = False,
+):
     """Single training step"""
 
     def loss_fn_wrapper(params):
@@ -40,10 +46,8 @@ def train_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn
         return loss_fn(outputs, batch_targets)
 
     loss_value, grads = jax.value_and_grad(loss_fn_wrapper)(state.params)
-    # Check gradient norms
-    grad_norm = optax.tree.norm(grads)
-
     state = state.apply_gradients(grads=grads)
+    grad_norm = optax.tree.norm(grads) if compute_grad_norm else jnp.zeros(())
 
     return state, loss_value, grad_norm
 
@@ -72,26 +76,32 @@ def train_model(
     loss_history = []
 
     for epoch in tqdm(range(1, epochs + 1), disable=not verbose):
-        running_loss = 0.0
+        # Only pay the grad-norm cost on epochs where we will actually log it.
+        _check_norm = verbose and epoch < 200 and epoch % 10 == 0
+        batch_losses: List[jnp.ndarray] = []
         total_samples = 0
+        last_grad_norm = jnp.zeros(())
 
         for batch_data, batch_targets in dataloader:
             state, loss_value, grad_norm = train_step(
-                state, batch_data, batch_targets, loss_fn
+                state, batch_data, batch_targets, loss_fn, _check_norm
             )
-            if epoch < 200 and epoch % 10 == 0 and grad_norm < 1e-6:
-                logger.warning(
-                    f"Gradient norm is very small ({grad_norm}). Possible vanishing gradients."
-                )
-            running_loss += float(loss_value) * batch_data.shape[0]
+            # Accumulate as JAX scalars; defer host sync to end of epoch.
+            batch_losses.append(loss_value * batch_data.shape[0])
             total_samples += batch_data.shape[0]
+            if _check_norm:
+                last_grad_norm = grad_norm
 
-        epoch_loss = running_loss / total_samples
+        epoch_loss = float(jnp.sum(jnp.stack(batch_losses))) / total_samples
         loss_history.append(epoch_loss)
-        if epoch % 50 == 0 or epoch == epochs:
-            logger.info(
-                f"Epoch {epoch}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"
+
+        if _check_norm and float(last_grad_norm) < 1e-6:
+            logger.warning(
+                f"Gradient norm is very small ({last_grad_norm}). Possible vanishing gradients."
             )
+        if epoch % 50 == 0 or epoch == epochs:
+            logger.info(f"Epoch {epoch}, Loss: {epoch_loss:.4f}")
+
         # Save checkpoint if required
         if save_checkpoints and (
             (save_epochs is not None and epoch in save_epochs) or (epoch == epochs)
@@ -205,8 +215,8 @@ def initialize_model(model: ApproximationModel, input_shape: int, key=None):
     dummy_input = jnp.ones((1, input_shape), dtype=jnp.float32)
     params = model.init(key, dummy_input)
 
-    # log device of params
-    logger.info(
+    # log device of params (debug only — called once per ELSO model otherwise)
+    logger.debug(
         "Device for Parameters: %s",
         {x.device for x in jax.tree_util.tree_leaves(params)},
     )

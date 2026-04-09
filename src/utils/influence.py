@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import flatten_util
 
 from src.hessians.computer.computer import HessianEstimator
@@ -51,8 +50,9 @@ def compute_influence_matrix(
     test_flat_grads: jnp.ndarray,
     train_flat_grads: jnp.ndarray,
     computer: HessianEstimator | HessianComputer,
-    damping: float,
-) -> np.ndarray:
+    damping: Optional[float] = None,
+    pseudo_inverse_factor: Optional[float] = None,
+) -> jnp.ndarray:
     """Compute the (n_test, n_train) influence score matrix.
 
     Assumes that a data point is removed from the training set, i.e.,
@@ -63,7 +63,9 @@ def compute_influence_matrix(
         test_flat_grads:  Shape (n_test, n_params).
         train_flat_grads: Shape (n_train, n_params).
         computer: A built HessianEstimator or HessianComputer (exact Hessian).
-        damping: Regularisation value for IHVP.
+        damping: Additive regularisation scalar for ``(H + λI)^{-1}``.
+        pseudo_inverse_factor: Threshold for truncated pseudo-inverse.
+            Mutually exclusive with ``damping``.
 
     Returns:
         Attribution matrix of shape (n_test, n_train).
@@ -81,5 +83,7 @@ def compute_influence_matrix(
             raise RuntimeError(
                 "HessianComputer not built. Please call the 'build' method before computing influence scores."
             )
-        ihvps = computer.estimate_ihvp(test_flat_grads, damping)  # (n_test, n_params)
-    return np.array(ihvps) @ np.array(train_flat_grads).T  # (n_test, n_train)
+        ihvps = computer.estimate_ihvp(
+            test_flat_grads, damping, pseudo_inverse_factor
+        )  # (n_test, n_params)
+    return ihvps @ train_flat_grads.T  # (n_test, n_train)

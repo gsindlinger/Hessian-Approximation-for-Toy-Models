@@ -4,6 +4,8 @@ from dataclasses import asdict, fields, is_dataclass
 from enum import Enum
 from typing import List, Optional, Tuple, get_args, get_type_hints
 
+from src.config import RegularizationStrategy
+
 import jax
 import numpy as np
 import yaml
@@ -146,6 +148,47 @@ def load_experiment_override_from_yaml(
     seed = data.get("seed", None)
 
     return models, dataset, seed, epochs  # type: ignore
+
+
+def resolve_regularization(
+    strategy: RegularizationStrategy,
+    factor: float,
+    ekfac_data=None,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Resolve a regularization strategy into ``(damping, pseudo_inverse_factor)``.
+
+    Exactly one of the two returned values is non-None:
+
+    * ``damping`` — additive scalar used in ``(H + λI)^{-1}``.
+    * ``pseudo_inverse_factor`` — threshold used for truncated pseudo-inverse.
+
+    Args:
+        strategy: The regularization strategy enum value.
+        factor: The scalar factor from config (``regularization_value``).
+        ekfac_data: Required for AUTO strategies; an ``EKFACData`` instance
+            used to derive the damping from eigenvalue statistics.
+
+    Returns:
+        ``(damping, pseudo_inverse_factor)`` with exactly one non-None.
+    """
+    from src.hessians.computer.ekfac import EKFACComputer
+
+    if strategy == RegularizationStrategy.PSEUDO_INVERSE:
+        return None, factor
+
+    if strategy == RegularizationStrategy.FIXED:
+        return factor, None
+
+    if ekfac_data is None:
+        raise ValueError(
+            f"ekfac_data is required for regularization strategy '{strategy}'"
+        )
+    damping = EKFACComputer.get_damping(
+        ekfac_data=ekfac_data,
+        damping_strategy=strategy,
+        factor=factor,
+    )
+    return damping, None
 
 
 def cleanup_memory(stage: str | None = None):
