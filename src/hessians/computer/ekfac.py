@@ -9,7 +9,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float
 
 from src.config import PseudoTargetGenerationStrategy, RegularizationStrategy
-from src.hessians.computer.computer import CollectorBasedHessianEstimator
+from src.hessians.computer.computer import HessianEstimator
 from src.hessians.layer_matrix import KroneckerFactors, LayerMatrix
 from src.hessians.utils.data import DataActivationsGradients
 from src.utils.data.jax_dataloader import JAXDataLoader
@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class EKFACComputer(CollectorBasedHessianEstimator):
+class EKFACComputer(HessianEstimator):
+    compute_context: DataActivationsGradients
     """
     Kronecker-Factored Approximate Curvature (KFAC) and Eigenvalue-Corrected
     KFAC (EKFAC) Hessian approximation.

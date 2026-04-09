@@ -136,7 +136,7 @@ def test_kronecker_factors_matmat_shared_basis():
     assert jnp.allclose(product, expected, atol=1e-4, rtol=1e-4)
 
 
-def test_kronecker_factors_matmat_rejects_different_type():
+def test_kronecker_factors_matmat_rejects_non_layer_block():
     I, O = 2, 3
     Q_A = jnp.eye(I)
     Q_G = jnp.eye(O)
@@ -148,6 +148,62 @@ def test_kronecker_factors_matmat_rejects_different_type():
 
     with pytest.raises(TypeError):
         block.matmat(Dummy())  # type: ignore
+
+
+def test_kronecker_factors_matmat_falls_back_to_dense_for_different_basis():
+    """Different-basis Kronecker × Kronecker should degrade to a DenseBlock."""
+    I, O = 3, 4
+    key_a, key_b = jax.random.split(jax.random.PRNGKey(42))
+    Q_A_1, Q_G_1, Lambda_1 = _random_orthogonal_and_lambda(key_a, I, O)
+    Q_A_2, Q_G_2, Lambda_2 = _random_orthogonal_and_lambda(key_b, I, O)
+
+    b1 = KroneckerFactors(Q_A=Q_A_1, Q_G=Q_G_1, Lambda=Lambda_1)
+    b2 = KroneckerFactors(Q_A=Q_A_2, Q_G=Q_G_2, Lambda=Lambda_2)
+
+    product = b1.matmat(b2)
+    assert isinstance(product, DenseBlock)
+    expected = b1.to_dense() @ b2.to_dense()
+    assert jnp.allclose(product.to_dense(), expected, atol=1e-4, rtol=1e-4)
+
+
+def test_kronecker_factors_add_sub_neg_mul_shared_basis():
+    """Same-basis arithmetic stays in eigendecomposed Kronecker form."""
+    I, O = 3, 4
+    key = jax.random.PRNGKey(9)
+    Q_A, Q_G, Lambda_1 = _random_orthogonal_and_lambda(key, I, O)
+    Lambda_2 = jax.random.uniform(jax.random.PRNGKey(10), (I, O), minval=0.5, maxval=3.0)
+    b1 = KroneckerFactors(Q_A=Q_A, Q_G=Q_G, Lambda=Lambda_1)
+    b2 = KroneckerFactors(Q_A=Q_A, Q_G=Q_G, Lambda=Lambda_2)
+
+    s = b1 + b2
+    d = b1 - b2
+    n = -b1
+    scaled = 2.5 * b1
+    assert isinstance(s, KroneckerFactors)
+    assert isinstance(d, KroneckerFactors)
+    assert isinstance(n, KroneckerFactors)
+    assert isinstance(scaled, KroneckerFactors)
+
+    assert jnp.allclose(s.to_dense(), b1.to_dense() + b2.to_dense(), atol=1e-5)
+    assert jnp.allclose(d.to_dense(), b1.to_dense() - b2.to_dense(), atol=1e-5)
+    assert jnp.allclose(n.to_dense(), -b1.to_dense(), atol=1e-5)
+    assert jnp.allclose(scaled.to_dense(), 2.5 * b1.to_dense(), atol=1e-5)
+
+
+def test_kronecker_factors_add_sub_falls_back_to_dense_for_different_basis():
+    I, O = 3, 4
+    key_a, key_b = jax.random.split(jax.random.PRNGKey(11))
+    Q_A_1, Q_G_1, Lambda_1 = _random_orthogonal_and_lambda(key_a, I, O)
+    Q_A_2, Q_G_2, Lambda_2 = _random_orthogonal_and_lambda(key_b, I, O)
+    b1 = KroneckerFactors(Q_A=Q_A_1, Q_G=Q_G_1, Lambda=Lambda_1)
+    b2 = KroneckerFactors(Q_A=Q_A_2, Q_G=Q_G_2, Lambda=Lambda_2)
+
+    s = b1 + b2
+    d = b1 - b2
+    assert isinstance(s, DenseBlock)
+    assert isinstance(d, DenseBlock)
+    assert jnp.allclose(s.to_dense(), b1.to_dense() + b2.to_dense(), atol=1e-4)
+    assert jnp.allclose(d.to_dense(), b1.to_dense() - b2.to_dense(), atol=1e-4)
 
 
 def test_kronecker_factors_is_pytree():
@@ -348,6 +404,107 @@ def test_layer_matrix_is_pytree():
     assert jnp.allclose(reconstructed.to_dense(), lmat.to_dense())
 
 
+def test_layer_matrix_add_sub_block_diagonal_kronecker():
+    """Same-basis block-diagonal Kronecker add/sub stays in Kronecker form."""
+    lmat1, _, _ = _random_layer_matrix(seed=0)
+    # Build a second matrix sharing lmat1's eigenbasis.
+    other_blocks = {}
+    for g in lmat1.param_groups:
+        block = lmat1.blocks[(g, g)]
+        new_Lambda = jax.random.uniform(
+            jax.random.PRNGKey(hash(g) & 0xFFFFFFFF),
+            block.Lambda.shape,
+            minval=0.5,
+            maxval=2.0,
+        )
+        other_blocks[(g, g)] = KroneckerFactors(
+            Q_A=block.Q_A, Q_G=block.Q_G, Lambda=new_Lambda
+        )
+    lmat2 = LayerMatrix(
+        blocks=other_blocks,
+        param_groups=lmat1.param_groups,
+        layer_shapes=lmat1.layer_shapes,
+    )
+
+    s = lmat1 + lmat2
+    d = lmat1 - lmat2
+    for g in lmat1.param_groups:
+        assert isinstance(s.blocks[(g, g)], KroneckerFactors)
+        assert isinstance(d.blocks[(g, g)], KroneckerFactors)
+    assert jnp.allclose(s.to_dense(), lmat1.to_dense() + lmat2.to_dense(), atol=1e-5)
+    assert jnp.allclose(d.to_dense(), lmat1.to_dense() - lmat2.to_dense(), atol=1e-5)
+
+
+def test_layer_matrix_neg_and_scalar_mul():
+    lmat, _, _ = _random_layer_matrix()
+    neg = -lmat
+    scaled = 2.5 * lmat
+    assert jnp.allclose(neg.to_dense(), -lmat.to_dense(), atol=1e-5)
+    assert jnp.allclose(scaled.to_dense(), 2.5 * lmat.to_dense(), atol=1e-5)
+
+
+def test_layer_matrix_add_sub_fully_populated_grid():
+    """Grid + grid sums block-by-block across all (i, j) keys."""
+    lmat1, M1, _, _ = _random_dense_layer_matrix(seed=0)
+    lmat2, M2, _, _ = _random_dense_layer_matrix(seed=1)
+
+    s = lmat1 + lmat2
+    d = lmat1 - lmat2
+    assert not s.is_block_diagonal()
+    assert not d.is_block_diagonal()
+    assert jnp.allclose(s.to_dense(), M1 + M2, atol=1e-5)
+    assert jnp.allclose(d.to_dense(), M1 - M2, atol=1e-5)
+
+
+def test_layer_matrix_add_block_diagonal_plus_grid():
+    """Block-diagonal + grid: off-diagonals of the grid survive, diagonals sum."""
+    lmat_diag, _, _ = _random_layer_matrix(seed=2)
+    lmat_grid, M_grid, _, _ = _random_dense_layer_matrix(seed=3)
+    # Match shapes across the two fixtures.
+    assert lmat_diag.param_groups == lmat_grid.param_groups
+    assert lmat_diag.layer_shapes == lmat_grid.layer_shapes
+
+    combined = lmat_diag + lmat_grid
+    expected = lmat_diag.to_dense() + M_grid
+    # Result must expose all (i, j) keys (grid-shaped).
+    assert not combined.is_block_diagonal()
+    assert jnp.allclose(combined.to_dense(), expected, atol=1e-4)
+
+
+def test_layer_matrix_matmat_fully_populated_grid():
+    """Grid @ grid should equal the dense product (through DenseBlock matmat)."""
+    lmat1, M1, _, _ = _random_dense_layer_matrix(seed=4)
+    lmat2, M2, _, _ = _random_dense_layer_matrix(seed=5)
+
+    product = (lmat1 @ lmat2).to_dense()
+    expected = M1 @ M2
+    assert jnp.allclose(product, expected, atol=1e-4, rtol=1e-4)
+
+
+def test_layer_matrix_matmat_block_diagonal_times_grid():
+    """Block-diagonal × grid must equal dense product."""
+    lmat_diag, _, _ = _random_layer_matrix(seed=6)
+    lmat_grid, M_grid, _, _ = _random_dense_layer_matrix(seed=7)
+    assert lmat_diag.layer_shapes == lmat_grid.layer_shapes
+
+    product = (lmat_diag @ lmat_grid).to_dense()
+    expected = lmat_diag.to_dense() @ M_grid
+    assert jnp.allclose(product, expected, atol=1e-4, rtol=1e-4)
+
+
+def test_layer_matrix_add_requires_matching_param_groups():
+    lmat1, _, _ = _random_layer_matrix(seed=8)
+    lmat2 = LayerMatrix(
+        blocks={("x", "x"): KroneckerFactors(
+            Q_A=jnp.eye(2), Q_G=jnp.eye(2), Lambda=jnp.ones((2, 2))
+        )},
+        param_groups=["x"],
+        layer_shapes={"x": (2, 2)},
+    )
+    with pytest.raises(ValueError):
+        _ = lmat1 + lmat2
+
+
 # ---------------------------------------------------------------------------
 # DenseBlock
 # ---------------------------------------------------------------------------
@@ -456,6 +613,65 @@ def test_dense_block_inverse_rejects_non_square():
     )
     with pytest.raises(ValueError):
         block.inverse()
+
+
+def test_dense_block_add_sub_neg_mul():
+    I, O = 3, 4
+    n = I * O
+    key_a, key_b = jax.random.split(jax.random.PRNGKey(12))
+    A = jax.random.normal(key_a, (n, n))
+    B = jax.random.normal(key_b, (n, n))
+    a = DenseBlock(matrix=A, row_shape=(I, O), col_shape=(I, O))
+    b = DenseBlock(matrix=B, row_shape=(I, O), col_shape=(I, O))
+
+    s = a + b
+    d = a - b
+    n_neg = -a
+    scaled = 3.0 * a
+    assert isinstance(s, DenseBlock) and isinstance(d, DenseBlock)
+    assert isinstance(n_neg, DenseBlock) and isinstance(scaled, DenseBlock)
+    assert jnp.allclose(s.matrix, A + B)
+    assert jnp.allclose(d.matrix, A - B)
+    assert jnp.allclose(n_neg.matrix, -A)
+    assert jnp.allclose(scaled.matrix, 3.0 * A)
+
+
+def test_dense_block_add_shape_check():
+    a = DenseBlock(matrix=jnp.zeros((6, 12)), row_shape=(2, 3), col_shape=(4, 3))
+    b = DenseBlock(matrix=jnp.zeros((6, 8)), row_shape=(2, 3), col_shape=(2, 4))
+    with pytest.raises(ValueError):
+        _ = a + b
+
+
+def test_dense_block_add_kronecker_falls_back_to_dense():
+    """DenseBlock + KroneckerFactors should materialize both and return DenseBlock."""
+    I, O = 3, 4
+    n = I * O
+    key = jax.random.PRNGKey(13)
+    Q_A, Q_G, Lambda = _random_orthogonal_and_lambda(key, I, O)
+    kron = KroneckerFactors(Q_A=Q_A, Q_G=Q_G, Lambda=Lambda)
+
+    M = jax.random.normal(jax.random.PRNGKey(14), (n, n))
+    dense = DenseBlock(matrix=M, row_shape=(I, O), col_shape=(I, O))
+
+    result = dense + kron
+    assert isinstance(result, DenseBlock)
+    assert jnp.allclose(result.matrix, M + kron.to_dense(), atol=1e-4)
+
+
+def test_dense_block_matmat_with_kronecker_falls_back():
+    I, O = 3, 4
+    n = I * O
+    key = jax.random.PRNGKey(15)
+    Q_A, Q_G, Lambda = _random_orthogonal_and_lambda(key, I, O)
+    kron = KroneckerFactors(Q_A=Q_A, Q_G=Q_G, Lambda=Lambda)
+
+    M = jax.random.normal(jax.random.PRNGKey(16), (n, n))
+    dense = DenseBlock(matrix=M, row_shape=(I, O), col_shape=(I, O))
+
+    result = dense.matmat(kron)
+    assert isinstance(result, DenseBlock)
+    assert jnp.allclose(result.matrix, M @ kron.to_dense(), atol=1e-4)
 
 
 def test_dense_block_is_pytree():
@@ -568,3 +784,77 @@ def test_layer_matrix_from_dense_is_pytree():
     reconstructed = jax.tree_util.tree_unflatten(treedef, leaves)
     assert isinstance(reconstructed, LayerMatrix)
     assert jnp.allclose(reconstructed.to_dense(), M, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# LayerMatrix.save / load — persistence round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_layer_matrix_save_load_roundtrip_kronecker(tmp_path):
+    """Block-diagonal LayerMatrix of KroneckerFactors blocks round-trips."""
+    lmat, _, _ = _random_layer_matrix(seed=0)
+    directory = tmp_path / "kron_matrix"
+    assert not LayerMatrix.exists(directory)
+
+    lmat.save(directory)
+    assert LayerMatrix.exists(directory)
+
+    loaded = LayerMatrix.load(directory)
+    assert loaded.param_groups == lmat.param_groups
+    assert loaded.layer_shapes == lmat.layer_shapes
+    assert set(loaded.blocks.keys()) == set(lmat.blocks.keys())
+
+    for key in lmat.blocks:
+        orig = lmat.blocks[key]
+        back = loaded.blocks[key]
+        assert isinstance(back, KroneckerFactors)
+        assert jnp.allclose(orig.Q_A, back.Q_A)
+        assert jnp.allclose(orig.Q_G, back.Q_G)
+        assert jnp.allclose(orig.Lambda, back.Lambda)
+
+    assert jnp.allclose(loaded.to_dense(), lmat.to_dense(), atol=1e-5)
+
+
+def test_layer_matrix_save_load_roundtrip_dense(tmp_path):
+    """Fully-populated (i, j) LayerMatrix of DenseBlocks round-trips."""
+    lmat, M, shapes, groups = _random_dense_layer_matrix(seed=1)
+    directory = tmp_path / "dense_matrix"
+
+    lmat.save(directory)
+    assert LayerMatrix.exists(directory)
+
+    loaded = LayerMatrix.load(directory)
+    assert loaded.param_groups == lmat.param_groups
+    assert loaded.layer_shapes == lmat.layer_shapes
+    assert set(loaded.blocks.keys()) == set(lmat.blocks.keys())
+
+    for key in lmat.blocks:
+        orig = lmat.blocks[key]
+        back = loaded.blocks[key]
+        assert isinstance(back, DenseBlock)
+        assert back.row_shape == orig.row_shape
+        assert back.col_shape == orig.col_shape
+        assert jnp.allclose(orig.matrix, back.matrix)
+
+    assert jnp.allclose(loaded.to_dense(), M, atol=1e-5)
+
+
+def test_layer_matrix_save_preserves_matvec_semantics(tmp_path):
+    """Loaded matrix must compute the same matvec as the original."""
+    lmat, M, shapes, groups = _random_dense_layer_matrix(seed=2)
+    directory = tmp_path / "matvec_check"
+    lmat.save(directory)
+    loaded = LayerMatrix.load(directory)
+
+    n = M.shape[0]
+    flat = jax.random.normal(jax.random.PRNGKey(99), (n,))
+    lvec = LayerVector.from_flat(flat, shapes=shapes, param_groups=groups)
+    y_orig = (lmat @ lvec).to_flat()
+    y_loaded = (loaded @ lvec).to_flat()
+    assert jnp.allclose(y_orig, y_loaded, atol=1e-5)
+
+
+def test_layer_matrix_exists_false_for_missing_directory(tmp_path):
+    missing = tmp_path / "never_saved"
+    assert not LayerMatrix.exists(missing)

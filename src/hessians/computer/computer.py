@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import jax.numpy as jnp
 from jaxtyping import Array, Float
@@ -26,9 +26,7 @@ class HessianEstimator(ABC):
     is a thin wrapper over that matrix.
     """
 
-    compute_context: (
-        ModelContext | Tuple[DataActivationsGradients, DataActivationsGradients]
-    )
+    compute_context: ModelContext | DataActivationsGradients
 
     is_built: bool = False
     layer_matrix: Optional[LayerMatrix] = None
@@ -39,10 +37,7 @@ class HessianEstimator(ABC):
         self, base_directory: Optional[str] = None, try_load: bool = True
     ) -> "HessianEstimator":
         """
-        Build the Hessian approximation by producing a `LayerMatrix`.
-
-        If `base_directory` is given, the matrix is saved / loaded under
-        `{base_directory}/{layer_matrix_directory or default_dirname}`.
+        Scaffolding to check if a built `LayerMatrix` already exists on disk, and if not, build it and save it.
         """
         if self.is_built:
             return self
@@ -93,11 +88,6 @@ class HessianEstimator(ABC):
         self, damping: Optional[Float] = None
     ) -> Float[Array, "n_params n_params"]:
         """Compute the full `(n_params, n_params)` Hessian approximation."""
-        return self._estimate_hessian(damping)
-
-    def _estimate_hessian(
-        self, damping: Optional[Float] = None
-    ) -> Float[Array, "n_params n_params"]:
         M = self._require_built("estimating the Hessian")
         d = 0.0 if damping is None else damping
         return M.damped(d).to_dense()
@@ -109,18 +99,7 @@ class HessianEstimator(ABC):
         metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
     ) -> Float:
         """Compare the estimated matrix against a reference matrix."""
-        return self._compare_full_hessian_estimates(
-            comparison_matrix, damping, metric
-        )
-
-    def _compare_full_hessian_estimates(
-        self,
-        comparison_matrix: Float[Array, "n_params n_params"],
-        damping: Optional[Float] = None,
-        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
-    ) -> Float:
-        approx = self._estimate_hessian(damping)
-        return metric.compute(comparison_matrix, approx)
+        return metric.compute(comparison_matrix, self.estimate_hessian(damping))
 
     def estimate_hvp(
         self,
@@ -128,13 +107,6 @@ class HessianEstimator(ABC):
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """Compute the Hessian-vector product `(H + dI) @ v` for each row of `vectors`."""
-        return self._estimate_hvp(vectors, damping)
-
-    def _estimate_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
         M = self._require_built("estimating the Hessian-vector product")
         d = 0.0 if damping is None else damping
         lvec = LayerVector.from_flat(
@@ -155,14 +127,6 @@ class HessianEstimator(ABC):
             raise ValueError(
                 "Cannot use both damping and pseudo-inverse factor simultaneously."
             )
-        return self._estimate_ihvp(vectors, damping, pseudo_inverse_factor)
-
-    def _estimate_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-        pseudo_inverse_factor: Optional[float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
         M = self._require_built("estimating the inverse-Hessian-vector product")
         d = 0.0 if damping is None else damping
         p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
@@ -174,21 +138,3 @@ class HessianEstimator(ABC):
         return (
             M.inverse(damping=d, pseudo_inverse_factor=p) @ lvec
         ).to_flat()
-
-
-@dataclass
-class ModelBasedHessianEstimator(HessianEstimator):
-    compute_context: ModelContext
-
-    @abstractmethod
-    def _build(self, compute_context: ModelContext) -> LayerMatrix:
-        ...
-
-
-@dataclass
-class CollectorBasedHessianEstimator(HessianEstimator):
-    compute_context: DataActivationsGradients
-
-    @abstractmethod
-    def _build(self, compute_context: DataActivationsGradients) -> LayerMatrix:
-        ...

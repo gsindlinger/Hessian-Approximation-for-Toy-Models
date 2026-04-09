@@ -7,14 +7,15 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.hessians.computer.computer import ModelBasedHessianEstimator
+from src.hessians.computer.computer import HessianEstimator
 from src.hessians.layer_matrix import LayerMatrix
 from src.hessians.utils.data import ModelContext, layer_shapes_from_model_context
 from src.utils.loss import get_loss_name
 
 
 @dataclass
-class GNHComputer(ModelBasedHessianEstimator):
+class GNHComputer(HessianEstimator):
+    compute_context: ModelContext
     """
     Gauss-Newton Hessian approximation.
 
@@ -32,7 +33,7 @@ class GNHComputer(ModelBasedHessianEstimator):
     `(I_i*O_i, I_j*O_j)` `DenseBlock`s via `LayerMatrix.from_dense`.  For big
     models where materialization is not affordable, the lazy `_compute_gnhvp`
     helper below remains available — a future big-model subclass can override
-    `_estimate_hvp` to call it directly and bypass `LayerMatrix` entirely.
+    `estimate_hvp` to call it directly and bypass `LayerMatrix` entirely.
     """
 
     # ------------------------------------------------------------------
@@ -228,7 +229,7 @@ class GNHComputer(ModelBasedHessianEstimator):
 
     # ------------------------------------------------------------------
     # Lazy HVP escape hatch (retained for future big-model overrides;
-    # not used by the refactored `_estimate_hvp` path).
+    # not used by the refactored `estimate_hvp` path).
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -245,7 +246,7 @@ class GNHComputer(ModelBasedHessianEstimator):
         - Uses vmap over vectors with chunking for memory efficiency.
 
         Currently unused — retained as the lazy HVP escape hatch for a future
-        big-model subclass that overrides `_estimate_hvp` to bypass
+        big-model subclass that overrides `estimate_hvp` to bypass
         `LayerMatrix`.
         """
         p_flat = compute_context.params_flat

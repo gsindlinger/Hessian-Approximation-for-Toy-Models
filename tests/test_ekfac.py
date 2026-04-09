@@ -438,21 +438,14 @@ def test_collector_batched_vs_single_consistency(
     assert isinstance(ekfac_computer_batched, EKFACComputer)
 
     for layer in ekfac_computer.compute_context.layer_names:
-        A_single = ekfac_computer.precomputed_data.activation_eigenvectors[layer]
-        G_single = ekfac_computer.precomputed_data.gradient_eigenvectors[layer]
-        L_single = ekfac_computer.precomputed_data.eigenvalue_corrections[layer]
+        single_block = ekfac_computer.layer_matrix.blocks[(layer, layer)]
+        batched_block = ekfac_computer_batched.layer_matrix.blocks[(layer, layer)]
 
-        A_batched = ekfac_computer_batched.precomputed_data.activation_eigenvectors[
-            layer
-        ]
-        G_batched = ekfac_computer_batched.precomputed_data.gradient_eigenvectors[layer]
-        L_batched = ekfac_computer_batched.precomputed_data.eigenvalue_corrections[
-            layer
-        ]
-
-        assert jnp.allclose(A_single, A_batched, rtol=1e-6, atol=1e-5)
-        assert jnp.allclose(G_single, G_batched, rtol=1e-6, atol=1e-5)
-        assert jnp.allclose(L_single, L_batched, rtol=1e-6, atol=1e-5)
+        assert jnp.allclose(single_block.Q_A, batched_block.Q_A, rtol=1e-6, atol=1e-5)
+        assert jnp.allclose(single_block.Q_G, batched_block.Q_G, rtol=1e-6, atol=1e-5)
+        assert jnp.allclose(
+            single_block.Lambda, batched_block.Lambda, rtol=1e-6, atol=1e-5
+        )
 
     # Compute end to end hessian and compare
     damping = 0.1

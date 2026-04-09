@@ -235,7 +235,7 @@ def compute_hessian_comparison_for_single_model(
                     results["matrix_comparisons"][metric.value].setdefault(
                         reference_approx.value, {}
                     )
-                    score = approx_computer._compare_full_hessian_estimates(
+                    score = approx_computer.compare_full_hessian_estimates(
                         comparison_matrix=ref_hessian,
                         metric=metric,
                     )

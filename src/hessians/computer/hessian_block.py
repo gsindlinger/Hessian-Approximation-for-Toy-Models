@@ -10,7 +10,7 @@ from jax import lax
 from jax.tree_util import tree_flatten_with_path
 from jaxtyping import Array, Float
 
-from src.hessians.computer.computer import ModelBasedHessianEstimator
+from src.hessians.computer.computer import HessianEstimator
 from src.hessians.layer_matrix import DenseBlock, LayerMatrix
 from src.hessians.utils.data import (
     ModelContext,
@@ -19,7 +19,8 @@ from src.hessians.utils.data import (
 
 
 @dataclass
-class BlockHessianComputer(ModelBasedHessianEstimator):
+class BlockHessianComputer(HessianEstimator):
+    compute_context: ModelContext
     """
     Block-Diagonal Hessian approximation.
 
@@ -28,7 +29,7 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
     one `DenseBlock` per layer and wraps the collection as a block-diagonal
     `LayerMatrix`.  The lazy per-block HVP helper `_compute_blocks` is kept
     as the escape hatch a future big-model subclass can use by overriding
-    `_estimate_hvp`.
+    `estimate_hvp`.
     """
 
     def _build(self, compute_context: ModelContext) -> LayerMatrix:

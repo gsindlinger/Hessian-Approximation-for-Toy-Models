@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import jax
@@ -5,12 +6,14 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from src.config import PseudoTargetGenerationStrategy
-from src.hessians.computer.computer import CollectorBasedHessianEstimator
+from src.hessians.computer.computer import HessianEstimator
 from src.hessians.layer_matrix import DenseBlock, LayerMatrix
 from src.hessians.utils.data import DataActivationsGradients
 
 
-class FIMBlockComputer(CollectorBasedHessianEstimator):
+@dataclass
+class FIMBlockComputer(HessianEstimator):
+    compute_context: DataActivationsGradients
     """
     Block-diagonal Fisher Information Matrix approximation.
 

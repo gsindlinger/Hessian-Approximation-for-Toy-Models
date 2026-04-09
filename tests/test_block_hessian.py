@@ -13,7 +13,7 @@ from src.config import (
 )
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.hessian_block import BlockHessianComputer
-from src.hessians.utils.data import BlockHessianData, ModelContext
+from src.hessians.utils.data import ModelContext
 from src.utils.data.data import Dataset, RandomClassificationDataset
 from src.utils.loss import get_loss
 from src.utils.metrics.vector_metrics import VectorMetric
@@ -152,13 +152,14 @@ def test_block_hessian_computation_multi_layer(
     H_block = block_hessian.estimate_hessian(damping=damping)
     H_full = full_hessian.compute_hessian(damping=damping)
 
-    # Check each block matches
-    assert isinstance(block_hessian.precomputed_data, BlockHessianData), (
-        "Precomputed data should be of type BlockHessianData."
-    )
-    for block in block_hessian.precomputed_data.blocks:
-        start, end = block
-        # Extract block corresponding to layer
+    # Check each per-layer block matches
+    layer_matrix = block_hessian.layer_matrix
+    assert layer_matrix is not None
+    offset = 0
+    for layer in layer_matrix.param_groups:
+        I, O = layer_matrix.layer_shapes[layer]
+        start, end = offset, offset + I * O
+        offset = end
         H_full_block = H_full[start:end, start:end]
         H_block_block = H_block[start:end, start:end]
 

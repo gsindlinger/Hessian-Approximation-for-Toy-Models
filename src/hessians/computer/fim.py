@@ -7,13 +7,14 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from src.config import PseudoTargetGenerationStrategy
-from src.hessians.computer.computer import CollectorBasedHessianEstimator
+from src.hessians.computer.computer import HessianEstimator
 from src.hessians.layer_matrix import LayerMatrix
 from src.hessians.utils.data import DataActivationsGradients
 
 
 @dataclass
-class FIMComputer(CollectorBasedHessianEstimator):
+class FIMComputer(HessianEstimator):
+    compute_context: DataActivationsGradients
     """
     Fisher Information Matrix approximation.
 
@@ -154,7 +155,7 @@ class FIMComputer(CollectorBasedHessianEstimator):
 
     # ------------------------------------------------------------------
     # Lazy HVP escape hatches (retained for future big-model overrides;
-    # not used by the refactored `_estimate_hvp` path).
+    # not used by the refactored `estimate_hvp` path).
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -193,7 +194,7 @@ class FIMComputer(CollectorBasedHessianEstimator):
         JIT-compatible memory-efficient FVP with batching.
 
         Currently unused — retained as the lazy HVP escape hatch for a
-        future big-model subclass that overrides `_estimate_hvp` to bypass
+        future big-model subclass that overrides `estimate_hvp` to bypass
         `LayerMatrix`.
         """
         k, n_samples, n_params = gradients.shape

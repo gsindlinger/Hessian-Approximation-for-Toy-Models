@@ -157,22 +157,51 @@ class KroneckerFactors(LayerBlock):
         scaled = v_tilde * self.Lambda
         return self.Q_A @ scaled @ self.Q_G.T
 
-    def matmat(self, other: "LayerBlock") -> "KroneckerFactors":
+    def matmat(self, other: "LayerBlock") -> "LayerBlock":
         """Multiply two Kronecker blocks.
 
-        Requires `other` to be a `KroneckerFactors` sharing the same
+        Fast path: `other` is a `KroneckerFactors` sharing the same
         eigenbasis (same `Q_A`, `Q_G` arrays).  This is always true within
-        a single estimator pipeline (e.g. `M` and `M.inverse()`).
+        a single estimator pipeline (e.g. `M` and `M.inverse()`) and the
+        result stays in eigendecomposed form.  Otherwise falls back to
+        materializing both sides and returning a `DenseBlock`.
         """
-        if not isinstance(other, KroneckerFactors):
-            raise TypeError(
-                "KroneckerFactors.matmat expects another KroneckerFactors"
+        if isinstance(other, KroneckerFactors) and self._same_basis(other):
+            return KroneckerFactors(
+                Q_A=self.Q_A,
+                Q_G=self.Q_G,
+                Lambda=self.Lambda * other.Lambda,
             )
+        return _fallback_block_matmat(self, other)
+
+    def _same_basis(self, other: "KroneckerFactors") -> bool:
+        """Eigenbasis-identity check for closed-form Kronecker arithmetic."""
+        return self.Q_A is other.Q_A and self.Q_G is other.Q_G
+
+    # ---- arithmetic ----
+    def __add__(self, other: "LayerBlock") -> "LayerBlock":
+        if isinstance(other, KroneckerFactors) and self._same_basis(other):
+            return KroneckerFactors(
+                Q_A=self.Q_A, Q_G=self.Q_G, Lambda=self.Lambda + other.Lambda
+            )
+        return _fallback_block_add(self, other)
+
+    def __sub__(self, other: "LayerBlock") -> "LayerBlock":
+        if isinstance(other, KroneckerFactors) and self._same_basis(other):
+            return KroneckerFactors(
+                Q_A=self.Q_A, Q_G=self.Q_G, Lambda=self.Lambda - other.Lambda
+            )
+        return _fallback_block_add(self, -other)
+
+    def __neg__(self) -> "KroneckerFactors":
+        return KroneckerFactors(Q_A=self.Q_A, Q_G=self.Q_G, Lambda=-self.Lambda)
+
+    def __mul__(self, scalar: Float) -> "KroneckerFactors":
         return KroneckerFactors(
-            Q_A=self.Q_A,
-            Q_G=self.Q_G,
-            Lambda=self.Lambda * other.Lambda,
+            Q_A=self.Q_A, Q_G=self.Q_G, Lambda=self.Lambda * scalar
         )
+
+    __rmul__ = __mul__
 
     def inverse(
         self,
@@ -294,20 +323,18 @@ class DenseBlock(LayerBlock):
         return y.reshape(*batch_shape, I_i, O_i)
 
     def matmat(self, other: "LayerBlock") -> "DenseBlock":
-        if not isinstance(other, DenseBlock):
-            raise TypeError(
-                "DenseBlock.matmat expects another DenseBlock"
+        if isinstance(other, DenseBlock):
+            if self.col_shape != other.row_shape:
+                raise ValueError(
+                    f"Shape mismatch: self.col_shape={self.col_shape} "
+                    f"vs other.row_shape={other.row_shape}"
+                )
+            return DenseBlock(
+                matrix=self.matrix @ other.matrix,
+                row_shape=self.row_shape,
+                col_shape=other.col_shape,
             )
-        if self.col_shape != other.row_shape:
-            raise ValueError(
-                f"Shape mismatch: self.col_shape={self.col_shape} "
-                f"vs other.row_shape={other.row_shape}"
-            )
-        return DenseBlock(
-            matrix=self.matrix @ other.matrix,
-            row_shape=self.row_shape,
-            col_shape=other.col_shape,
-        )
+        return _fallback_block_matmat(self, other)
 
     def inverse(
         self,
@@ -348,6 +375,53 @@ class DenseBlock(LayerBlock):
     def to_dense(self) -> Float[Array, "n_i n_j"]:
         return self.matrix
 
+    # ---- arithmetic ----
+    def __add__(self, other: "LayerBlock") -> "LayerBlock":
+        if isinstance(other, DenseBlock):
+            if self.row_shape != other.row_shape or self.col_shape != other.col_shape:
+                raise ValueError(
+                    f"DenseBlock addition: shape mismatch "
+                    f"({self.row_shape}, {self.col_shape}) vs "
+                    f"({other.row_shape}, {other.col_shape})"
+                )
+            return DenseBlock(
+                matrix=self.matrix + other.matrix,
+                row_shape=self.row_shape,
+                col_shape=self.col_shape,
+            )
+        return _fallback_block_add(self, other)
+
+    def __sub__(self, other: "LayerBlock") -> "LayerBlock":
+        if isinstance(other, DenseBlock):
+            if self.row_shape != other.row_shape or self.col_shape != other.col_shape:
+                raise ValueError(
+                    f"DenseBlock subtraction: shape mismatch "
+                    f"({self.row_shape}, {self.col_shape}) vs "
+                    f"({other.row_shape}, {other.col_shape})"
+                )
+            return DenseBlock(
+                matrix=self.matrix - other.matrix,
+                row_shape=self.row_shape,
+                col_shape=self.col_shape,
+            )
+        return _fallback_block_add(self, -other)
+
+    def __neg__(self) -> "DenseBlock":
+        return DenseBlock(
+            matrix=-self.matrix,
+            row_shape=self.row_shape,
+            col_shape=self.col_shape,
+        )
+
+    def __mul__(self, scalar: Float) -> "DenseBlock":
+        return DenseBlock(
+            matrix=self.matrix * scalar,
+            row_shape=self.row_shape,
+            col_shape=self.col_shape,
+        )
+
+    __rmul__ = __mul__
+
     # ---- Persistence ----
     BLOCK_TYPE: ClassVar[str] = "dense"
 
@@ -373,6 +447,64 @@ _BLOCK_TYPE_REGISTRY: Dict[str, type] = {
     KroneckerFactors.BLOCK_TYPE: KroneckerFactors,
     DenseBlock.BLOCK_TYPE: DenseBlock,
 }
+
+
+# ---------------------------------------------------------------------------
+# Cross-type block arithmetic fallbacks
+#
+# When two blocks don't share a storage type (e.g. adding a KroneckerFactors
+# to a DenseBlock), we materialize both sides and return a DenseBlock.  This
+# is the pragmatic degradation path so `LayerMatrix` arithmetic / matmat
+# works uniformly across storage modes.
+# ---------------------------------------------------------------------------
+
+
+def _block_row_shape(b: LayerBlock) -> Tuple[int, int]:
+    """`(I, O)` vector shape of rows — `row_shape` for Dense, `vector_shape` otherwise."""
+    if isinstance(b, DenseBlock):
+        return b.row_shape
+    return b.vector_shape
+
+
+def _block_col_shape(b: LayerBlock) -> Tuple[int, int]:
+    """`(I, O)` vector shape of columns — `col_shape` for Dense, `vector_shape` otherwise."""
+    if isinstance(b, DenseBlock):
+        return b.col_shape
+    return b.vector_shape
+
+
+def _fallback_block_add(a: LayerBlock, b: LayerBlock) -> DenseBlock:
+    """Materialize both blocks and sum them into a `DenseBlock`."""
+    if not isinstance(b, LayerBlock):
+        raise TypeError(
+            f"LayerBlock addition expects another LayerBlock, got {type(b).__name__}"
+        )
+    if a.shape != b.shape:
+        raise ValueError(
+            f"LayerBlock addition: dense shape mismatch {a.shape} vs {b.shape}"
+        )
+    return DenseBlock(
+        matrix=a.to_dense() + b.to_dense(),
+        row_shape=_block_row_shape(a),
+        col_shape=_block_col_shape(a),
+    )
+
+
+def _fallback_block_matmat(a: LayerBlock, b: LayerBlock) -> DenseBlock:
+    """Materialize both blocks and multiply them into a `DenseBlock`."""
+    if not isinstance(b, LayerBlock):
+        raise TypeError(
+            f"LayerBlock matmat expects another LayerBlock, got {type(b).__name__}"
+        )
+    if a.shape[1] != b.shape[0]:
+        raise ValueError(
+            f"LayerBlock matmat: inner dim mismatch {a.shape} @ {b.shape}"
+        )
+    return DenseBlock(
+        matrix=a.to_dense() @ b.to_dense(),
+        row_shape=_block_row_shape(a),
+        col_shape=_block_col_shape(b),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -628,14 +760,32 @@ class LayerMatrix:
         return LayerVector(blocks=out_blocks, param_groups=self.param_groups)
 
     def _matmat(self, other: "LayerMatrix") -> "LayerMatrix":
-        if not (self.is_block_diagonal() and other.is_block_diagonal()):
-            raise NotImplementedError(
-                "LayerMatrix matmat is only implemented for block-diagonal matrices"
+        """Block matmat: `C[i,j] = Σ_k A[i,k] @ B[k,j]`.
+
+        Works for any combination of block-diagonal and fully-populated
+        `(i, j)` grids: missing blocks on either side are treated as zero,
+        so block-diag × block-diag stays block-diag, grid × grid stays a
+        grid, and mixed products produce a grid.  Per-block matmat falls
+        back to dense when storage types disagree.
+        """
+        if (
+            self.param_groups != other.param_groups
+            or self.layer_shapes != other.layer_shapes
+        ):
+            raise ValueError(
+                "LayerMatrix matmat requires matching param_groups and layer_shapes"
             )
-        out_blocks: Dict[Tuple[str, str], LayerBlock] = {
-            (g, g): self.blocks[(g, g)].matmat(other.blocks[(g, g)])
-            for g in self.param_groups
-        }
+        out_blocks: Dict[Tuple[str, str], LayerBlock] = {}
+        for gi in self.param_groups:
+            for gj in self.param_groups:
+                acc: Optional[LayerBlock] = None
+                for gk in self.param_groups:
+                    if (gi, gk) not in self.blocks or (gk, gj) not in other.blocks:
+                        continue
+                    contrib = self.blocks[(gi, gk)].matmat(other.blocks[(gk, gj)])
+                    acc = contrib if acc is None else acc + contrib
+                if acc is not None:
+                    out_blocks[(gi, gj)] = acc
         return LayerMatrix(
             blocks=out_blocks,
             param_groups=self.param_groups,
@@ -643,27 +793,67 @@ class LayerMatrix:
         )
 
     def __add__(self, other: "LayerMatrix") -> "LayerMatrix":
-        if not (self.is_block_diagonal() and other.is_block_diagonal()):
-            raise NotImplementedError(
-                "LayerMatrix __add__ is only implemented for block-diagonal matrices"
+        """Block-wise `+`.  Missing blocks on either side are treated as zero,
+        so a block-diagonal plus a grid yields a grid."""
+        if (
+            self.param_groups != other.param_groups
+            or self.layer_shapes != other.layer_shapes
+        ):
+            raise ValueError(
+                "LayerMatrix addition requires matching param_groups and layer_shapes"
             )
         out_blocks: Dict[Tuple[str, str], LayerBlock] = {}
-        for g in self.param_groups:
-            a = self.blocks[(g, g)]
-            b = other.blocks[(g, g)]
-            if isinstance(a, KroneckerFactors) and isinstance(b, KroneckerFactors):
-                out_blocks[(g, g)] = KroneckerFactors(
-                    Q_A=a.Q_A, Q_G=a.Q_G, Lambda=a.Lambda + b.Lambda
-                )
+        for key in set(self.blocks.keys()) | set(other.blocks.keys()):
+            if key in self.blocks and key in other.blocks:
+                out_blocks[key] = self.blocks[key] + other.blocks[key]
+            elif key in self.blocks:
+                out_blocks[key] = self.blocks[key]
             else:
-                raise TypeError(
-                    "LayerMatrix addition only supported for KroneckerFactors blocks"
-                )
+                out_blocks[key] = other.blocks[key]
         return LayerMatrix(
             blocks=out_blocks,
             param_groups=self.param_groups,
             layer_shapes=self.layer_shapes,
         )
+
+    def __sub__(self, other: "LayerMatrix") -> "LayerMatrix":
+        """Block-wise `-`.  Delegates to per-block `__sub__` / `__neg__`."""
+        if (
+            self.param_groups != other.param_groups
+            or self.layer_shapes != other.layer_shapes
+        ):
+            raise ValueError(
+                "LayerMatrix subtraction requires matching param_groups and layer_shapes"
+            )
+        out_blocks: Dict[Tuple[str, str], LayerBlock] = {}
+        for key in set(self.blocks.keys()) | set(other.blocks.keys()):
+            if key in self.blocks and key in other.blocks:
+                out_blocks[key] = self.blocks[key] - other.blocks[key]
+            elif key in self.blocks:
+                out_blocks[key] = self.blocks[key]
+            else:
+                out_blocks[key] = -other.blocks[key]
+        return LayerMatrix(
+            blocks=out_blocks,
+            param_groups=self.param_groups,
+            layer_shapes=self.layer_shapes,
+        )
+
+    def __neg__(self) -> "LayerMatrix":
+        return LayerMatrix(
+            blocks={k: -b for k, b in self.blocks.items()},
+            param_groups=self.param_groups,
+            layer_shapes=self.layer_shapes,
+        )
+
+    def __mul__(self, scalar: Float) -> "LayerMatrix":
+        return LayerMatrix(
+            blocks={k: b * scalar for k, b in self.blocks.items()},
+            param_groups=self.param_groups,
+            layer_shapes=self.layer_shapes,
+        )
+
+    __rmul__ = __mul__
 
     def damped(self, damping: Float) -> "LayerMatrix":
         """Return `M + damping*I`.  Damping adds to diagonal blocks only."""
