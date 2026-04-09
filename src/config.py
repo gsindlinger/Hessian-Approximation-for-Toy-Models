@@ -433,6 +433,8 @@ class LDSExperimentConfig:
     # ELSO sampling parameters
     num_subsets: int = 100
     reps_per_model: int = 1
+    # If specified, the LDS baseline for the model will be computed as the average over this many repetitions fresh trained models
+    baseline_reps: Optional[int] = None
     subset_fraction: float = 0.5
     num_test_examples: int = 50
 
@@ -447,5 +449,7 @@ class LDSExperimentConfig:
             raise ValueError("num_subsets must be positive")
         if not 0.0 < self.subset_fraction < 1.0:
             raise ValueError("subset_fraction must be in (0, 1)")
+        if self.baseline_reps is not None and self.baseline_reps <= 0:
+            raise ValueError("baseline_reps must be positive when specified")
         if self.num_test_examples <= 0:
             raise ValueError("num_test_examples must be positive")

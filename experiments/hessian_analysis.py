@@ -61,6 +61,7 @@ from experiments.utils import (
     cleanup_memory,
     json_safe,
     load_experiment_override_from_yaml,
+    resolve_regularization,
     to_dataclass,
 )
 from src.config import (
@@ -188,10 +189,12 @@ def compute_hessian_comparison_for_single_model(
         "ihvp_comparisons": {},
     }
 
-    # Use EKFAC as base for damping selection
-    pseudo_inverse_factor: Optional[float] = None
-    damping: Optional[float] = None
-    if hessian_config.computation_config.estimators_config.regularization_strategy in (
+    # Use EKFAC as base for damping selection when AUTO strategy is used.
+    reg_strategy = (
+        hessian_config.computation_config.estimators_config.regularization_strategy
+    )
+    ekfac_data = None
+    if reg_strategy in (
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
     ):
@@ -200,28 +203,17 @@ def compute_hessian_comparison_for_single_model(
             compute_context=collector_data, corr_context=collector_data_corr
         )
         ekfac_computer.build(base_directory=build_base_dir)
-        damping = ekfac_computer.get_damping(
-            damping_strategy=hessian_config.computation_config.estimators_config.regularization_strategy,
-            factor=hessian_config.computation_config.estimators_config.regularization_value,
-        )
+        ekfac_data = ekfac_computer.corr_context
+
+    damping, pseudo_inverse_factor = resolve_regularization(
+        strategy=reg_strategy,
+        factor=hessian_config.computation_config.estimators_config.regularization_value,
+        ekfac_data=ekfac_data,
+    )
+    if damping is not None:
         logger.info(f"[HESSIAN] Using damping: {damping:.6f}")
         results.setdefault("damping", damping)  # type: ignore
-    elif (
-        hessian_config.computation_config.estimators_config.regularization_strategy
-        == RegularizationStrategy.FIXED
-    ):
-        damping = (
-            hessian_config.computation_config.estimators_config.regularization_value
-        )
-        logger.info(f"[HESSIAN] Using fixed damping: {damping:.6f}")
-        results.setdefault("damping", damping)  # type: ignore
-    elif (
-        hessian_config.computation_config.estimators_config.regularization_strategy
-        == RegularizationStrategy.PSEUDO_INVERSE
-    ):
-        pseudo_inverse_factor = (
-            hessian_config.computation_config.estimators_config.regularization_value
-        )
+    else:
         logger.info(
             f"[HESSIAN] Using pseudo-inverse with factor: {pseudo_inverse_factor:.6f}"
         )

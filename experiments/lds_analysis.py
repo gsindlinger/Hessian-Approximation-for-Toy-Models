@@ -55,7 +55,7 @@ import logging
 import os
 import time
 from dataclasses import asdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict
 
 import hydra
 import numpy as np
@@ -70,21 +70,13 @@ from experiments.utils import (
 )
 from src.config import LDSExperimentConfig
 from src.utils.data.data import DownloadableDataset
-from src.utils.lds import compute_lds_for_model
+from src.utils.lds import compute_lds_for_model, compute_lds_for_model_multi_epoch
 
 logger = logging.getLogger(__name__)
 
 cs = ConfigStore.instance()
 cs.store(name="lds_experiment", node=LDSExperimentConfig)
 
-
-def _expand_models_with_epochs(
-    model_directories: List[str], epochs: Optional[List[int]]
-) -> List[Tuple[str, Optional[int]]]:
-    """Expand model list to (model_dir, epoch) pairs. epoch=None means final checkpoint."""
-    if not epochs:
-        return [(d, None) for d in model_directories]
-    return [(d, e) for d in model_directories for e in epochs]
 
 
 @hydra.main(version_base="1.3", config_name="lds_experiment", config_path="../configs")
@@ -148,21 +140,40 @@ def main(cfg: DictConfig) -> Dict:
         len(test_dataset.inputs),
     )
 
-    model_epoch_pairs = _expand_models_with_epochs(config.models, config.epochs)
-
     lds_results = []
-    for i, (model_dir, epoch) in enumerate(model_epoch_pairs, 1):
-        epoch_str = f"epoch_{epoch}" if epoch is not None else "final"
-        logger.info("[%d/%d] %s (%s)", i, len(model_epoch_pairs), model_dir, epoch_str)
-        result = compute_lds_for_model(
-            model_directory=model_dir,
-            train_dataset=train_dataset,
-            test_dataset=test_dataset,
-            config=config,
-            epoch=epoch,
-        )
-        lds_results.append(result)
-        cleanup_memory(f"model_{i}")
+    if config.epochs:
+        # Multi-epoch path: one ELSO retraining per model covers all epoch
+        # checkpoints, reducing total retraining by len(epochs)×.
+        for i, model_dir in enumerate(config.models, 1):
+            logger.info(
+                "[%d/%d] %s (epochs=%s, multi-epoch ELSO)",
+                i,
+                len(config.models),
+                model_dir,
+                config.epochs,
+            )
+            epoch_results = compute_lds_for_model_multi_epoch(
+                model_directory=model_dir,
+                train_dataset=train_dataset,
+                test_dataset=test_dataset,
+                config=config,
+                epochs=config.epochs,
+            )
+            lds_results.extend(epoch_results)
+            cleanup_memory(f"model_{i}")
+    else:
+        # Single final-checkpoint path (original behaviour).
+        for i, model_dir in enumerate(config.models, 1):
+            logger.info("[%d/%d] %s (final)", i, len(config.models), model_dir)
+            result = compute_lds_for_model(
+                model_directory=model_dir,
+                train_dataset=train_dataset,
+                test_dataset=test_dataset,
+                config=config,
+                epoch=None,
+            )
+            lds_results.append(result)
+            cleanup_memory(f"model_{i}")
 
     results_dir = config.results_output_dir
     os.makedirs(results_dir, exist_ok=True)
@@ -187,15 +198,13 @@ def main(cfg: DictConfig) -> Dict:
         epoch_label = f" epoch={result['epoch']}" if result.get("epoch") else ""
         logger.info("%s%s:", result["model_name"], epoch_label)
         for method, s in result["lds_scores"].items():
-            lo = float(np.mean(s["per_query_ci_low"]))
-            hi = float(np.mean(s["per_query_ci_high"]))
             logger.info(
                 "  %-12s %.4f ± %.4f  (95%% CI [%.4f, %.4f])",
                 method,
                 s["mean_lds"],
                 s["std_lds"],
-                lo,
-                hi,
+                s["ci_low"],
+                s["ci_high"],
             )
 
     return full_results
