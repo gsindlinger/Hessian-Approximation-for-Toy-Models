@@ -97,6 +97,8 @@ class EKFACComputer(HessianEstimator):
                 Q_A=activation_eigvecs[layer],
                 Q_G=gradient_eigvecs[layer],
                 Lambda=lambdas[layer],
+                lambda_A=activation_eigvals[layer],
+                lambda_G=gradient_eigvals[layer],
             )
             for layer in layer_names
         }
@@ -155,9 +157,7 @@ class EKFACComputer(HessianEstimator):
         (
             (activation_eigvecs, gradient_eigvecs),
             (activation_eigvals, gradient_eigvals),
-        ) = self.compute_eigenvectors_and_eigenvalues(
-            activations_covs, gradients_covs
-        )
+        ) = self.compute_eigenvectors_and_eigenvalues(activations_covs, gradients_covs)
         logger.info("Computed eigenvectors for EK-FAC approximation.")
 
         return (
@@ -263,9 +263,7 @@ class EKFACComputer(HessianEstimator):
             RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
             RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
         ):
-            raise ValueError(
-                f"Unsupported regularization strategy: {damping_strategy}"
-            )
+            raise ValueError(f"Unsupported regularization strategy: {damping_strategy}")
         if self.layer_matrix is None:
             raise RuntimeError(
                 "EKFACComputer is not built — call `.build()` before `.get_damping()`."
@@ -292,9 +290,7 @@ class EKFACComputer(HessianEstimator):
     ) -> Float[Array, "n_params n_params"]:
         """Compute the full Hessian estimate (`"normal"`) or its inverse."""
         if self.layer_matrix is None:
-            raise RuntimeError(
-                "EKFACComputer is not built — call `.build()` first."
-            )
+            raise RuntimeError("EKFACComputer is not built — call `.build()` first.")
         if method == "inverse":
             lmat = self.layer_matrix.inverse(damping=damping)
         elif method == "normal":

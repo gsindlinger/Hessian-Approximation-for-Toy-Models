@@ -214,10 +214,132 @@ def test_kronecker_factors_is_pytree():
     block = KroneckerFactors(Q_A=Q_A, Q_G=Q_G, Lambda=Lambda)
 
     leaves, treedef = jax.tree_util.tree_flatten(block)
+    # When lambda_A / lambda_G are None they contribute zero leaves, so a
+    # legacy-style construction still flattens to exactly (Q_A, Q_G, Lambda).
     assert len(leaves) == 3
     reconstructed = jax.tree_util.tree_unflatten(treedef, leaves)
     assert isinstance(reconstructed, KroneckerFactors)
     assert jnp.allclose(reconstructed.Lambda, Lambda)
+    assert reconstructed.lambda_A is None
+    assert reconstructed.lambda_G is None
+
+
+def test_kronecker_factors_pytree_with_basis_eigenvalues():
+    """When lambda_A / lambda_G are present they flow through the pytree."""
+    I, O = 3, 4
+    key = jax.random.PRNGKey(7)
+    Q_A, Q_G, Lambda = _random_orthogonal_and_lambda(key, I, O)
+    lam_A = jax.random.uniform(jax.random.PRNGKey(71), (I,), minval=0.5, maxval=2.0)
+    lam_G = jax.random.uniform(jax.random.PRNGKey(72), (O,), minval=0.5, maxval=2.0)
+    block = KroneckerFactors(
+        Q_A=Q_A, Q_G=Q_G, Lambda=Lambda, lambda_A=lam_A, lambda_G=lam_G
+    )
+
+    leaves, treedef = jax.tree_util.tree_flatten(block)
+    assert len(leaves) == 5  # Q_A, Q_G, Lambda, lambda_A, lambda_G
+    reconstructed = jax.tree_util.tree_unflatten(treedef, leaves)
+    assert isinstance(reconstructed, KroneckerFactors)
+    assert jnp.allclose(reconstructed.lambda_A, lam_A)
+    assert jnp.allclose(reconstructed.lambda_G, lam_G)
+
+
+def test_kronecker_factors_from_raw_factors_populates_basis_eigenvalues():
+    """`from_raw_factors` computes lam_A / lam_G internally and must store them."""
+    I, O = 4, 3
+    key_A, key_G = jax.random.split(jax.random.PRNGKey(19))
+    A = _random_psd(key_A, I)
+    G = _random_psd(key_G, O)
+    block = KroneckerFactors.from_raw_factors(A=A, G=G)
+
+    assert block.lambda_A is not None
+    assert block.lambda_G is not None
+    # `Lambda == outer(lambda_A, lambda_G)` — the raw KFAC invariant.
+    assert jnp.allclose(
+        block.Lambda, jnp.outer(block.lambda_A, block.lambda_G), atol=1e-5
+    )
+    # And the basis eigenvalues must reconstruct the original A / G up to
+    # numerical tolerance.
+    A_recon = block.Q_A @ jnp.diag(block.lambda_A) @ block.Q_A.T
+    G_recon = block.Q_G @ jnp.diag(block.lambda_G) @ block.Q_G.T
+    assert jnp.allclose(A_recon, A, atol=1e-4)
+    assert jnp.allclose(G_recon, G, atol=1e-4)
+
+
+def test_kronecker_factors_ops_preserve_basis_eigenvalues():
+    """damped / inverse / +/- / neg / scalar-* / same-basis matmat must all forward lambda_A/lambda_G."""
+    I, O = 3, 4
+    key = jax.random.PRNGKey(23)
+    Q_A, Q_G, Lambda = _random_orthogonal_and_lambda(key, I, O)
+    lam_A = jax.random.uniform(jax.random.PRNGKey(231), (I,), minval=0.5, maxval=2.0)
+    lam_G = jax.random.uniform(jax.random.PRNGKey(232), (O,), minval=0.5, maxval=2.0)
+    block = KroneckerFactors(
+        Q_A=Q_A, Q_G=Q_G, Lambda=Lambda, lambda_A=lam_A, lambda_G=lam_G
+    )
+
+    # Unary ops preserve the basis eigenvalues (Q_A / Q_G unchanged).
+    for result in (
+        block.damped(0.1),
+        block.inverse(damping=0.1),
+        -block,
+        2.5 * block,
+        block.matmat(block),  # same basis → fast path
+        block + block,
+        block - block,
+    ):
+        assert isinstance(result, KroneckerFactors)
+        assert result.lambda_A is not None and result.lambda_G is not None
+        assert jnp.allclose(result.lambda_A, lam_A)
+        assert jnp.allclose(result.lambda_G, lam_G)
+
+
+def test_kronecker_factors_save_load_with_basis_eigenvalues(tmp_path):
+    """Save/load must round-trip the optional lambda_A/lambda_G fields."""
+    from src.hessians.layer_matrix import LayerMatrix
+
+    I, O = 3, 4
+    key = jax.random.PRNGKey(31)
+    Q_A, Q_G, Lambda = _random_orthogonal_and_lambda(key, I, O)
+    lam_A = jax.random.uniform(jax.random.PRNGKey(311), (I,), minval=0.5, maxval=2.0)
+    lam_G = jax.random.uniform(jax.random.PRNGKey(312), (O,), minval=0.5, maxval=2.0)
+    block = KroneckerFactors(
+        Q_A=Q_A, Q_G=Q_G, Lambda=Lambda, lambda_A=lam_A, lambda_G=lam_G
+    )
+
+    lmat = LayerMatrix.block_diagonal(
+        diag_blocks={"only": block}, param_groups=["only"]
+    )
+    directory = tmp_path / "kron_with_lambdas"
+    lmat.save(directory)
+
+    loaded = LayerMatrix.load(directory)
+    back = loaded.blocks[("only", "only")]
+    assert isinstance(back, KroneckerFactors)
+    assert back.lambda_A is not None and back.lambda_G is not None
+    assert jnp.allclose(back.lambda_A, lam_A)
+    assert jnp.allclose(back.lambda_G, lam_G)
+
+
+def test_kronecker_factors_save_load_without_basis_eigenvalues(tmp_path):
+    """Legacy-style blocks (no lambda_A/lambda_G) must still round-trip cleanly."""
+    from src.hessians.layer_matrix import LayerMatrix
+
+    I, O = 3, 4
+    key = jax.random.PRNGKey(41)
+    Q_A, Q_G, Lambda = _random_orthogonal_and_lambda(key, I, O)
+    block = KroneckerFactors(Q_A=Q_A, Q_G=Q_G, Lambda=Lambda)  # no lambdas
+
+    lmat = LayerMatrix.block_diagonal(
+        diag_blocks={"only": block}, param_groups=["only"]
+    )
+    directory = tmp_path / "kron_legacy"
+    lmat.save(directory)
+
+    loaded = LayerMatrix.load(directory)
+    back = loaded.blocks[("only", "only")]
+    assert isinstance(back, KroneckerFactors)
+    assert back.lambda_A is None
+    assert back.lambda_G is None
+    assert jnp.allclose(back.Lambda, Lambda)
 
 
 # ---------------------------------------------------------------------------

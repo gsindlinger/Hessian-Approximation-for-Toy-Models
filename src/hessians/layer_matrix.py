@@ -61,9 +61,7 @@ class LayerBlock(ABC):
         """Shape `(I, O)` such that a compatible vector is `(..., I, O)`."""
 
     @abstractmethod
-    def matvec(
-        self, v: Float[Array, "... I O"]
-    ) -> Float[Array, "... I O"]:
+    def matvec(self, v: Float[Array, "... I O"]) -> Float[Array, "... I O"]:
         """Apply the block to a vector shaped `(..., I, O)`."""
 
     @abstractmethod
@@ -118,6 +116,17 @@ class KroneckerFactors(LayerBlock):
     - EKFAC uses this with `Lambda = eigenvalue_corrections`.
     - KFAC  uses this with `Lambda = outer(λ_A, λ_G)`.
 
+    `lambda_A` / `lambda_G` are the eigenvalues of the raw activation /
+    gradient covariances `A` / `G` whose eigenvectors populate `Q_A` / `Q_G`.
+    They describe the basis itself (not the current `Lambda`) so they stay
+    meaningful under the operations that preserve `Q_A` / `Q_G` (damping,
+    inverse, arithmetic) even when the resulting `Lambda` is no longer
+    `outer(lambda_A, lambda_G)`.  They are optional (legacy blocks and
+    direct test-level construction may omit them), but the EKFAC / KFAC
+    pipeline always populates them so downstream consumers — factor-wise
+    matmul, spectrum diagnostics, KFAC-style reconstruction of `A` / `G` —
+    can rely on their presence.
+
     All ops exploit the Kronecker structure — matvec is O(I^2 O + I O^2)
     instead of O((I O)^2), and no (I*O, I*O) matrix is ever materialized.
     """
@@ -125,15 +134,28 @@ class KroneckerFactors(LayerBlock):
     Q_A: Float[Array, "I I"]
     Q_G: Float[Array, "O O"]
     Lambda: Float[Array, "I O"]
+    lambda_A: Optional[Float[Array, "I"]] = None
+    lambda_G: Optional[Float[Array, "O"]] = None
 
     # ---- Pytree ----
     def tree_flatten(self):
-        return (self.Q_A, self.Q_G, self.Lambda), None
+        # `lambda_A` / `lambda_G` are dynamic children (may be arrays) but
+        # None is a valid pytree subtree with zero leaves — so blocks with
+        # and without them have different treedefs and cannot be mixed in a
+        # single jit trace.  That matches the intended usage: any single
+        # LayerMatrix is built with a consistent convention.
+        return (self.Q_A, self.Q_G, self.Lambda, self.lambda_A, self.lambda_G), None
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
-        Q_A, Q_G, Lambda = children
-        return cls(Q_A=Q_A, Q_G=Q_G, Lambda=Lambda)
+        Q_A, Q_G, Lambda, lambda_A, lambda_G = children
+        return cls(
+            Q_A=Q_A,
+            Q_G=Q_G,
+            Lambda=Lambda,
+            lambda_A=lambda_A,
+            lambda_G=lambda_G,
+        )
 
     # ---- LayerBlock interface ----
     @property
@@ -145,9 +167,7 @@ class KroneckerFactors(LayerBlock):
     def vector_shape(self) -> Tuple[int, int]:
         return (self.Q_A.shape[0], self.Q_G.shape[0])
 
-    def matvec(
-        self, v: Float[Array, "... I O"]
-    ) -> Float[Array, "... I O"]:
+    def matvec(self, v: Float[Array, "... I O"]) -> Float[Array, "... I O"]:
         """(Q_A ⊗ Q_G) diag(Λ) (Q_A ⊗ Q_G)^T vec(V) via the reshape trick.
 
         Equivalent to: reshape vec(V) to (I, O), then
@@ -171,34 +191,79 @@ class KroneckerFactors(LayerBlock):
                 Q_A=self.Q_A,
                 Q_G=self.Q_G,
                 Lambda=self.Lambda * other.Lambda,
+                lambda_A=self.lambda_A,
+                lambda_G=self.lambda_G,
             )
         return _fallback_block_matmat(self, other)
 
-    def _same_basis(self, other: "KroneckerFactors") -> bool:
-        """Eigenbasis-identity check for closed-form Kronecker arithmetic."""
-        return self.Q_A is other.Q_A and self.Q_G is other.Q_G
+    def _same_basis(
+        self,
+        other: "KroneckerFactors",
+        atol: float = 1e-8,
+        rtol: float = 1e-5,
+    ) -> bool:
+        """Approximate eigenbasis-equality check for closed-form Kronecker arithmetic.
+
+        Uses `np.allclose` rather than object identity — the same basis can flow
+        through `tree_unflatten` / `jit` and come out as distinct array objects,
+        so `is` would miss it.  The shape check short-circuits the common
+        "different layers / different-sized bases" case for free.
+        """
+        if self.Q_A.shape != other.Q_A.shape or self.Q_G.shape != other.Q_G.shape:
+            return False
+        return bool(
+            np.allclose(
+                np.asarray(self.Q_A), np.asarray(other.Q_A), atol=atol, rtol=rtol
+            )
+        ) and bool(
+            np.allclose(
+                np.asarray(self.Q_G), np.asarray(other.Q_G), atol=atol, rtol=rtol
+            )
+        )
 
     # ---- arithmetic ----
+    #
+    # Every operation below preserves `Q_A` and `Q_G`, so it also preserves
+    # `lambda_A` / `lambda_G` (which describe the basis itself, not the
+    # current `Lambda`).  We thread them through unchanged.
     def __add__(self, other: "LayerBlock") -> "LayerBlock":
         if isinstance(other, KroneckerFactors) and self._same_basis(other):
             return KroneckerFactors(
-                Q_A=self.Q_A, Q_G=self.Q_G, Lambda=self.Lambda + other.Lambda
+                Q_A=self.Q_A,
+                Q_G=self.Q_G,
+                Lambda=self.Lambda + other.Lambda,
+                lambda_A=self.lambda_A,
+                lambda_G=self.lambda_G,
             )
         return _fallback_block_add(self, other)
 
     def __sub__(self, other: "LayerBlock") -> "LayerBlock":
         if isinstance(other, KroneckerFactors) and self._same_basis(other):
             return KroneckerFactors(
-                Q_A=self.Q_A, Q_G=self.Q_G, Lambda=self.Lambda - other.Lambda
+                Q_A=self.Q_A,
+                Q_G=self.Q_G,
+                Lambda=self.Lambda - other.Lambda,
+                lambda_A=self.lambda_A,
+                lambda_G=self.lambda_G,
             )
         return _fallback_block_add(self, -other)
 
     def __neg__(self) -> "KroneckerFactors":
-        return KroneckerFactors(Q_A=self.Q_A, Q_G=self.Q_G, Lambda=-self.Lambda)
+        return KroneckerFactors(
+            Q_A=self.Q_A,
+            Q_G=self.Q_G,
+            Lambda=-self.Lambda,
+            lambda_A=self.lambda_A,
+            lambda_G=self.lambda_G,
+        )
 
     def __mul__(self, scalar: Float) -> "KroneckerFactors":
         return KroneckerFactors(
-            Q_A=self.Q_A, Q_G=self.Q_G, Lambda=self.Lambda * scalar
+            Q_A=self.Q_A,
+            Q_G=self.Q_G,
+            Lambda=self.Lambda * scalar,
+            lambda_A=self.lambda_A,
+            lambda_G=self.lambda_G,
         )
 
     __rmul__ = __mul__
@@ -217,16 +282,26 @@ class KroneckerFactors(LayerBlock):
             )
         else:
             inv = 1.0 / (self.Lambda + damping)
-        return KroneckerFactors(Q_A=self.Q_A, Q_G=self.Q_G, Lambda=inv)
+        return KroneckerFactors(
+            Q_A=self.Q_A,
+            Q_G=self.Q_G,
+            Lambda=inv,
+            lambda_A=self.lambda_A,
+            lambda_G=self.lambda_G,
+        )
 
     def damped(self, damping: Float) -> "KroneckerFactors":
         """block + damping*I.  In the eigenbasis: Lambda + damping."""
         return KroneckerFactors(
-            Q_A=self.Q_A, Q_G=self.Q_G, Lambda=self.Lambda + damping
+            Q_A=self.Q_A,
+            Q_G=self.Q_G,
+            Lambda=self.Lambda + damping,
+            lambda_A=self.lambda_A,
+            lambda_G=self.lambda_G,
         )
 
     def to_dense(self) -> Float[Array, "n n"]:
-        """Materialize the (I*O, I*O) block.  Only used for tests / small problems."""
+        """Materialize the (I*O, I*O) block."""
         Q = jnp.kron(self.Q_A, self.Q_G)
         return Q @ jnp.diag(self.Lambda.flatten()) @ Q.T
 
@@ -240,7 +315,13 @@ class KroneckerFactors(LayerBlock):
         """Build from raw A, G covariance factors (KFAC-style inputs)."""
         lam_A, Q_A = jnp.linalg.eigh(A)
         lam_G, Q_G = jnp.linalg.eigh(G)
-        return cls(Q_A=Q_A, Q_G=Q_G, Lambda=jnp.outer(lam_A, lam_G))
+        return cls(
+            Q_A=Q_A,
+            Q_G=Q_G,
+            Lambda=jnp.outer(lam_A, lam_G),
+            lambda_A=lam_A,
+            lambda_G=lam_G,
+        )
 
     @classmethod
     def from_eigendecomposition(
@@ -248,26 +329,51 @@ class KroneckerFactors(LayerBlock):
         Q_A: Float[Array, "I I"],
         Q_G: Float[Array, "O O"],
         Lambda: Float[Array, "I O"],
+        lambda_A: Optional[Float[Array, "I"]] = None,
+        lambda_G: Optional[Float[Array, "O"]] = None,
     ) -> "KroneckerFactors":
-        """Build directly from precomputed eigenvectors and Lambda."""
-        return cls(Q_A=Q_A, Q_G=Q_G, Lambda=Lambda)
+        """Build directly from precomputed eigenvectors and Lambda.
+
+        `lambda_A` / `lambda_G` are optional: pass them when the caller has
+        the raw activation/gradient covariance eigenvalues (the EKFAC / KFAC
+        pipeline does).  They describe the basis itself and survive any op
+        that preserves `Q_A` / `Q_G`.
+        """
+        return cls(
+            Q_A=Q_A,
+            Q_G=Q_G,
+            Lambda=Lambda,
+            lambda_A=lambda_A,
+            lambda_G=lambda_G,
+        )
 
     # ---- Persistence ----
     BLOCK_TYPE: ClassVar[str] = "kronecker"
 
     def to_disk_dict(self) -> Dict[str, np.ndarray]:
-        return {
+        out: Dict[str, np.ndarray] = {
             "Q_A": np.asarray(self.Q_A),
             "Q_G": np.asarray(self.Q_G),
             "Lambda": np.asarray(self.Lambda),
         }
+        if self.lambda_A is not None:
+            out["lambda_A"] = np.asarray(self.lambda_A)
+        if self.lambda_G is not None:
+            out["lambda_G"] = np.asarray(self.lambda_G)
+        return out
 
     @classmethod
     def from_disk_dict(cls, d: Dict[str, np.ndarray]) -> "KroneckerFactors":
+        # `lambda_A` / `lambda_G` are optional for backward compat with
+        # blocks saved before they were tracked.
+        lambda_A = jnp.asarray(d["lambda_A"]) if "lambda_A" in d else None
+        lambda_G = jnp.asarray(d["lambda_G"]) if "lambda_G" in d else None
         return cls(
             Q_A=jnp.asarray(d["Q_A"]),
             Q_G=jnp.asarray(d["Q_G"]),
             Lambda=jnp.asarray(d["Lambda"]),
+            lambda_A=lambda_A,
+            lambda_G=lambda_G,
         )
 
 
@@ -311,15 +417,13 @@ class DenseBlock(LayerBlock):
     def vector_shape(self) -> Tuple[int, int]:
         return self.row_shape
 
-    def matvec(
-        self, v: Float[Array, "... I_j O_j"]
-    ) -> Float[Array, "... I_i O_i"]:
+    def matvec(self, v: Float[Array, "... I_j O_j"]) -> Float[Array, "... I_i O_i"]:
         """Apply the block to a vector shaped `(..., I_j, O_j)`."""
         I_j, O_j = self.col_shape
         I_i, O_i = self.row_shape
         batch_shape = v.shape[:-2]
-        flat = v.reshape(*batch_shape, I_j * O_j)              # (..., n_j)
-        y = flat @ self.matrix.T                                # (..., n_i)
+        flat = v.reshape(*batch_shape, I_j * O_j)  # (..., n_j)
+        y = flat @ self.matrix.T  # (..., n_i)
         return y.reshape(*batch_shape, I_i, O_i)
 
     def matmat(self, other: "LayerBlock") -> "DenseBlock":
@@ -497,9 +601,7 @@ def _fallback_block_matmat(a: LayerBlock, b: LayerBlock) -> DenseBlock:
             f"LayerBlock matmat expects another LayerBlock, got {type(b).__name__}"
         )
     if a.shape[1] != b.shape[0]:
-        raise ValueError(
-            f"LayerBlock matmat: inner dim mismatch {a.shape} @ {b.shape}"
-        )
+        raise ValueError(f"LayerBlock matmat: inner dim mismatch {a.shape} @ {b.shape}")
     return DenseBlock(
         matrix=a.to_dense() @ b.to_dense(),
         row_shape=_block_row_shape(a),
@@ -673,9 +775,7 @@ class LayerMatrix:
         if layer_shapes is None:
             layer_shapes = {g: diag_blocks[g].vector_shape for g in param_groups}
         blocks = {(g, g): diag_blocks[g] for g in param_groups}
-        return cls(
-            blocks=blocks, param_groups=param_groups, layer_shapes=layer_shapes
-        )
+        return cls(blocks=blocks, param_groups=param_groups, layer_shapes=layer_shapes)
 
     @classmethod
     def from_dense(
@@ -714,14 +814,14 @@ class LayerMatrix:
                     row_shape=layer_shapes[gi],
                     col_shape=layer_shapes[gj],
                 )
-        return cls(
-            blocks=blocks, param_groups=param_groups, layer_shapes=layer_shapes
-        )
+        return cls(blocks=blocks, param_groups=param_groups, layer_shapes=layer_shapes)
 
     # ---- introspection ----
     def diagonal_blocks(self) -> Dict[str, LayerBlock]:
         """Return `{group: block}` for diagonal entries only."""
-        return {g: self.blocks[(g, g)] for g in self.param_groups if (g, g) in self.blocks}
+        return {
+            g: self.blocks[(g, g)] for g in self.param_groups if (g, g) in self.blocks
+        }
 
     def is_block_diagonal(self) -> bool:
         return all(i == j for (i, j) in self.blocks.keys())
@@ -738,9 +838,7 @@ class LayerMatrix:
             return self._matvec(other)
         if isinstance(other, LayerMatrix):
             return self._matmat(other)
-        raise TypeError(
-            f"LayerMatrix @ {type(other).__name__} is not supported"
-        )
+        raise TypeError(f"LayerMatrix @ {type(other).__name__} is not supported")
 
     def _matvec(self, v: LayerVector) -> LayerVector:
         """Apply `M @ v` block-by-block: y[i] = Σ_j M[i,j] @ v[j]."""
@@ -900,23 +998,17 @@ class LayerMatrix:
             M_inv = (eigvecs * eigvals_inv) @ eigvecs.T
         else:
             M_inv = jnp.linalg.inv(M)
-        return LayerMatrix.from_dense(
-            M_inv, self.param_groups, self.layer_shapes
-        )
+        return LayerMatrix.from_dense(M_inv, self.param_groups, self.layer_shapes)
 
     def to_dense(self) -> Float[Array, "n n"]:
         """Materialize the full `(n_params, n_params)` matrix."""
         if self.is_block_diagonal():
-            dense_blocks = [
-                self.blocks[(g, g)].to_dense() for g in self.param_groups
-            ]
+            dense_blocks = [self.blocks[(g, g)].to_dense() for g in self.param_groups]
             return jax.scipy.linalg.block_diag(*dense_blocks)
         # Fully-populated `(i, j)` grid: assemble row-by-row.
         rows = []
         for gi in self.param_groups:
-            row_pieces = [
-                self.blocks[(gi, gj)].to_dense() for gj in self.param_groups
-            ]
+            row_pieces = [self.blocks[(gi, gj)].to_dense() for gj in self.param_groups]
             rows.append(jnp.concatenate(row_pieces, axis=1))
         return jnp.concatenate(rows, axis=0)
 
@@ -969,9 +1061,7 @@ class LayerMatrix:
 
         manifest = {
             "param_groups": list(self.param_groups),
-            "layer_shapes": {
-                g: list(self.layer_shapes[g]) for g in self.param_groups
-            },
+            "layer_shapes": {g: list(self.layer_shapes[g]) for g in self.param_groups},
             "blocks": block_entries,
         }
         with open(directory / self._MANIFEST_FILENAME, "w") as f:
@@ -987,8 +1077,7 @@ class LayerMatrix:
 
         param_groups: List[str] = list(manifest["param_groups"])
         layer_shapes: Dict[str, Tuple[int, int]] = {
-            g: tuple(int(x) for x in manifest["layer_shapes"][g])
-            for g in param_groups
+            g: tuple(int(x) for x in manifest["layer_shapes"][g]) for g in param_groups
         }
 
         blocks: Dict[Tuple[str, str], LayerBlock] = {}
@@ -1013,7 +1102,6 @@ class LayerMatrix:
     @staticmethod
     def exists(directory: Union[str, Path]) -> bool:
         directory = Path(directory)
-        return (
-            (directory / LayerMatrix._MANIFEST_FILENAME).is_file()
-            and (directory / LayerMatrix._BLOCKS_FILENAME).is_file()
-        )
+        return (directory / LayerMatrix._MANIFEST_FILENAME).is_file() and (
+            directory / LayerMatrix._BLOCKS_FILENAME
+        ).is_file()
