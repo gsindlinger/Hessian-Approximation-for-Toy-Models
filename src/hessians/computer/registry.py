@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Dict, Tuple
+from typing import Dict
 
 from src.config import HessianApproximationMethod
 from src.hessians.computer.computer import HessianEstimator
@@ -15,11 +15,7 @@ from src.hessians.computer.kfac import KFACComputer
 from src.hessians.computer.shampoo import ShampooComputer
 from src.hessians.computer.tkfac import TKFACComputer
 from src.hessians.utils.data import (
-    ApproximationData,
-    BlockHessianData,
     DataActivationsGradients,
-    EKFACData,
-    FIMData,
     ModelContext,
 )
 
@@ -41,20 +37,21 @@ class HessianComputerRegistry:
         HessianApproximationMethod.ESHAMPOO: EShampooComputer,
     }
 
-    DATA_REGISTRY: Dict[
-        HessianApproximationMethod, Tuple[type[ApproximationData], str]
-    ] = {
-        HessianApproximationMethod.KFAC: (EKFACData, "ekfac_data"),
-        HessianApproximationMethod.EKFAC: (EKFACData, "ekfac_data"),
-        HessianApproximationMethod.FIM: (FIMData, "fim_data"),
-        HessianApproximationMethod.SHAMPOO: (EKFACData, "eshampoo_data"),
-        HessianApproximationMethod.ESHAMPOO: (EKFACData, "eshampoo_data"),
-        HessianApproximationMethod.TKFAC: (EKFACData, "etkfac_data"),
-        HessianApproximationMethod.ETKFAC: (EKFACData, "etkfac_data"),
-        HessianApproximationMethod.BLOCK_HESSIAN: (
-            BlockHessianData,
-            "block_hessian_data",
-        ),
+    # Directory names used for `LayerMatrix.save/load` under a shared
+    # base directory.  Keeping the old strings for backwards compatibility
+    # with existing on-disk caches.
+    LAYER_MATRIX_DIRECTORY: Dict[HessianApproximationMethod, str] = {
+        HessianApproximationMethod.KFAC: "kfac_layer_matrix",
+        HessianApproximationMethod.EKFAC: "ekfac_layer_matrix",
+        HessianApproximationMethod.FIM: "fim_layer_matrix",
+        HessianApproximationMethod.BLOCK_FIM: "block_fim_layer_matrix",
+        HessianApproximationMethod.BLOCK_HESSIAN: "block_hessian_layer_matrix",
+        HessianApproximationMethod.GNH: "gnh_layer_matrix",
+        HessianApproximationMethod.EXACT: "exact_hessian_layer_matrix",
+        HessianApproximationMethod.TKFAC: "tkfac_layer_matrix",
+        HessianApproximationMethod.ETKFAC: "etkfac_layer_matrix",
+        HessianApproximationMethod.SHAMPOO: "shampoo_layer_matrix",
+        HessianApproximationMethod.ESHAMPOO: "eshampoo_layer_matrix",
     }
 
     @staticmethod
@@ -63,21 +60,12 @@ class HessianComputerRegistry:
         compute_context: ModelContext | DataActivationsGradients,
     ) -> HessianEstimator:
         computer_cls = HessianComputerRegistry.REGISTRY[approximator]
-        precomputed_data_type, precomputed_data_dir = (
-            HessianComputerRegistry.get_precomputed_data_type(approximator)
+        layer_matrix_directory = HessianComputerRegistry.LAYER_MATRIX_DIRECTORY.get(
+            approximator
         )
-
-        # For exact Hessian, no precomputed data is needed
-        if approximator == HessianApproximationMethod.EXACT:
-            return computer_cls(
-                compute_context=compute_context,
-            )
-
-        # For other approximators, pass precomputed data type if available
         return computer_cls(
             compute_context=compute_context,
-            precomputed_data_directory=precomputed_data_dir,
-            precomputed_data=precomputed_data_type() if precomputed_data_type else None,
+            layer_matrix_directory=layer_matrix_directory,
         )
 
     @staticmethod
@@ -86,18 +74,11 @@ class HessianComputerRegistry:
         collector_data: DataActivationsGradients,
         model_ctx: ModelContext,
     ):
-        """Get the appropriate data for each approximator type."""
+        """Get the appropriate compute context for each approximator type."""
         if approximator in [
             HessianApproximationMethod.GNH,
             HessianApproximationMethod.BLOCK_HESSIAN,
             HessianApproximationMethod.EXACT,
         ]:
             return model_ctx
-        else:
-            return collector_data
-
-    @staticmethod
-    def get_precomputed_data_type(
-        approximator: HessianApproximationMethod,
-    ) -> Tuple[type[ApproximationData], str] | Tuple[None, None]:
-        return HessianComputerRegistry.DATA_REGISTRY.get(approximator, (None, None))
+        return collector_data

@@ -24,12 +24,15 @@ All classes are registered as JAX pytrees so they play nicely with
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Union
+from pathlib import Path
+from typing import ClassVar, Dict, List, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array, Float
 
 
@@ -82,6 +85,21 @@ class LayerBlock(ABC):
     @abstractmethod
     def to_dense(self) -> Float[Array, "n n"]:
         """Materialize the dense (n_i*n_j, n_i*n_j) matrix."""
+
+    # ---- Persistence ----
+    # Every concrete LayerBlock subclass advertises a BLOCK_TYPE string and
+    # implements `to_disk_dict` / `from_disk_dict` for `LayerMatrix.save`/`load`.
+
+    BLOCK_TYPE: ClassVar[str]
+
+    @abstractmethod
+    def to_disk_dict(self) -> Dict[str, np.ndarray]:
+        """Return a `{name: np.ndarray}` dict that fully describes this block."""
+
+    @classmethod
+    @abstractmethod
+    def from_disk_dict(cls, d: Dict[str, np.ndarray]) -> "LayerBlock":
+        """Inverse of `to_disk_dict`."""
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +223,24 @@ class KroneckerFactors(LayerBlock):
         """Build directly from precomputed eigenvectors and Lambda."""
         return cls(Q_A=Q_A, Q_G=Q_G, Lambda=Lambda)
 
+    # ---- Persistence ----
+    BLOCK_TYPE: ClassVar[str] = "kronecker"
+
+    def to_disk_dict(self) -> Dict[str, np.ndarray]:
+        return {
+            "Q_A": np.asarray(self.Q_A),
+            "Q_G": np.asarray(self.Q_G),
+            "Lambda": np.asarray(self.Lambda),
+        }
+
+    @classmethod
+    def from_disk_dict(cls, d: Dict[str, np.ndarray]) -> "KroneckerFactors":
+        return cls(
+            Q_A=jnp.asarray(d["Q_A"]),
+            Q_G=jnp.asarray(d["Q_G"]),
+            Lambda=jnp.asarray(d["Lambda"]),
+        )
+
 
 # ---------------------------------------------------------------------------
 # DenseBlock — concrete block stored as a dense materialized matrix
@@ -311,6 +347,32 @@ class DenseBlock(LayerBlock):
 
     def to_dense(self) -> Float[Array, "n_i n_j"]:
         return self.matrix
+
+    # ---- Persistence ----
+    BLOCK_TYPE: ClassVar[str] = "dense"
+
+    def to_disk_dict(self) -> Dict[str, np.ndarray]:
+        return {
+            "matrix": np.asarray(self.matrix),
+            "row_shape": np.asarray(self.row_shape, dtype=np.int64),
+            "col_shape": np.asarray(self.col_shape, dtype=np.int64),
+        }
+
+    @classmethod
+    def from_disk_dict(cls, d: Dict[str, np.ndarray]) -> "DenseBlock":
+        return cls(
+            matrix=jnp.asarray(d["matrix"]),
+            row_shape=tuple(int(x) for x in np.asarray(d["row_shape"]).tolist()),
+            col_shape=tuple(int(x) for x in np.asarray(d["col_shape"]).tolist()),
+        )
+
+
+# Registry of concrete LayerBlock subclasses keyed by BLOCK_TYPE.  Used by
+# LayerMatrix.load to instantiate the right subclass from a manifest.
+_BLOCK_TYPE_REGISTRY: Dict[str, type] = {
+    KroneckerFactors.BLOCK_TYPE: KroneckerFactors,
+    DenseBlock.BLOCK_TYPE: DenseBlock,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -667,3 +729,101 @@ class LayerMatrix:
             ]
             rows.append(jnp.concatenate(row_pieces, axis=1))
         return jnp.concatenate(rows, axis=0)
+
+    # ---- Persistence ----
+    # On disk:
+    #   {directory}/manifest.json          — param_groups, layer_shapes,
+    #                                         and block metadata (keys + block type)
+    #   {directory}/blocks.npz             — one flattened array per
+    #                                         (block_key, field_name) pair
+    _MANIFEST_FILENAME: ClassVar[str] = "manifest.json"
+    _BLOCKS_FILENAME: ClassVar[str] = "blocks.npz"
+    _KEY_DELIMITER: ClassVar[str] = "::"
+
+    @classmethod
+    def _encode_block_key(cls, key: Tuple[str, str]) -> str:
+        gi, gj = key
+        if cls._KEY_DELIMITER in gi or cls._KEY_DELIMITER in gj:
+            raise ValueError(
+                f"Layer names must not contain the reserved delimiter "
+                f"'{cls._KEY_DELIMITER}': got {key!r}"
+            )
+        return f"{gi}{cls._KEY_DELIMITER}{gj}"
+
+    @classmethod
+    def _decode_block_key(cls, s: str) -> Tuple[str, str]:
+        gi, gj = s.split(cls._KEY_DELIMITER)
+        return (gi, gj)
+
+    def save(self, directory: Union[str, Path]) -> None:
+        """Persist this `LayerMatrix` to `directory` (created if missing)."""
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+
+        arrays: Dict[str, np.ndarray] = {}
+        block_entries: List[Dict[str, object]] = []
+        for key in sorted(self.blocks.keys()):
+            block = self.blocks[key]
+            encoded_key = self._encode_block_key(key)
+            field_names: List[str] = []
+            for field_name, array in block.to_disk_dict().items():
+                arrays[f"{encoded_key}//{field_name}"] = array
+                field_names.append(field_name)
+            block_entries.append(
+                {
+                    "key": encoded_key,
+                    "block_type": block.BLOCK_TYPE,
+                    "fields": field_names,
+                }
+            )
+
+        manifest = {
+            "param_groups": list(self.param_groups),
+            "layer_shapes": {
+                g: list(self.layer_shapes[g]) for g in self.param_groups
+            },
+            "blocks": block_entries,
+        }
+        with open(directory / self._MANIFEST_FILENAME, "w") as f:
+            json.dump(manifest, f, indent=2)
+        np.savez_compressed(directory / self._BLOCKS_FILENAME, **arrays)
+
+    @classmethod
+    def load(cls, directory: Union[str, Path]) -> "LayerMatrix":
+        directory = Path(directory)
+        with open(directory / cls._MANIFEST_FILENAME, "r") as f:
+            manifest = json.load(f)
+        npz = np.load(directory / cls._BLOCKS_FILENAME)
+
+        param_groups: List[str] = list(manifest["param_groups"])
+        layer_shapes: Dict[str, Tuple[int, int]] = {
+            g: tuple(int(x) for x in manifest["layer_shapes"][g])
+            for g in param_groups
+        }
+
+        blocks: Dict[Tuple[str, str], LayerBlock] = {}
+        for entry in manifest["blocks"]:
+            encoded_key: str = entry["key"]
+            block_type: str = entry["block_type"]
+            field_names: List[str] = entry["fields"]
+            key = cls._decode_block_key(encoded_key)
+            block_cls = _BLOCK_TYPE_REGISTRY[block_type]
+            disk_dict = {
+                field_name: npz[f"{encoded_key}//{field_name}"]
+                for field_name in field_names
+            }
+            blocks[key] = block_cls.from_disk_dict(disk_dict)
+
+        return cls(
+            blocks=blocks,
+            param_groups=param_groups,
+            layer_shapes=layer_shapes,
+        )
+
+    @staticmethod
+    def exists(directory: Union[str, Path]) -> bool:
+        directory = Path(directory)
+        return (
+            (directory / LayerMatrix._MANIFEST_FILENAME).is_file()
+            and (directory / LayerMatrix._BLOCKS_FILENAME).is_file()
+        )

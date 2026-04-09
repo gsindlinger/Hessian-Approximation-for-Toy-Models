@@ -240,65 +240,6 @@ def layer_shapes_from_model_context(
 
 
 @dataclass
-class EKFACData(ApproximationData):
-    """
-    Data class to hold EK-FAC related data.
-    """
-
-    activation_eigenvectors: Dict[str, Float[Array, "I I"]] = field(
-        default_factory=dict
-    )
-    gradient_eigenvectors: Dict[str, Float[Array, "O O"]] = field(default_factory=dict)
-    activation_eigenvalues: Dict[str, Float[Array, "I"]] = field(default_factory=dict)
-    gradient_eigenvalues: Dict[str, Float[Array, "O"]] = field(default_factory=dict)
-    eigenvalue_corrections: Dict[str, Float[Array, "I O"]] = field(default_factory=dict)
-
-    mean_eigenvalues: Dict[str, Float] = field(
-        default_factory=dict
-    )  # mean eigenvalues per layer
-    mean_eigenvalues_aggregated: Float = field(
-        default=0.0
-    )  # mean eigenvalue over all layers
-    mean_corrections: Dict[str, Float] = field(
-        default_factory=dict
-    )  # mean eigenvalue corrections per layer
-    mean_corrections_aggregated: Float = field(
-        default=0.0
-    )  # mean eigenvalue correction over all layers
-
-    @classmethod
-    def name(cls) -> str:
-        return "ekfac_data"
-
-
-@dataclass
-class ETKFACData(ApproximationData):
-    """
-    Data class to hold (E)TK-FAC related data.
-    """
-
-    @classmethod
-    def name(cls) -> str:
-        return "ekfac_data"
-
-
-@dataclass
-class FIMData(ApproximationData):
-    """
-    Data class to hold FIM related data.
-    """
-
-    per_sample_grads: Float[Array, "N n_params | N K n_params"] = field(
-        default_factory=lambda: jnp.array([])
-    )
-    probabilities: Optional[Float[Array, "N K"]] = field(default=None)
-
-    @classmethod
-    def name(cls) -> str:
-        return "fim_data"
-
-
-@dataclass
 class DataActivationsGradients(ApproximationData):
     """
     Data structure to hold activations and gradients per layer.
@@ -325,25 +266,3 @@ class DataActivationsGradients(ApproximationData):
         return "activations_gradients"
 
 
-@dataclass
-class BlockHessianData(ApproximationData):
-    """
-    Data class to hold Block Hessian related data.
-
-    `blocks[i]` is the `(start, end)` flat-index range for the i-th
-    layer (kernel + optional bias merged).  `layer_names[i]` is the
-    matching layer name.  `layer_shapes[name]` is the per-layer
-    `(I_aug, O)` shape used for `LayerVector` reshapes.
-    """
-
-    blocks: List[Tuple[int, int]] = field(default_factory=list)
-    layer_names: List[str] = field(default_factory=list)
-    layer_shapes: Dict[str, Tuple[int, int]] = field(default_factory=dict)
-    n_params: int = 0
-    block_mask: Float[Array, "n_params n_params"] = field(
-        default_factory=lambda: jnp.array([[]])
-    )
-
-    @classmethod
-    def name(cls) -> str:
-        return "block_hessian_data"

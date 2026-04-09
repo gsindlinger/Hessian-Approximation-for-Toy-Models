@@ -10,9 +10,8 @@ from jax import flatten_util
 from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import ModelBasedHessianEstimator
-from src.hessians.layer_matrix import LayerMatrix, LayerVector
+from src.hessians.layer_matrix import LayerMatrix
 from src.hessians.utils.data import ModelContext, layer_shapes_from_model_context
-from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
 @dataclass
@@ -27,13 +26,6 @@ class HessianComputer(ModelBasedHessianEstimator):
     subclass can override `_estimate_hvp` to call it directly and bypass
     `LayerMatrix` entirely.
     """
-
-    def __post_init__(self):
-        # HessianComputer has nothing to precompute — auto-build so that
-        # legacy `HessianComputer(ctx).compute_*(...)` call sites work
-        # without an explicit `.build()`.
-        if not self.is_built:
-            self.build()
 
     @staticmethod
     def get_param_index_mapping(params: Dict):
@@ -68,9 +60,9 @@ class HessianComputer(ModelBasedHessianEstimator):
     def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
         return layer_shapes_from_model_context(self.compute_context)
 
-    def _get_layer_matrix(self) -> LayerMatrix:
+    def _build(self, compute_context: ModelContext) -> LayerMatrix:
         """Materialize the full Hessian and slice it into per-layer DenseBlocks."""
-        dense = self._compute_hessian(self.compute_context, 0.0)
+        dense = self._compute_hessian(compute_context, 0.0)
         return LayerMatrix.from_dense(
             dense,
             param_groups=self.get_layer_names(),
@@ -78,67 +70,21 @@ class HessianComputer(ModelBasedHessianEstimator):
         )
 
     # ------------------------------------------------------------------
-    # HessianEstimator interface (thin wrappers over LayerMatrix)
-    # ------------------------------------------------------------------
-
-    def _estimate_hessian(
-        self,
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "n_params n_params"]:
-        d = 0.0 if damping is None else damping
-        return self._get_layer_matrix().damped(d).to_dense()
-
-    def _compare_full_hessian_estimates(
-        self,
-        comparison_matrix: Float[Array, "n_params n_params"],
-        damping: Optional[Float] = None,
-        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
-    ) -> Float:
-        d = 0.0 if damping is None else damping
-        H = self._estimate_hessian(d)
-        return metric.compute_fn()(comparison_matrix, H)
-
-    def _estimate_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        d = 0.0 if damping is None else damping
-        lmat = self._get_layer_matrix().damped(d)
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()
-
-    def _estimate_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-        pseudo_inverse_factor: Optional[float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        d = 0.0 if damping is None else damping
-        p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
-        lmat = self._get_layer_matrix().inverse(
-            damping=d, pseudo_inverse_factor=p
-        )
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()
-
-    # ------------------------------------------------------------------
     # Backwards-compatibility aliases (deprecated — delete in follow-up).
     # The notebook and any stray callers still use the old `compute_*` names.
     # ------------------------------------------------------------------
+
+    def _lazy_build(self) -> None:
+        """Auto-build on first use so legacy `HessianComputer(ctx).compute_*`
+        call sites work without an explicit `.build()`."""
+        if not self.is_built:
+            self.build()
 
     def compute_hessian(
         self, damping: Optional[Float] = None
     ) -> Float[Array, "n_params n_params"]:
         """Deprecated alias for `estimate_hessian`."""
+        self._lazy_build()
         return self.estimate_hessian(damping)
 
     def compute_hvp(
@@ -147,6 +93,7 @@ class HessianComputer(ModelBasedHessianEstimator):
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """Deprecated alias for `estimate_hvp`."""
+        self._lazy_build()
         return self.estimate_hvp(vectors, damping)
 
     def compute_ihvp(
@@ -156,10 +103,11 @@ class HessianComputer(ModelBasedHessianEstimator):
         pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
         """Deprecated alias for `estimate_ihvp`."""
+        self._lazy_build()
         return self.estimate_ihvp(vectors, damping, pseudo_inverse_factor)
 
     # ------------------------------------------------------------------
-    # Materialization helper (used by `_get_layer_matrix`)
+    # Materialization helper (used by `_build`)
     # ------------------------------------------------------------------
 
     @staticmethod

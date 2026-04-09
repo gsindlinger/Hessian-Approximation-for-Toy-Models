@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import ModelBasedHessianEstimator
-from src.hessians.layer_matrix import LayerMatrix, LayerVector
+from src.hessians.layer_matrix import LayerMatrix
 from src.hessians.utils.data import ModelContext, layer_shapes_from_model_context
 from src.utils.loss import get_loss_name
-from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
 @dataclass
@@ -47,15 +45,15 @@ class GNHComputer(ModelBasedHessianEstimator):
     def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
         return layer_shapes_from_model_context(self.compute_context)
 
-    def _get_layer_matrix(self) -> LayerMatrix:
+    def _build(self, compute_context: ModelContext) -> LayerMatrix:
         """Materialize the full GNH and slice it into per-layer DenseBlocks."""
-        loss_name = get_loss_name(self.compute_context.loss_fn)
+        loss_name = get_loss_name(compute_context.loss_fn)
         if loss_name == "mse":
-            dense = self._compute_gnh_mse(self.compute_context, 0.0)
+            dense = self._compute_gnh_mse(compute_context, 0.0)
         elif loss_name == "cross_entropy":
-            dense = self._compute_gnh_cross_entropy(self.compute_context, 0.0)
+            dense = self._compute_gnh_cross_entropy(compute_context, 0.0)
         else:
-            dense = self._compute_gnh(self.compute_context, 0.0)
+            dense = self._compute_gnh(compute_context, 0.0)
         return LayerMatrix.from_dense(
             dense,
             param_groups=self.get_layer_names(),
@@ -63,60 +61,7 @@ class GNHComputer(ModelBasedHessianEstimator):
         )
 
     # ------------------------------------------------------------------
-    # HessianEstimator interface (thin wrappers over LayerMatrix)
-    # ------------------------------------------------------------------
-
-    def _estimate_hessian(
-        self,
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "n_params n_params"]:
-        d = 0.0 if damping is None else damping
-        return self._get_layer_matrix().damped(d).to_dense()
-
-    def _compare_full_hessian_estimates(
-        self,
-        comparison_matrix: Float[Array, "n_params n_params"],
-        damping: Optional[Float] = None,
-        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
-    ) -> Float:
-        d = 0.0 if damping is None else damping
-        gnh = self._estimate_hessian(d)
-        return metric.compute_fn()(comparison_matrix, gnh)
-
-    def _estimate_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        d = 0.0 if damping is None else damping
-        lmat = self._get_layer_matrix().damped(d)
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()
-
-    def _estimate_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-        pseudo_inverse_factor: Optional[float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        d = 0.0 if damping is None else damping
-        p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
-        lmat = self._get_layer_matrix().inverse(
-            damping=d, pseudo_inverse_factor=p
-        )
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()
-
-    # ------------------------------------------------------------------
-    # Materialization helpers (used by _get_layer_matrix)
+    # Materialization helpers (used by _build)
     # ------------------------------------------------------------------
 
     @staticmethod

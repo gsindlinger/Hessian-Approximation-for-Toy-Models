@@ -1,5 +1,4 @@
-from functools import partial
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -7,8 +6,8 @@ from jaxtyping import Array, Float
 
 from src.config import PseudoTargetGenerationStrategy
 from src.hessians.computer.computer import CollectorBasedHessianEstimator
-from src.hessians.layer_matrix import DenseBlock, LayerMatrix, LayerVector
-from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
+from src.hessians.layer_matrix import DenseBlock, LayerMatrix
+from src.hessians.utils.data import DataActivationsGradients
 
 
 class FIMBlockComputer(CollectorBasedHessianEstimator):
@@ -23,34 +22,33 @@ class FIMBlockComputer(CollectorBasedHessianEstimator):
     - ALL_CLASSES: Uses all classes with probability weighting (k=num_classes)
     """
 
-    # ------------------------------------------------------------------
-    # LayerMatrix construction
-    # ------------------------------------------------------------------
-
     def get_layer_names(self) -> List[str]:
         return self.compute_context.layer_names
 
-    def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
+    def _layer_shapes_from_context(
+        self, compute_context: DataActivationsGradients
+    ) -> Dict[str, Tuple[int, int]]:
         return {
             l: (
-                int(self.compute_context.activations[l].shape[-1]),
-                int(self.compute_context.gradients[l].shape[-1]),
+                int(compute_context.activations[l].shape[-1]),
+                int(compute_context.gradients[l].shape[-1]),
             )
-            for l in self.get_layer_names()
+            for l in compute_context.layer_names
         }
 
-    def _get_layer_matrix(self) -> LayerMatrix:
+    def _build(self, compute_context: DataActivationsGradients) -> LayerMatrix:
         """Build a block-diagonal `LayerMatrix` of per-layer dense FIM blocks."""
-        strategy = self.compute_context.pseudo_target_strategy
-        shapes = self._layer_shapes()
+        strategy = compute_context.pseudo_target_strategy
+        layer_names = list(compute_context.layer_names)
+        shapes = self._layer_shapes_from_context(compute_context)
 
         diag_blocks: Dict[str, DenseBlock] = {}
-        for layer in self.get_layer_names():
-            act = self.compute_context.activations[layer]
-            grad = self.compute_context.gradients[layer]
+        for layer in layer_names:
+            act = compute_context.activations[layer]
+            grad = compute_context.gradients[layer]
             if strategy == PseudoTargetGenerationStrategy.ALL_CLASSES:
                 block = self._compute_layer_block_weighted(
-                    act, grad, self.compute_context.probabilities
+                    act, grad, compute_context.probabilities
                 )
             else:
                 block = self._compute_layer_block_unweighted(act, grad)
@@ -61,7 +59,7 @@ class FIMBlockComputer(CollectorBasedHessianEstimator):
             )
         return LayerMatrix.block_diagonal(
             diag_blocks=diag_blocks,
-            param_groups=self.get_layer_names(),
+            param_groups=layer_names,
             layer_shapes=shapes,
         )
 
@@ -99,56 +97,3 @@ class FIMBlockComputer(CollectorBasedHessianEstimator):
         weighted_vecs = per_sample_vecs * sqrt_probs
         weighted_vecs_flat = weighted_vecs.reshape(K * N, -1)
         return (weighted_vecs_flat.T @ weighted_vecs_flat) / N
-
-    # ------------------------------------------------------------------
-    # HessianEstimator interface (thin wrappers over LayerMatrix)
-    # ------------------------------------------------------------------
-
-    def _estimate_hessian(
-        self,
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "n_params n_params"]:
-        d = 0.0 if damping is None else damping
-        return self._get_layer_matrix().damped(d).to_dense()
-
-    def _compare_full_hessian_estimates(
-        self,
-        comparison_matrix: Float[Array, "n_params n_params"],
-        damping: Optional[Float] = None,
-        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
-    ) -> Float:
-        d = 0.0 if damping is None else damping
-        fim = self._estimate_hessian(d)
-        return metric.compute_fn()(comparison_matrix, fim)
-
-    def _estimate_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        d = 0.0 if damping is None else damping
-        lmat = self._get_layer_matrix().damped(d)
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()
-
-    def _estimate_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-        pseudo_inverse_factor: Optional[float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        d = 0.0 if damping is None else damping
-        p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
-        lmat = self._get_layer_matrix().inverse(
-            damping=d, pseudo_inverse_factor=p
-        )
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()

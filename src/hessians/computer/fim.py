@@ -1,6 +1,6 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -8,9 +8,8 @@ from jaxtyping import Array, Float
 
 from src.config import PseudoTargetGenerationStrategy
 from src.hessians.computer.computer import CollectorBasedHessianEstimator
-from src.hessians.layer_matrix import LayerMatrix, LayerVector
-from src.hessians.utils.data import DataActivationsGradients, FIMData
-from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
+from src.hessians.layer_matrix import LayerMatrix
+from src.hessians.utils.data import DataActivationsGradients
 
 
 @dataclass
@@ -21,7 +20,10 @@ class FIMComputer(CollectorBasedHessianEstimator):
     The Fisher Information Matrix is defined as:
     FIM = E[∇log p(y|x) ∇log p(y|x)^T]
 
-    Use previously collected gradients to compute the FIM using its outer product.
+    Uses previously collected gradients to compute the FIM as the outer
+    product of per-sample parameter gradients, then slices the materialized
+    `(n_params, n_params)` matrix into per-layer `DenseBlock`s via
+    `LayerMatrix.from_dense`.
 
     Supports different pseudo-target strategies:
     - EMPIRICAL_FISHER: Uses ground truth labels (k=1)
@@ -29,103 +31,57 @@ class FIMComputer(CollectorBasedHessianEstimator):
     - ALL_CLASSES: Uses all classes with probability weighting (k=num_classes)
     """
 
-    precomputed_data: FIMData = field(default_factory=FIMData)
-
-    @classmethod
-    def _build(
-        cls,
-        compute_context: DataActivationsGradients,
-    ) -> FIMData:
-        """Build FIMData from activations and gradients."""
-        strategy = compute_context.pseudo_target_strategy
-        layer_names = compute_context.layer_names
-
-        n_samples = compute_context.activations[layer_names[0]].shape[0]
-
-        grads_per_layer = []
-
-        for layer in layer_names:
-            a = compute_context.activations[layer]  # (N, I_l)
-            g = compute_context.gradients[layer]  # (K, N, O_l)
-
-            k = g.shape[0]
-
-            # Compute parameter gradients: a ⊗ g
-            # Expand activations from (N, I) to (k, N, I)
-            a_expanded = jnp.broadcast_to(a[None, :, :], (k, n_samples, a.shape[-1]))
-
-            # Compute outer product and flatten: (k, N, I) ⊗ (k, N, O) -> (k, N, I*O)
-            G_l = jnp.einsum("kni,kno->knio", a_expanded, g).reshape(k, n_samples, -1)
-
-            grads_per_layer.append(G_l)
-
-        grads_all = jnp.concatenate(grads_per_layer, axis=2)
-
-        # Store probabilities separately for ALL_CLASSES strategy
-        probabilities = (
-            compute_context.probabilities
-            if strategy == PseudoTargetGenerationStrategy.ALL_CLASSES
-            else None
-        )
-
-        return FIMData(per_sample_grads=grads_all, probabilities=probabilities)
-
-    # ------------------------------------------------------------------
-    # LayerMatrix construction
-    # ------------------------------------------------------------------
-
     def get_layer_names(self) -> List[str]:
         return self.compute_context.layer_names
 
-    def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
+    def _layer_shapes_from_context(
+        self, compute_context: DataActivationsGradients
+    ) -> Dict[str, Tuple[int, int]]:
         return {
             l: (
-                int(self.compute_context.activations[l].shape[-1]),
-                int(self.compute_context.gradients[l].shape[-1]),
+                int(compute_context.activations[l].shape[-1]),
+                int(compute_context.gradients[l].shape[-1]),
             )
-            for l in self.get_layer_names()
+            for l in compute_context.layer_names
         }
 
-    def _get_layer_matrix(self) -> LayerMatrix:
-        """Materialize the FIM and slice it into per-layer DenseBlocks."""
-        gradients = self.precomputed_data.per_sample_grads  # (k, N, n_params)
-        strategy = self.compute_context.pseudo_target_strategy
+    def _build(self, compute_context: DataActivationsGradients) -> LayerMatrix:
+        """Assemble per-sample parameter gradients, materialize the FIM, and slice."""
+        strategy = compute_context.pseudo_target_strategy
+        layer_names = list(compute_context.layer_names)
+        layer_shapes = self._layer_shapes_from_context(compute_context)
+
+        n_samples = compute_context.activations[layer_names[0]].shape[0]
+        grads_per_layer = []
+        for layer in layer_names:
+            a = compute_context.activations[layer]  # (N, I_l)
+            g = compute_context.gradients[layer]  # (K, N, O_l)
+            k = g.shape[0]
+            a_expanded = jnp.broadcast_to(a[None, :, :], (k, n_samples, a.shape[-1]))
+            G_l = jnp.einsum("kni,kno->knio", a_expanded, g).reshape(
+                k, n_samples, -1
+            )
+            grads_per_layer.append(G_l)
+        grads_all = jnp.concatenate(grads_per_layer, axis=2)
+
         if strategy == PseudoTargetGenerationStrategy.ALL_CLASSES:
             dense = self._compute_fim_all_classes(
-                gradients=gradients,
-                probabilities=self.precomputed_data.probabilities,
+                gradients=grads_all,
+                probabilities=compute_context.probabilities,
                 damping=0.0,
             )
         else:
-            dense = self._compute_fim_unweighted(gradients, 0.0)
+            dense = self._compute_fim_unweighted(grads_all, 0.0)
+
         return LayerMatrix.from_dense(
             dense,
-            param_groups=self.get_layer_names(),
-            layer_shapes=self._layer_shapes(),
+            param_groups=layer_names,
+            layer_shapes=layer_shapes,
         )
 
     # ------------------------------------------------------------------
-    # HessianEstimator interface (thin wrappers over LayerMatrix)
+    # Materialization helpers (used by _build)
     # ------------------------------------------------------------------
-
-    def _estimate_hessian(
-        self,
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "n_params n_params"]:
-        """Materialized FIM (optionally damped)."""
-        d = 0.0 if damping is None else damping
-        return self._get_layer_matrix().damped(d).to_dense()
-
-    def _compare_full_hessian_estimates(
-        self,
-        comparison_matrix: Float[Array, "n_params n_params"],
-        damping: Optional[Float] = None,
-        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
-    ) -> Float:
-        """Compare the FIM against `comparison_matrix` under the given metric."""
-        d = 0.0 if damping is None else damping
-        fim = self._estimate_hessian(d)
-        return metric.compute_fn()(comparison_matrix, fim)
 
     @staticmethod
     @jax.jit
@@ -196,39 +152,10 @@ class FIMComputer(CollectorBasedHessianEstimator):
         fim += damping * jnp.eye(n_params, dtype=fim.dtype)
         return fim
 
-    def _estimate_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        """Fisher-vector product via the materialized `LayerMatrix`."""
-        d = 0.0 if damping is None else damping
-        lmat = self._get_layer_matrix().damped(d)
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()
-
-    def _estimate_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-        pseudo_inverse_factor: Optional[float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        """Inverse Fisher-vector product via the materialized `LayerMatrix`."""
-        d = 0.0 if damping is None else damping
-        p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
-        lmat = self._get_layer_matrix().inverse(
-            damping=d, pseudo_inverse_factor=p
-        )
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()
+    # ------------------------------------------------------------------
+    # Lazy HVP escape hatches (retained for future big-model overrides;
+    # not used by the refactored `_estimate_hvp` path).
+    # ------------------------------------------------------------------
 
     @staticmethod
     @partial(jax.jit, static_argnames=["pseudo_inverse_factor"])
@@ -239,6 +166,8 @@ class FIMComputer(CollectorBasedHessianEstimator):
     ) -> Float[Array, "batch_size n_params"]:
         """
         Solve FIM^{-1} @ v for each vector v using direct linear solve.
+
+        Currently unused — retained as the lazy IHVP escape hatch.
         """
         if pseudo_inverse_factor > 0.0:
             jax.config.update("jax_enable_x64", True)
@@ -262,6 +191,10 @@ class FIMComputer(CollectorBasedHessianEstimator):
     ) -> Float[Array, "batch_size n_params"]:
         """
         JIT-compatible memory-efficient FVP with batching.
+
+        Currently unused — retained as the lazy HVP escape hatch for a
+        future big-model subclass that overrides `_estimate_hvp` to bypass
+        `LayerMatrix`.
         """
         k, n_samples, n_params = gradients.shape
         total_samples = k * n_samples
@@ -304,8 +237,7 @@ class FIMComputer(CollectorBasedHessianEstimator):
 
         Computes: (1/N) * sum_n sum_k p(k|n) * (g_{k,n} @ v) * g_{k,n} + damping * v
 
-        Batches over the N dimension to control memory usage.
-        Memory per batch: O(K * sample_batch_size * batch_size) for projections
+        Currently unused — retained as the lazy HVP escape hatch.
         """
         K, n_samples, n_params = gradients.shape
         batch_size = vectors.shape[0]

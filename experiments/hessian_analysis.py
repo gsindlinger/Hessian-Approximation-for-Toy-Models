@@ -172,8 +172,7 @@ def compute_hessian_comparison_for_single_model(
         )
         ekfac_computer = EKFACComputer(compute_context=collector_data)
         ekfac_computer.build(base_directory=build_base_dir)
-        damping = EKFACComputer.get_damping(
-            ekfac_data=ekfac_computer.precomputed_data,
+        damping = ekfac_computer.get_damping(
             damping_strategy=hessian_config.computation_config.regularization_strategy,
             factor=hessian_config.computation_config.regularization_value,
         )

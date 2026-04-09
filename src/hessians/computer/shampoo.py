@@ -1,22 +1,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Dict
+
+import jax.numpy as jnp
+from jaxtyping import Array, Float
 
 from src.hessians.computer.eshampoo import EShampooComputer
-from src.hessians.computer.kfac import KFACComputer
-from src.hessians.utils.data import DataActivationsGradients, EKFACData
+from src.hessians.utils.data import DataActivationsGradients
 
 
 @dataclass
-class ShampooComputer(KFACComputer):
+class ShampooComputer(EShampooComputer):
     """
     Shampoo Hessian approximation.
-    Uses Shampoo covariances (from EShampooComputer) but simple eigenvalue products (like KFAC).
+
+    Uses EShampoo's covariance computation, but KFAC's simple outer-product
+    Lambda (no eigenvalue correction pass).
     """
 
-    @staticmethod
-    def _build(
+    def _compute_lambdas(
+        self,
         compute_context: DataActivationsGradients,
-    ) -> EKFACData:
-        # TODO: Capture different collector data structure, i.e., dimensions of gradients (K, N, O)
-        return EShampooComputer._build(compute_context)
+        activation_eigvecs: Dict[str, Float[Array, "I I"]],
+        gradient_eigvecs: Dict[str, Float[Array, "O O"]],
+        activation_eigvals: Dict[str, Float[Array, "I"]],
+        gradient_eigvals: Dict[str, Float[Array, "O"]],
+    ) -> Dict[str, Float[Array, "I O"]]:
+        """KFAC-style Lambda: `outer(λ_A, λ_G)`, no correction pass."""
+        return {
+            layer: jnp.outer(activation_eigvals[layer], gradient_eigvals[layer])
+            for layer in compute_context.layer_names
+        }

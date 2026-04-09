@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -11,13 +11,11 @@ from jax.tree_util import tree_flatten_with_path
 from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import ModelBasedHessianEstimator
-from src.hessians.layer_matrix import DenseBlock, LayerMatrix, LayerVector
+from src.hessians.layer_matrix import DenseBlock, LayerMatrix
 from src.hessians.utils.data import (
-    BlockHessianData,
     ModelContext,
     layer_shapes_from_model_context,
 )
-from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
 @dataclass
@@ -26,19 +24,19 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
     Block-Diagonal Hessian approximation.
 
     Each block corresponds to a *layer* (kernel + optional bias merged) of
-    the model, matching the KFAC layer-dict convention.
+    the model, matching the KFAC layer-dict convention.  `_build` materializes
+    one `DenseBlock` per layer and wraps the collection as a block-diagonal
+    `LayerMatrix`.  The lazy per-block HVP helper `_compute_blocks` is kept
+    as the escape hatch a future big-model subclass can use by overriding
+    `_estimate_hvp`.
     """
 
-    precomputed_data: BlockHessianData = field(default_factory=BlockHessianData)
-
-    @staticmethod
-    def _build(compute_context: ModelContext) -> BlockHessianData:
-        """Compute per-layer flat-index ranges and shapes from the Flax param tree."""
+    def _build(self, compute_context: ModelContext) -> LayerMatrix:
+        """Materialize each per-layer Hessian block and return a block-diagonal LayerMatrix."""
         layer_shapes = layer_shapes_from_model_context(compute_context)
-        layer_names = compute_context.model.get_layer_names()
+        layer_names: List[str] = list(compute_context.model.get_layer_names())
 
-        # Verify each layer's leaves are contiguous in params_flat by walking
-        # the flat tree leaves and grouping by layer.
+        # Walk the flat tree to get per-layer (start, end) ranges in params_flat.
         params = compute_context.unravel_fn(compute_context.params_flat)
         params_root = params["params"] if "params" in params else params
         leaves_with_paths, _ = tree_flatten_with_path(params_root)
@@ -50,7 +48,7 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
             leaf_layer_of.append(layer)
             leaf_sizes.append(int(leaf.size))
 
-        blocks: List[Tuple[int, int]] = []
+        block_ranges: List[Tuple[int, int]] = []
         idx = 0
         for layer in layer_names:
             start = idx
@@ -58,115 +56,40 @@ class BlockHessianComputer(ModelBasedHessianEstimator):
                 if leaf_layer == layer:
                     idx += size
             end = idx
-            blocks.append((start, end))
+            block_ranges.append((start, end))
 
-        return BlockHessianData(
-            blocks=blocks,
-            layer_names=list(layer_names),
-            layer_shapes=layer_shapes,
-            n_params=int(compute_context.params_flat.size),
-        )
-
-    # ------------------------------------------------------------------
-    # LayerMatrix construction
-    # ------------------------------------------------------------------
-
-    def get_layer_names(self) -> List[str]:
-        return list(self.precomputed_data.layer_names)
-
-    def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
-        # Re-derive from compute_context (cheap; avoids load-time pytree-roundtrip
-        # quirks for Dict[str, Tuple[int, int]] persistence).
-        return layer_shapes_from_model_context(self.compute_context)
-
-    def _get_layer_matrix(self) -> LayerMatrix:
-        """Materialize each per-layer Hessian block and wrap as `LayerMatrix.block_diagonal`."""
-        layer_names = self.get_layer_names()
-        shapes = self._layer_shapes()
-        block_ranges = tuple(
-            (int(s), int(e)) for (s, e) in self.precomputed_data.blocks
-        )
         block_arrays = self._compute_blocks(
-            compute_context=self.compute_context,
-            blocks=block_ranges,
+            compute_context=compute_context,
+            blocks=tuple(block_ranges),
             damping=0.0,
         )
         diag_blocks: Dict[str, DenseBlock] = {
             name: DenseBlock(
                 matrix=block_arrays[i],
-                row_shape=shapes[name],
-                col_shape=shapes[name],
+                row_shape=layer_shapes[name],
+                col_shape=layer_shapes[name],
             )
             for i, name in enumerate(layer_names)
         }
         return LayerMatrix.block_diagonal(
             diag_blocks=diag_blocks,
             param_groups=layer_names,
-            layer_shapes=shapes,
+            layer_shapes=layer_shapes,
         )
+
+    def get_layer_names(self) -> List[str]:
+        return list(self.compute_context.model.get_layer_names())
 
     # ------------------------------------------------------------------
-    # HessianEstimator interface (thin wrappers over LayerMatrix)
-    # ------------------------------------------------------------------
-
-    def _estimate_hessian(
-        self,
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "n_params n_params"]:
-        d = 0.0 if damping is None else damping
-        return self._get_layer_matrix().damped(d).to_dense()
-
-    def _compare_full_hessian_estimates(
-        self,
-        comparison_matrix: Float[Array, "n_params n_params"],
-        damping: Optional[Float] = None,
-        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
-    ) -> Float:
-        d = 0.0 if damping is None else damping
-        H_block = self._estimate_hessian(d)
-        return metric.compute_fn()(comparison_matrix, H_block)
-
-    def _estimate_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        d = 0.0 if damping is None else damping
-        lmat = self._get_layer_matrix().damped(d)
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()
-
-    def _estimate_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-        pseudo_inverse_factor: Optional[float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        d = 0.0 if damping is None else damping
-        p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
-        lmat = self._get_layer_matrix().inverse(
-            damping=d, pseudo_inverse_factor=p
-        )
-        lvec = LayerVector.from_flat(
-            flat=vectors,
-            shapes=lmat.vector_shapes(),
-            param_groups=self.get_layer_names(),
-        )
-        return (lmat @ lvec).to_flat()
-
-    # ------------------------------------------------------------------
-    # Block materialization helper (unchanged from prior implementation)
+    # Block materialization helper (also retained as the lazy-HVP escape
+    # hatch for a future big-model subclass)
     # ------------------------------------------------------------------
 
     @staticmethod
     @partial(jax.jit, static_argnames=["blocks"])
     def _compute_blocks(
         compute_context: ModelContext,
-        blocks: Tuple[Tuple[int, int]],
+        blocks: Tuple[Tuple[int, int], ...],
         damping: Float,
     ):
         """
