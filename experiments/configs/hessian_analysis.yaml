@@ -9,14 +9,14 @@ hessian_analysis:
     approximators:
     - kfac
     - ekfac
-    # - gnh
+    - gnh
     - fim
-    # - block_fim
-    # - block_hessian
-    # - shampoo
-    # - eshampoo
-    # - tkfac
-    # - etkfac
+    - block_fim
+    - block_hessian
+    - shampoo
+    - eshampoo
+    - tkfac
+    - etkfac
     comparison_references:
     - exact
     - gnh
