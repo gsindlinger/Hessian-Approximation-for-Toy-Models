@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 import jax
 import jax.numpy as jnp
 from jax import lax
-from jaxtyping import Array, Float
+from jaxtyping import Float
 
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.layer_matrix import DenseBlock, LayerMatrix
@@ -149,7 +149,6 @@ class BlockHessianComputer(HessianEstimator):
             return H_block
 
         result_blocks = [
-            compute_single_block_static(int(start), int(end))
-            for start, end in blocks
+            compute_single_block_static(int(start), int(end)) for start, end in blocks
         ]
         return result_blocks

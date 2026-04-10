@@ -58,9 +58,10 @@ from dataclasses import asdict
 from typing import Dict
 
 import hydra
-import numpy as np
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
+
+import jax
 
 from experiments.utils import (
     cleanup_memory,
@@ -69,14 +70,53 @@ from experiments.utils import (
     to_dataclass,
 )
 from src.config import LDSExperimentConfig
-from src.utils.data.data import DownloadableDataset
+from src.utils.data.data import Dataset, DownloadableDataset
 from src.utils.lds import compute_lds_for_model, compute_lds_for_model_multi_epoch
+from src.utils.loss import get_loss
+from src.utils.train import (
+    evaluate_loss_and_classification_accuracy,
+    load_model_checkpoint,
+)
 
 logger = logging.getLogger(__name__)
 
 cs = ConfigStore.instance()
 cs.store(name="lds_experiment", node=LDSExperimentConfig)
 
+
+def _evaluate_checkpoint_metrics(
+    model_directory: str,
+    epoch: "int | None",
+    train_dataset: Dataset,
+    test_dataset: Dataset,
+) -> Dict:
+    """Load the checkpoint at ``epoch`` and evaluate loss/accuracy on train + test.
+
+    Replaces the stale ``model.json`` metadata (which always reflects the
+    final-training-epoch validation metrics regardless of which epoch
+    checkpoint is actually loaded) with metrics computed from the real params
+    at this specific checkpoint.
+    """
+    params, model, model_config, _ = load_model_checkpoint(
+        model_directory, epoch=epoch
+    )
+    loss_fn = get_loss(model_config.loss)
+    test_loss, test_acc = evaluate_loss_and_classification_accuracy(
+        model, params, test_dataset.inputs, test_dataset.targets, loss_fn
+    )
+    train_loss, train_acc = evaluate_loss_and_classification_accuracy(
+        model, params, train_dataset.inputs, train_dataset.targets, loss_fn
+    )
+    num_parameters = int(
+        sum(x.size for x in jax.tree_util.tree_leaves(params))
+    )
+    return {
+        "train_loss": train_loss,
+        "train_accuracy": train_acc,
+        "test_loss": test_loss,
+        "test_accuracy": test_acc,
+        "num_parameters": num_parameters,
+    }
 
 
 @hydra.main(version_base="1.3", config_name="lds_experiment", config_path="../configs")
@@ -152,6 +192,28 @@ def main(cfg: DictConfig) -> Dict:
                 model_dir,
                 config.epochs,
             )
+
+            # Evaluate each checkpoint on train/test before LDS computation so
+            # the reported metadata reflects the actual params at that epoch
+            # rather than the stale metrics cached in model.json.
+            checkpoint_metrics: Dict[int, Dict] = {}
+            for ep in config.epochs:
+                metrics = _evaluate_checkpoint_metrics(
+                    model_dir, ep, train_dataset, test_dataset
+                )
+                checkpoint_metrics[ep] = metrics
+                logger.info(
+                    "[%d/%d] epoch=%d  train_loss=%.4f train_acc=%.4f | "
+                    "test_loss=%.4f test_acc=%.4f",
+                    i,
+                    len(config.models),
+                    ep,
+                    metrics["train_loss"],
+                    metrics["train_accuracy"],
+                    metrics["test_loss"],
+                    metrics["test_accuracy"],
+                )
+
             epoch_results = compute_lds_for_model_multi_epoch(
                 model_directory=model_dir,
                 train_dataset=train_dataset,
@@ -159,12 +221,27 @@ def main(cfg: DictConfig) -> Dict:
                 config=config,
                 epochs=config.epochs,
             )
+            for r in epoch_results:
+                r["metadata"] = checkpoint_metrics[r["epoch"]]
             lds_results.extend(epoch_results)
             cleanup_memory(f"model_{i}")
     else:
         # Single final-checkpoint path (original behaviour).
         for i, model_dir in enumerate(config.models, 1):
             logger.info("[%d/%d] %s (final)", i, len(config.models), model_dir)
+            metrics = _evaluate_checkpoint_metrics(
+                model_dir, None, train_dataset, test_dataset
+            )
+            logger.info(
+                "[%d/%d] final  train_loss=%.4f train_acc=%.4f | "
+                "test_loss=%.4f test_acc=%.4f",
+                i,
+                len(config.models),
+                metrics["train_loss"],
+                metrics["train_accuracy"],
+                metrics["test_loss"],
+                metrics["test_accuracy"],
+            )
             result = compute_lds_for_model(
                 model_directory=model_dir,
                 train_dataset=train_dataset,
@@ -172,6 +249,7 @@ def main(cfg: DictConfig) -> Dict:
                 config=config,
                 epoch=None,
             )
+            result["metadata"] = metrics
             lds_results.append(result)
             cleanup_memory(f"model_{i}")
 

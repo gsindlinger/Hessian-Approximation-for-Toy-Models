@@ -83,6 +83,9 @@ def train_model_for_dataset(
         optimizer=optimizer(
             model_config.training.optimizer,
             lr=model_config.training.learning_rate,
+            lr_schedule=model_config.training.lr_schedule,
+            total_steps=ceil(len(dataset.inputs) / model_config.training.batch_size)
+            * model_config.training.epochs,
         ),
         epochs=model_config.training.epochs,
     )
@@ -173,18 +176,14 @@ def verify_architecture_layer_alignment(
     )
 
     model = ModelRegistry.get_model(model_config)
-    inputs_key, targets_key, init_key = jax.random.split(
-        jax.random.PRNGKey(seed), 3
-    )
+    inputs_key, targets_key, init_key = jax.random.split(jax.random.PRNGKey(seed), 3)
     inputs = jax.random.normal(inputs_key, (n_samples, model_config.input_dim))
     if model_config.loss == LossType.CROSS_ENTROPY:
         targets = jax.random.randint(
             targets_key, (n_samples,), minval=0, maxval=model_config.output_dim
         )
     else:
-        targets = jax.random.normal(
-            targets_key, (n_samples, model_config.output_dim)
-        )
+        targets = jax.random.normal(targets_key, (n_samples, model_config.output_dim))
 
     params = model.init(init_key, inputs[:1])
     ctx = ModelContext.create(

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import asdict
+from math import ceil
 from typing import Dict, List, Optional, Tuple
 
 import jax
@@ -28,7 +30,7 @@ from src.utils.train import (
     load_model_checkpoint,
     train_model,
 )
-from src.utils.utils import collector_cache_dir
+from src.utils.utils import collector_cache_dir, elso_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +173,69 @@ def _build_vmapped_elso_fn(
     return jax.jit(jax.vmap(train_and_eval_one, in_axes=(0, None, None, None, None)))
 
 
+def _build_elso_cache_key(
+    config: LDSExperimentConfig,
+    model_config: ModelConfig,
+    checkpoints: List[int],
+    n_queries: int,
+) -> Dict:
+    """Cache key capturing everything that influences ELSO rep_mean.
+
+    Does NOT include Hessian / regularisation settings so damping and
+    pseudo_inverse_factor sweeps reuse the cached retraining output.
+    """
+    tr = model_config.training
+    return {
+        "subsets": {
+            "num_subsets": config.num_subsets,
+            "subset_fraction": config.subset_fraction,
+            "seed": config.seed,
+        },
+        "reps_per_subset": config.reps_per_model,
+        "epoch_checkpoints": sorted(checkpoints),
+        "num_queries": n_queries,
+        "training": {
+            "optimizer": str(getattr(tr.optimizer, "value", tr.optimizer)),
+            "learning_rate": tr.learning_rate,
+            "weight_decay": tr.weight_decay,
+            "lr_schedule": (
+                str(getattr(tr.lr_schedule, "value", tr.lr_schedule))
+                if tr.lr_schedule is not None
+                else None
+            ),
+            "batch_size": tr.batch_size,
+        },
+        "dataset": {
+            "name": str(
+                getattr(config.dataset.name, "value", config.dataset.name)
+            ),
+            "test_size": config.dataset.test_size,
+        },
+    }
+
+
+def _apply_baseline(
+    rep_mean: np.ndarray,
+    baseline_losses: "np.ndarray | Dict[int, np.ndarray]",
+    checkpoints: List[int],
+    multi_epoch: bool,
+) -> "np.ndarray | Dict[int, np.ndarray]":
+    """Subtract per-query baseline from rep-averaged losses to form Δm.
+
+    Baseline shifting cancels under Spearman, so this step does not change LDS,
+    but it is preserved for consistency with the function's original contract.
+    """
+    if multi_epoch:
+        assert isinstance(baseline_losses, dict), (
+            "baseline_losses must be Dict[int, np.ndarray] when epoch_checkpoints has multiple entries."
+        )
+        return {
+            ckpt: rep_mean[ci] - baseline_losses[ckpt][:, None]
+            for ci, ckpt in enumerate(checkpoints)
+        }
+    return rep_mean[0] - np.asarray(baseline_losses)[:, None]
+
+
 def compute_elso_ground_truth(
     model_config: ModelConfig,
     full_train_inputs: jnp.ndarray,
@@ -183,6 +248,7 @@ def compute_elso_ground_truth(
     base_seed: int,
     epoch_checkpoints: Optional[List[int]] = None,
     use_vmap: bool = True,
+    cache_directory: Optional[str] = None,
 ) -> "np.ndarray | Dict[int, np.ndarray]":
     """Compute ELSO ground-truth Δm_j(z_q) for all (query, subset) pairs.
 
@@ -210,16 +276,61 @@ def compute_elso_ground_truth(
         epoch_checkpoints if epoch_checkpoints else [model_config.training.epochs]
     )
     multi_epoch = len(checkpoints) > 1
+    complement_size = len(full_train_inputs) - int(subsets[0].sum())
+
+    n_queries = len(query_inputs)
+    K = len(subsets)
+
+    # ── Cache lookup ────────────────────────────────────────────────────────
+    # We cache ``rep_mean`` (rep-averaged per-query losses before baseline
+    # subtraction) because it is the expensive output of the retraining pass
+    # and is independent of the Hessian / regularisation settings that downstream
+    # attribution sweeps vary.  Baseline subtraction is applied after load.
+    cache_path = (
+        os.path.join(cache_directory, "rep_mean.npz")
+        if cache_directory is not None
+        else None
+    )
+    if cache_path is not None and os.path.exists(cache_path):
+        try:
+            with np.load(cache_path) as data:
+                cached_rep_mean = data["rep_mean"]
+                cached_checkpoints = data["checkpoints"].tolist()
+            if (
+                cached_rep_mean.shape == (len(checkpoints), n_queries, K)
+                and cached_checkpoints == checkpoints
+            ):
+                logger.info(
+                    "[ELSO] Cache hit: loaded rep_mean from %s (shape=%s).",
+                    cache_path,
+                    cached_rep_mean.shape,
+                )
+                return _apply_baseline(
+                    cached_rep_mean, baseline_losses, checkpoints, multi_epoch
+                )
+            logger.warning(
+                "[ELSO] Cache at %s is stale (shape/checkpoint mismatch) — recomputing.",
+                cache_path,
+            )
+        except (OSError, KeyError, ValueError) as e:
+            logger.warning(
+                "[ELSO] Failed to load cache %s (%s) — recomputing.", cache_path, e
+            )
 
     loss_fn = get_loss(model_config.loss)
     opt = create_optimizer(
         optimizer_enum=model_config.training.optimizer,
         lr=model_config.training.learning_rate,
         weight_decay=model_config.training.weight_decay,
+        lr_schedule=model_config.training.lr_schedule,
+        total_steps=max(checkpoints)
+        * (
+            complement_size // model_config.training.batch_size
+            if use_vmap
+            else ceil(complement_size / model_config.training.batch_size)
+        ),
     )
 
-    n_queries = len(query_inputs)
-    K = len(subsets)
     # (n_checkpoints, n_queries, K) — accumulates R-averaged losses
     rep_mean = np.zeros((len(checkpoints), n_queries, K))
 
@@ -279,11 +390,20 @@ def compute_elso_ground_truth(
                         shuffle=True,
                         rng_key=jax.random.PRNGKey(seed),
                     )
+                    total_steps = ceil(
+                        len(comp_inputs) / model_config.training.batch_size
+                    ) * ckpt
                     subset_model, subset_params, _ = train_model(
                         model_config=model_config,
                         dataloader=dataloader,
                         loss_fn=loss_fn,
-                        optimizer=opt,
+                        optimizer=create_optimizer(
+                            optimizer_enum=model_config.training.optimizer,
+                            lr=model_config.training.learning_rate,
+                            weight_decay=model_config.training.weight_decay,
+                            lr_schedule=model_config.training.lr_schedule,
+                            total_steps=total_steps,
+                        ),
                         epochs=ckpt,
                         seed=seed,
                         save_checkpoints=False,
@@ -303,102 +423,22 @@ def compute_elso_ground_truth(
             if (j + 1) % max(1, K // 10) == 0 or j == 0:
                 logger.info("[ELSO] Subset %d / %d done.", j + 1, K)
 
-    # Subtract per-epoch baselines and return
-    if multi_epoch:
-        assert isinstance(baseline_losses, dict), (
-            "baseline_losses must be Dict[int, np.ndarray] when epoch_checkpoints has multiple entries."
-        )
-        return {
-            ckpt: rep_mean[ci] - baseline_losses[ckpt][:, None]
-            for ci, ckpt in enumerate(checkpoints)
-        }
-    else:
-        assert isinstance(baseline_losses, np.ndarray)
-        return rep_mean[0] - baseline_losses[:, None]  # (n_queries, K)
+    # Persist the raw rep-averaged losses so subsequent regularisation sweeps
+    # (damping / pseudo-inverse factor / approximator choice) can skip
+    # retraining entirely.
+    if cache_path is not None:
+        try:
+            os.makedirs(cache_directory, exist_ok=True)  # type: ignore[arg-type]
+            np.savez(
+                cache_path,
+                rep_mean=rep_mean,
+                checkpoints=np.asarray(checkpoints),
+            )
+            logger.info("[ELSO] Saved rep_mean cache to %s.", cache_path)
+        except OSError as e:
+            logger.warning("[ELSO] Failed to save cache %s (%s).", cache_path, e)
 
-
-def compute_expected_baseline_losses(
-    model_config: ModelConfig,
-    full_train_inputs: jnp.ndarray,
-    full_train_targets: jnp.ndarray,
-    query_inputs: jnp.ndarray,
-    query_targets: jnp.ndarray,
-    baseline_reps: int,
-    base_seed: int,
-    epoch_checkpoints: Optional[List[int]] = None,
-    use_vmap: bool = True,
-) -> "np.ndarray | Dict[int, np.ndarray]":
-    """Estimate E_ξ[m(z_q, θ(D; ξ))] by retraining on the full dataset."""
-    checkpoints = sorted(
-        epoch_checkpoints if epoch_checkpoints else [model_config.training.epochs]
-    )
-    multi_epoch = len(checkpoints) > 1
-    n_queries = len(query_inputs)
-
-    loss_fn = get_loss(model_config.loss)
-    opt = create_optimizer(
-        optimizer_enum=model_config.training.optimizer,
-        lr=model_config.training.learning_rate,
-        weight_decay=model_config.training.weight_decay,
-    )
-
-    if use_vmap:
-        from src.utils.models.registry import ModelRegistry
-
-        model = ModelRegistry.get_model(model_config=model_config)
-        vmapped_fn = _build_vmapped_elso_fn(
-            model=model,
-            optimizer=opt,
-            loss_fn=loss_fn,
-            epoch_checkpoints=checkpoints,
-            batch_size=model_config.training.batch_size,
-        )
-        keys = jax.random.split(PRNGKey(base_seed), baseline_reps)
-        rep_losses = vmapped_fn(
-            keys,
-            jnp.asarray(full_train_inputs),
-            jnp.asarray(full_train_targets),
-            query_inputs,
-            query_targets,
-        )
-        rep_mean = np.array(jnp.mean(rep_losses, axis=0))
-    else:
-        rep_mean = np.zeros((len(checkpoints), n_queries))
-        for ci, ckpt in enumerate(checkpoints):
-            ckpt_rep_losses = np.zeros((baseline_reps, n_queries))
-            for r in range(baseline_reps):
-                seed = base_seed + r
-                dataloader = JAXDataLoader(
-                    full_train_inputs,
-                    full_train_targets,
-                    batch_size=model_config.training.batch_size,
-                    shuffle=True,
-                    rng_key=jax.random.PRNGKey(seed),
-                )
-                base_model, base_params, _ = train_model(
-                    model_config=model_config,
-                    dataloader=dataloader,
-                    loss_fn=loss_fn,
-                    optimizer=opt,
-                    epochs=ckpt,
-                    seed=seed,
-                    save_checkpoints=False,
-                    verbose=False,
-                )
-                ckpt_rep_losses[r] = np.array(
-                    evaluate_per_example_losses(
-                        model=base_model,
-                        params=base_params,
-                        inputs=query_inputs,
-                        targets=query_targets,
-                        loss_fn=loss_fn,
-                    )
-                )
-            rep_mean[ci] = ckpt_rep_losses.mean(axis=0)
-
-    if multi_epoch:
-        return {ckpt: rep_mean[ci] for ci, ckpt in enumerate(checkpoints)}
-    return rep_mean[0]
+    return _apply_baseline(rep_mean, baseline_losses, checkpoints, multi_epoch)
 
 
 # ---------------------------------------------------------------------------
@@ -465,35 +505,75 @@ def aggregate_lds_scores(
     n_bootstrap: int = 1000,
     seed: int = 0,
 ) -> Dict:
-    """Compute mean LDS across queries with a bootstrap CI over queries.
+    """Compute mean LDS across queries with a bootstrap CI over subsets (K).
+
+    Follows the Hong et al. (2025) protocol (Fig. 4 / App. A.2): the 95% CI accounts for
+    randomness in *subset selection* by resampling the K subsets with
+    replacement, recomputing Spearman per query on each resample, and
+    averaging over queries.
+
+    Args:
+        delta_m:   (n_queries, K) ground-truth Δm_j(z_q).
+        predicted: (n_queries, K) predicted group attributions g_τ(z_q, S_j).
+
+    Queries whose Spearman correlation is undefined (NaN — occurs when either
+    ``delta_m[i, :]`` or ``predicted[i, :]`` is constant across the selected
+    subsets, i.e. zero variance) are *excluded* from the mean rather than
+    clamped to 0. The count of such queries is reported under
+    ``num_undefined_queries``.
 
     Returns:
-        Dict with keys: mean_lds, std_lds, ci_low, ci_high, per_query_lds.
+        Dict with keys: mean_lds, std_lds, ci_low, ci_high, per_query_lds,
+        num_undefined_queries, num_valid_queries.
     """
     rng = np.random.RandomState(seed)
-    n_queries = delta_m.shape[0]
-    per_query_lds = []
+    n_queries, K = delta_m.shape
 
+    def _mean_lds_over_subsets(j_idx: np.ndarray) -> float:
+        """Mean of defined Spearman r's over queries; NaN if all are undefined."""
+        rs = []
+        for i in range(n_queries):
+            r, _ = spearmanr(delta_m[i, j_idx], predicted[i, j_idx])
+            if not np.isnan(r):  # type: ignore
+                rs.append(float(r))  # type: ignore
+        return float(np.mean(rs)) if rs else float("nan")
+
+    all_j = np.arange(K)
+    mean_lds = _mean_lds_over_subsets(all_j)
+
+    per_query_lds: List[float] = []
+    num_undefined = 0
     for i in range(n_queries):
         r, _ = spearmanr(delta_m[i], predicted[i])
-        r = float(r) if not np.isnan(r) else 0.0  # type: ignore
-        per_query_lds.append(r)
+        if np.isnan(r):  # type: ignore
+            num_undefined += 1
+            per_query_lds.append(float("nan"))
+        else:
+            per_query_lds.append(float(r))  # type: ignore
 
-    per_query_lds_arr = np.asarray(per_query_lds)
-    bootstrap_means = []
-    for _ in range(n_bootstrap):
-        idx = rng.choice(n_queries, size=n_queries, replace=True)
-        bootstrap_means.append(float(np.mean(per_query_lds_arr[idx])))
+    bootstrap_means = [
+        _mean_lds_over_subsets(rng.choice(K, size=K, replace=True))
+        for _ in range(n_bootstrap)
+    ]
+    finite_bootstrap = [b for b in bootstrap_means if not np.isnan(b)]
+    if finite_bootstrap:
+        ci_low = float(np.percentile(finite_bootstrap, 2.5))
+        ci_high = float(np.percentile(finite_bootstrap, 97.5))
+    else:
+        ci_low = float("nan")
+        ci_high = float("nan")
 
-    ci_low = float(np.percentile(bootstrap_means, 2.5))
-    ci_high = float(np.percentile(bootstrap_means, 97.5))
+    finite_pq = [v for v in per_query_lds if not np.isnan(v)]
+    std_lds = float(np.std(finite_pq)) if finite_pq else float("nan")
 
     return {
-        "mean_lds": float(np.mean(per_query_lds_arr)),
-        "std_lds": float(np.std(per_query_lds_arr)),
+        "mean_lds": mean_lds,
+        "std_lds": std_lds,
         "ci_low": ci_low,
         "ci_high": ci_high,
         "per_query_lds": per_query_lds,
+        "num_undefined_queries": num_undefined,
+        "num_valid_queries": n_queries - num_undefined,
     }
 
 
@@ -514,12 +594,11 @@ def compute_lds_for_model(
     Steps:
       1. Load the base model (trained on full D), optionally at a specific epoch.
       2. Generate K random subsets S_j.
-      3. Evaluate baseline per-query losses from the full model.
-      4. ELSO: for each S_j retrain R models on D\\S_j → Δm_j.
-      5. Compute per-example gradients (train + query) using the full model.
-      6. Build Hessian approximations; compute influence matrix τ.
-      7. Predicted group effects g_τ(S_j) = Σ_{z∈S_j} τ(z_q, z).
-      8. LDS = Spearman(Δm_j, g_τ_j) with 95% bootstrap CI, averaged over queries.
+      3. ELSO: for each S_j retrain R models on D\\S_j → m_j.
+      4. Compute per-example gradients (train + query) using the full model.
+      5. Build Hessian approximations; compute influence matrix τ.
+      6. Predicted group effects g_τ(S_j) = Σ_{z∈S_j} τ(z_q, z).
+      7. LDS = Spearman(m_j, g_τ_j) with 95% bootstrap CI, averaged over queries.
     """
     from experiments.utils import cleanup_memory
 
@@ -547,40 +626,37 @@ def compute_lds_for_model(
     )
 
     # ── 2. Baseline losses from full model ──────────────────────────────────
-    if config.baseline_reps is not None:
-        logger.info(
-            "[LDS] Computing expected baseline losses with %d retraining reps on full D.",
-            config.baseline_reps,
+    # The baseline is a per-query constant subtracted from all K retrained
+    # losses to form Δm_j. Since LDS uses Spearman rank correlation, which is
+    # invariant to constant shifts, the baseline cancels out and does not
+    # affect the result. We use the loaded checkpoint directly.
+    logger.info("[LDS] Computing baseline losses from loaded full-model checkpoint.")
+    baseline_losses = np.array(
+        evaluate_per_example_losses(
+            model=model,
+            params=params,
+            inputs=query_inputs,
+            targets=query_targets,
+            loss_fn=loss_fn,
         )
-        baseline_losses = compute_expected_baseline_losses(
-            model_config=model_config,
-            full_train_inputs=train_dataset.inputs,
-            full_train_targets=train_dataset.targets,
-            query_inputs=query_inputs,
-            query_targets=query_targets,
-            baseline_reps=config.baseline_reps,
-            base_seed=config.seed,
-        )
-        assert isinstance(baseline_losses, np.ndarray)
-    else:
-        logger.info(
-            "[LDS] Computing baseline losses from loaded full-model checkpoint."
-        )
-        baseline_losses = np.array(
-            evaluate_per_example_losses(
-                model=model,
-                params=params,
-                inputs=query_inputs,
-                targets=query_targets,
-                loss_fn=loss_fn,
-            )
-        )
+    )
 
     # ── 3. ELSO retraining ──────────────────────────────────────────────────
     logger.info(
         "[LDS] ELSO retraining: K=%d subsets × R=%d reps on D\\S_j.",
         len(subsets),
         config.reps_per_model,
+    )
+    elso_checkpoints = [model_config.training.epochs]
+    elso_cache_directory = (
+        elso_cache_dir(
+            model_directory,
+            _build_elso_cache_key(
+                config, model_config, elso_checkpoints, n_query
+            ),
+        )
+        if config.cache_elso
+        else None
     )
     delta_m = compute_elso_ground_truth(
         model_config=model_config,
@@ -592,6 +668,7 @@ def compute_lds_for_model(
         reps_per_subset=config.reps_per_model,
         baseline_losses=baseline_losses,
         base_seed=config.seed,
+        cache_directory=elso_cache_directory,
     )
     assert isinstance(delta_m, np.ndarray)
     cleanup_memory("elso_retraining")
@@ -726,7 +803,6 @@ def compute_lds_for_model(
         "num_subsets": len(subsets),
         "subset_fraction": config.subset_fraction,
         "reps_per_model": config.reps_per_model,
-        "baseline_reps": config.baseline_reps,
         "num_queries": n_query,
         "lds_scores": lds_scores,
         "metadata": metadata or {},
@@ -776,18 +852,16 @@ def compute_lds_for_model_multi_epoch(
             "metadata": metadata_ep,
             "loss_fn": loss_fn_ep,
         }
-        if config.baseline_reps is not None:
-            epoch_data[ep]["baseline_losses"] = None
-        else:
-            epoch_data[ep]["baseline_losses"] = np.array(
-                evaluate_per_example_losses(
-                    model=model_ep,
-                    params=params_ep,
-                    inputs=query_inputs,
-                    targets=query_targets,
-                    loss_fn=loss_fn_ep,
-                )
+        # Baseline is a constant offset per query that cancels out in Spearman — use checkpoint directly.
+        epoch_data[ep]["baseline_losses"] = np.array(
+            evaluate_per_example_losses(
+                model=model_ep,
+                params=params_ep,
+                inputs=query_inputs,
+                targets=query_targets,
+                loss_fn=loss_fn_ep,
             )
+        )
 
     # Use model_config from the final epoch (determines ELSO training depth).
     model_config = epoch_data[sorted_epochs[-1]]["model_config"]
@@ -818,26 +892,20 @@ def compute_lds_for_model_multi_epoch(
         config.reps_per_model,
         sorted_epochs,
     )
-    if config.baseline_reps is not None:
-        logger.info(
-            "[LDS-multi] Computing expected baseline losses with %d retraining reps on full D.",
-            config.baseline_reps,
+    # Baseline is a constant offset per query that cancels out in Spearman — use checkpoints directly.
+    baseline_losses_dict = {
+        ep: epoch_data[ep]["baseline_losses"] for ep in sorted_epochs
+    }
+    elso_cache_directory = (
+        elso_cache_dir(
+            model_directory,
+            _build_elso_cache_key(
+                config, model_config, sorted_epochs, n_query
+            ),
         )
-        baseline_losses_dict = compute_expected_baseline_losses(
-            model_config=model_config,
-            full_train_inputs=train_dataset.inputs,
-            full_train_targets=train_dataset.targets,
-            query_inputs=query_inputs,
-            query_targets=query_targets,
-            baseline_reps=config.baseline_reps,
-            base_seed=config.seed,
-            epoch_checkpoints=sorted_epochs,
-        )
-        assert isinstance(baseline_losses_dict, dict)
-    else:
-        baseline_losses_dict = {
-            ep: epoch_data[ep]["baseline_losses"] for ep in sorted_epochs
-        }
+        if config.cache_elso
+        else None
+    )
     delta_m_dict = compute_elso_ground_truth(
         model_config=model_config,
         full_train_inputs=train_dataset.inputs,
@@ -849,6 +917,7 @@ def compute_lds_for_model_multi_epoch(
         baseline_losses=baseline_losses_dict,
         base_seed=config.seed,
         epoch_checkpoints=sorted_epochs,
+        cache_directory=elso_cache_directory,
     )
     assert isinstance(delta_m_dict, dict)
     cleanup_memory("elso_retraining_multi")
@@ -955,7 +1024,6 @@ def compute_lds_for_model_multi_epoch(
                 "num_subsets": len(subsets),
                 "subset_fraction": config.subset_fraction,
                 "reps_per_model": config.reps_per_model,
-                "baseline_reps": config.baseline_reps,
                 "num_queries": n_query,
                 "lds_scores": lds_scores,
                 "metadata": ep_metadata or {},

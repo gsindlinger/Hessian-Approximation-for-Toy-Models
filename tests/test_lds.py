@@ -15,7 +15,7 @@ Tests are split into two tiers:
     - compute_elso_ground_truth       (shape, Δm sign for removed vs kept)
 """
 
-from typing import Callable, Dict, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -23,31 +23,25 @@ import numpy as np
 import pytest
 from jax.random import PRNGKey
 
-from experiments.lds_analysis import (
+from src.config import (
+    ModelConfig,
+    PseudoTargetGenerationStrategy,
+)
+from src.hessians.collector import CollectorActivationsGradients
+from src.hessians.computer.ekfac import EKFACComputer
+from src.utils.data.data import Dataset
+from src.utils.influence import compute_influence_matrix, compute_per_example_flat_grads
+from src.utils.lds import (
     aggregate_lds_scores,
     bootstrap_spearman_ci,
     compute_elso_ground_truth,
     compute_group_attributions,
-    compute_influence_matrix,
-    compute_per_example_flat_grads,
-    compute_per_example_losses,
     generate_random_subsets,
 )
-from src.config import (
-    LossType,
-    ModelArchitecture,
-    ModelConfig,
-    OptimizerType,
-    TrainingConfig,
-)
-from src.hessians.collector import CollectorActivationsGradients
-from src.hessians.computer.ekfac import EKFACComputer
-from src.hessians.utils.pseudo_targets import generate_pseudo_targets
-from src.utils.data.data import Dataset, RandomClassificationDataset
-from src.utils.loss import get_loss
 from src.utils.models.approximation_model import ApproximationModel
-from src.utils.optimizers import optimizer as create_optimizer
-from src.utils.train import train_model
+from src.utils.train import evaluate_per_example_losses as compute_per_example_losses
+from tests._helpers import cached_train_model_for_dataset
+from tests.conftest import TrainingScenario
 
 # ===========================================================================
 # Fixtures
@@ -55,94 +49,54 @@ from src.utils.train import train_model
 
 
 @pytest.fixture(scope="session")
-def tiny_dataset() -> Dataset:
-    """50-sample, 8-feature, 2-class dataset."""
-    return RandomClassificationDataset(
-        n_samples=50,
-        n_features=8,
-        n_informative=4,
-        n_classes=2,
-        seed=0,
-    )
+def config(lds_scenario: TrainingScenario) -> ModelConfig:
+    return lds_scenario.model_config
 
 
 @pytest.fixture(scope="session")
-def tiny_model_config(tmp_path_factory) -> ModelConfig:
-    base = tmp_path_factory.mktemp("lds_model")
-    return ModelConfig(
-        architecture=ModelArchitecture.LINEAR,
-        input_dim=8,
-        hidden_dim=None,
-        output_dim=2,
-        loss=LossType.CROSS_ENTROPY,
-        training=TrainingConfig(
-            learning_rate=1e-2,
-            optimizer=OptimizerType.SGD,
-            epochs=5,
-            batch_size=16,
-        ),
-        directory=str(base / "model"),
-    )
+def dataset(lds_scenario: TrainingScenario) -> Dataset:
+    return lds_scenario.dataset
 
 
 @pytest.fixture(scope="session")
-def trained_model(
-    tiny_dataset: Dataset, tiny_model_config: ModelConfig
-) -> Tuple[object, Dict, Callable]:
-    """Return (model, params, loss_fn) after training."""
-    loss_fn = get_loss(tiny_model_config.loss)
-    opt = create_optimizer(
-        optimizer_enum=tiny_model_config.training.optimizer,
-        lr=tiny_model_config.training.learning_rate,
-        weight_decay=0.0,
+def model_params_loss(
+    trained_model_registry: Dict[
+        Tuple[Any, ...], Tuple[ApproximationModel, Dict, Callable]
+    ],
+    lds_scenario: TrainingScenario,
+) -> Tuple[ApproximationModel, Dict, Callable]:
+    return cached_train_model_for_dataset(
+        lds_scenario.model_config,
+        lds_scenario.dataset,
+        trained_model_registry,
+        seed=lds_scenario.train_seed,
+        shuffle=lds_scenario.shuffle,
     )
-    model, params, _ = train_model(
-        model_config=tiny_model_config,
-        dataloader=tiny_dataset.get_dataloader(
-            batch_size=tiny_model_config.training.batch_size, seed=0
-        ),
-        loss_fn=loss_fn,
-        optimizer=opt,
-        epochs=tiny_model_config.training.epochs,
-        seed=0,
-    )
-    return model, params, loss_fn
 
 
 @pytest.fixture(scope="session")
 def ekfac_computer(
-    tiny_dataset: Dataset,
-    tiny_model_config: ModelConfig,
-    trained_model: Tuple[ApproximationModel, Dict, Callable],
-    tmp_path_factory,
+    config: ModelConfig,
+    dataset: Dataset,
+    model_params_loss: Tuple[ApproximationModel, Dict, Callable],
 ):
-    """Built EKFACComputer for the tiny model."""
-    model, params, loss_fn = trained_model
-    base = tmp_path_factory.mktemp("ekfac")
+    """Built EKFACComputer for the LDS scenario."""
+    model, params, loss_fn = model_params_loss
 
     collector = CollectorActivationsGradients(
-        model=model, params=params, loss_fn=loss_fn
+        model=model,
+        params=params,
+        loss_fn=loss_fn,
+        pseudo_target_strategy=PseudoTargetGenerationStrategy.EMPIRICAL_FISHER,
+        pseudo_target_repetitions=1,
     )
-
-    def _collect(run_seed: int, name: str):
-        pt = generate_pseudo_targets(
-            model=model,
-            inputs=tiny_dataset.inputs,
-            params=params,
-            loss_fn=loss_fn,
-            rng_key=PRNGKey(run_seed),
-        )
-        return collector.collect(
-            inputs=tiny_dataset.inputs,
-            targets=pt,
-            save_directory=str(base / name),
-            try_load=True,
-        )
-
-    run1 = _collect(0, "run1")
-    run2 = _collect(1, "run2")
-    comp = EKFACComputer(compute_context=(run1, run2)).build(base_directory=str(base))
-    return comp
+    collector_data = collector.collect(
+        dataset=dataset,
+        save_directory=f"{config.directory}/ekfac",
+        try_load=True,
+        rng_key=PRNGKey(42),
+    )
+    return EKFACComputer(compute_context=collector_data).build()
 
 
 # ===========================================================================
@@ -305,9 +259,11 @@ class TestAggregateLDSScores:
         for key in (
             "mean_lds",
             "std_lds",
+            "ci_low",
+            "ci_high",
             "per_query_lds",
-            "per_query_ci_low",
-            "per_query_ci_high",
+            "num_undefined_queries",
+            "num_valid_queries",
         ):
             assert key in out
 
@@ -317,14 +273,13 @@ class TestAggregateLDSScores:
         pred = np.random.randn(n_q, 12)
         out = aggregate_lds_scores(dm, pred, n_bootstrap=50)
         assert len(out["per_query_lds"]) == n_q
-        assert len(out["per_query_ci_low"]) == n_q
-        assert len(out["per_query_ci_high"]) == n_q
+        assert out["num_valid_queries"] + out["num_undefined_queries"] == n_q
 
     def test_mean_is_average_of_per_query(self):
         dm = np.random.randn(4, 8)
         pred = np.random.randn(4, 8)
         out = aggregate_lds_scores(dm, pred, n_bootstrap=50)
-        expected_mean = float(np.mean(out["per_query_lds"]))
+        expected_mean = float(np.nanmean(out["per_query_lds"]))
         assert out["mean_lds"] == pytest.approx(expected_mean)
 
     def test_bounded_output(self):
@@ -333,7 +288,8 @@ class TestAggregateLDSScores:
         out = aggregate_lds_scores(dm, pred, n_bootstrap=100)
         assert -1.0 <= out["mean_lds"] <= 1.0
         for r in out["per_query_lds"]:
-            assert -1.0 <= r <= 1.0
+            if not np.isnan(r):
+                assert -1.0 <= r <= 1.0
 
     def test_perfect_prediction_gives_high_lds(self):
         """Predicted == actual should yield near-perfect LDS."""
@@ -350,16 +306,16 @@ class TestAggregateLDSScores:
 class TestComputePerExampleFlatGrads:
     def test_output_shape(
         self,
-        trained_model: Tuple[object, Dict, Callable],
-        tiny_dataset: Dataset,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+        dataset: Dataset,
     ):
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         n = 10
         grads = compute_per_example_flat_grads(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:n],
-            targets=tiny_dataset.targets[:n],
+            inputs=dataset.inputs[:n],
+            targets=dataset.targets[:n],
             loss_fn=loss_fn,
         )
         # Flat dimension = total number of model parameters
@@ -370,31 +326,31 @@ class TestComputePerExampleFlatGrads:
 
     def test_finite_values(
         self,
-        trained_model: Tuple[object, Dict, Callable],
-        tiny_dataset: Dataset,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+        dataset: Dataset,
     ):
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         grads = compute_per_example_flat_grads(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:8],
-            targets=tiny_dataset.targets[:8],
+            inputs=dataset.inputs[:8],
+            targets=dataset.targets[:8],
             loss_fn=loss_fn,
         )
         assert jnp.isfinite(grads).all()
 
     def test_different_examples_differ(
         self,
-        trained_model: Tuple[object, Dict, Callable],
-        tiny_dataset: Dataset,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+        dataset: Dataset,
     ):
         """Per-example gradients should generally not all be equal."""
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         grads = compute_per_example_flat_grads(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:5],
-            targets=tiny_dataset.targets[:5],
+            inputs=dataset.inputs[:5],
+            targets=dataset.targets[:5],
             loss_fn=loss_fn,
         )
         # At least two gradients should differ
@@ -403,17 +359,17 @@ class TestComputePerExampleFlatGrads:
 
     def test_gradient_is_gradient(
         self,
-        trained_model: Tuple[object, Dict, Callable],
-        tiny_dataset: Dataset,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+        dataset: Dataset,
     ):
         """Verify against a manual per-example gradient for the first sample."""
         from jax import flatten_util
 
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         flat_params, unravel = flatten_util.ravel_pytree(params)
 
-        x = tiny_dataset.inputs[0]
-        y = tiny_dataset.targets[0]
+        x = dataset.inputs[0]
+        y = dataset.targets[0]
 
         ref_grad = jax.grad(
             lambda fp: loss_fn(model.apply(unravel(fp), x[None]), jnp.atleast_1d(y))
@@ -422,8 +378,8 @@ class TestComputePerExampleFlatGrads:
         grads = compute_per_example_flat_grads(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:1],
-            targets=tiny_dataset.targets[:1],
+            inputs=dataset.inputs[:1],
+            targets=dataset.targets[:1],
             loss_fn=loss_fn,
         )
         np.testing.assert_allclose(np.array(grads[0]), np.array(ref_grad), rtol=1e-5)
@@ -437,24 +393,24 @@ class TestComputePerExampleFlatGrads:
 class TestComputeInfluenceMatrix:
     def test_output_shape(
         self,
-        trained_model: Tuple[object, Dict, Callable],
-        tiny_dataset: Dataset,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+        dataset: Dataset,
         ekfac_computer: EKFACComputer,
     ):
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         n_test, n_train = 4, 10
         test_grads = compute_per_example_flat_grads(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:n_test],
-            targets=tiny_dataset.targets[:n_test],
+            inputs=dataset.inputs[:n_test],
+            targets=dataset.targets[:n_test],
             loss_fn=loss_fn,
         )
         train_grads = compute_per_example_flat_grads(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:n_train],
-            targets=tiny_dataset.targets[:n_train],
+            inputs=dataset.inputs[:n_train],
+            targets=dataset.targets[:n_train],
             loss_fn=loss_fn,
         )
         damping = 0.1
@@ -465,17 +421,17 @@ class TestComputeInfluenceMatrix:
 
     def test_finite_values(
         self,
-        trained_model: Tuple[object, Dict, Callable],
-        tiny_dataset: Dataset,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+        dataset: Dataset,
         ekfac_computer: EKFACComputer,
     ):
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         n = 5
         grads = compute_per_example_flat_grads(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:n],
-            targets=tiny_dataset.targets[:n],
+            inputs=dataset.inputs[:n],
+            targets=dataset.targets[:n],
             loss_fn=loss_fn,
         )
         attrs = compute_influence_matrix(grads, grads, ekfac_computer, damping=0.1)
@@ -483,45 +439,39 @@ class TestComputeInfluenceMatrix:
 
     def test_self_influence_positive(
         self,
-        trained_model: Tuple[object, Dict, Callable],
-        tiny_dataset: Dataset,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+        dataset: Dataset,
         ekfac_computer: EKFACComputer,
     ):
-        """τ(z, z) = -(H^{-1} ∇L)·∇L should be ≥ 0 when H is PSD.
-
-        This follows because (H^{-1} ∇L)·∇L = ∇L^T H^{-1} ∇L ≥ 0 for PSD H^{-1}.
-        """
-        model, params, loss_fn = trained_model
+        """τ(z, z) = ∇Lᵀ H⁻¹ ∇L ≥ 0 for PSD H⁻¹ (H + λI with λ > 0 is PD)."""
+        model, params, loss_fn = model_params_loss
         n = 6
         grads = compute_per_example_flat_grads(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:n],
-            targets=tiny_dataset.targets[:n],
+            inputs=dataset.inputs[:n],
+            targets=dataset.targets[:n],
             loss_fn=loss_fn,
         )
         attrs = compute_influence_matrix(grads, grads, ekfac_computer, damping=0.1)
         diagonal = np.diag(attrs)
-        # τ(z,z) = -(H^{-1}∇L)·∇L = -(positive number) when sign convention is negative
-        # The sign in our formula is τ = -(H^-1 ∇L_q)·∇L_i → for q=i: -(∇L^T H^-1 ∇L)
-        # This is ≤ 0 for PSD H^{-1}. Check that self-influence is consistently signed.
-        # At minimum, verify the values are finite and non-NaN.
         assert np.isfinite(diagonal).all()
+        assert np.all(diagonal >= 0.0)
 
     def test_higher_damping_reduces_magnitude(
         self,
-        trained_model: Tuple[object, Dict, Callable],
-        tiny_dataset: Dataset,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
+        dataset: Dataset,
         ekfac_computer: EKFACComputer,
     ):
         """Higher damping → H^{-1} shrinks → smaller |ihvp| → smaller |influence|."""
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         n = 5
         grads = compute_per_example_flat_grads(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:n],
-            targets=tiny_dataset.targets[:n],
+            inputs=dataset.inputs[:n],
+            targets=dataset.targets[:n],
             loss_fn=loss_fn,
         )
         attrs_lo = compute_influence_matrix(grads, grads, ekfac_computer, damping=0.01)
@@ -539,15 +489,15 @@ class TestComputeElsoGroundTruth:
 
     def test_output_shape(
         self,
-        tiny_dataset: Dataset,
-        tiny_model_config: ModelConfig,
-        trained_model: Tuple[object, Dict, Callable],
+        dataset: Dataset,
+        config: ModelConfig,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
     ):
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         n_query, K = 3, 5
 
         subsets = generate_random_subsets(
-            dataset_size=len(tiny_dataset.inputs),
+            dataset_size=len(dataset.inputs),
             num_subsets=K,
             subset_fraction=0.4,
             seed=0,
@@ -555,83 +505,83 @@ class TestComputeElsoGroundTruth:
         baseline = compute_per_example_losses(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:n_query],
-            targets=tiny_dataset.targets[:n_query],
+            inputs=dataset.inputs[:n_query],
+            targets=dataset.targets[:n_query],
             loss_fn=loss_fn,
         )
         delta_m = compute_elso_ground_truth(
-            model_config=tiny_model_config,
-            full_train_inputs=tiny_dataset.inputs,
-            full_train_targets=tiny_dataset.targets,
-            query_inputs=tiny_dataset.inputs[:n_query],
-            query_targets=tiny_dataset.targets[:n_query],
+            model_config=config,
+            full_train_inputs=dataset.inputs,
+            full_train_targets=dataset.targets,
+            query_inputs=dataset.inputs[:n_query],
+            query_targets=dataset.targets[:n_query],
             subsets=subsets,
             reps_per_subset=1,  # R=1 to keep the test fast
-            baseline_losses=baseline,
+            baseline_losses=baseline,  # type: ignore
             base_seed=0,
         )
-        assert delta_m.shape == (n_query, K)
+        assert delta_m.shape == (n_query, K)  # type: ignore
 
     def test_finite_values(
         self,
-        tiny_dataset: Dataset,
-        tiny_model_config: ModelConfig,
-        trained_model: Tuple[object, Dict, Callable],
+        dataset: Dataset,
+        config: ModelConfig,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
     ):
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         n_query, K = 2, 3
 
-        subsets = generate_random_subsets(len(tiny_dataset.inputs), K, 0.4, seed=1)
+        subsets = generate_random_subsets(len(dataset.inputs), K, 0.4, seed=1)
         baseline = compute_per_example_losses(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:n_query],
-            targets=tiny_dataset.targets[:n_query],
+            inputs=dataset.inputs[:n_query],
+            targets=dataset.targets[:n_query],
             loss_fn=loss_fn,
         )
         delta_m = compute_elso_ground_truth(
-            model_config=tiny_model_config,
-            full_train_inputs=tiny_dataset.inputs,
-            full_train_targets=tiny_dataset.targets,
-            query_inputs=tiny_dataset.inputs[:n_query],
-            query_targets=tiny_dataset.targets[:n_query],
+            model_config=config,
+            full_train_inputs=dataset.inputs,
+            full_train_targets=dataset.targets,
+            query_inputs=dataset.inputs[:n_query],
+            query_targets=dataset.targets[:n_query],
             subsets=subsets,
             reps_per_subset=1,
-            baseline_losses=baseline,
+            baseline_losses=baseline,  # type: ignore
             base_seed=1,
         )
-        assert np.isfinite(delta_m).all()
+        assert np.isfinite(delta_m).all()  # type: ignore
 
     def test_delta_m_is_difference_from_baseline(
         self,
-        tiny_dataset: Dataset,
-        tiny_model_config: ModelConfig,
-        trained_model: Tuple[object, Dict, Callable],
+        dataset: Dataset,
+        config: ModelConfig,
+        model_params_loss: Tuple[ApproximationModel, Dict, Callable],
     ):
         """Δm_j = E[loss(D\\S_j)] - loss(D), so Δm with R=1 should have finite
         spread (not all the same value), reflecting subset-induced variation."""
-        model, params, loss_fn = trained_model
+        model, params, loss_fn = model_params_loss
         n_query, K = 2, 6
 
-        subsets = generate_random_subsets(len(tiny_dataset.inputs), K, 0.5, seed=2)
+        subsets = generate_random_subsets(len(dataset.inputs), K, 0.5, seed=2)
         baseline = compute_per_example_losses(
             model=model,
             params=params,
-            inputs=tiny_dataset.inputs[:n_query],
-            targets=tiny_dataset.targets[:n_query],
+            inputs=dataset.inputs[:n_query],
+            targets=dataset.targets[:n_query],
             loss_fn=loss_fn,
         )
         delta_m = compute_elso_ground_truth(
-            model_config=tiny_model_config,
-            full_train_inputs=tiny_dataset.inputs,
-            full_train_targets=tiny_dataset.targets,
-            query_inputs=tiny_dataset.inputs[:n_query],
-            query_targets=tiny_dataset.targets[:n_query],
+            model_config=config,
+            full_train_inputs=dataset.inputs,
+            full_train_targets=dataset.targets,
+            query_inputs=dataset.inputs[:n_query],
+            query_targets=dataset.targets[:n_query],
             subsets=subsets,
             reps_per_subset=1,
-            baseline_losses=baseline,
+            baseline_losses=baseline,  # type: ignore
             base_seed=2,
         )
         # Δm values across subsets should vary (not all identical)
         for i in range(n_query):
-            assert not np.allclose(delta_m[i], delta_m[i, 0])
+            assert not np.allclose(delta_m[i], delta_m[i, 0])  # type: ignore

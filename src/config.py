@@ -47,7 +47,13 @@ class OptimizerType(str, Enum):
     SGD = "sgd"
     ADAM = "adam"
     ADAMW = "adamw"
-    SGD_SCHEDULE_COSINE = "sgd_schedule_cosine"
+
+
+class LRSchedule(str, Enum):
+    """Learning-rate schedule to apply on top of the base optimizer."""
+
+    NONE = "none"
+    COSINE = "cosine"
 
 
 class HessianApproximationMethod(str, Enum):
@@ -171,6 +177,7 @@ class TrainingConfig:
     optimizer: OptimizerType = OptimizerType.ADAMW
     epochs: int = 500
     batch_size: int = 128
+    lr_schedule: LRSchedule = LRSchedule.NONE
 
     def __post_init__(self):
         if self.epochs <= 0:
@@ -433,13 +440,16 @@ class LDSExperimentConfig:
     # ELSO sampling parameters
     num_subsets: int = 100
     reps_per_model: int = 1
-    # If specified, the LDS baseline for the model will be computed as the average over this many repetitions fresh trained models
-    baseline_reps: Optional[int] = None
     subset_fraction: float = 0.5
     num_test_examples: int = 50
 
     # If specified, run LDS at each of these epoch checkpoints instead of the final model
     epochs: Optional[List[int]] = None
+
+    # Cache the expensive ELSO retraining output (rep-averaged per-query losses)
+    # alongside the model directory so subsequent runs that only vary the
+    # Hessian / regularisation settings can reuse it.
+    cache_elso: bool = True
 
     # Storage
     results_output_dir: str = "experiments/results/lds_analysis"
@@ -449,7 +459,5 @@ class LDSExperimentConfig:
             raise ValueError("num_subsets must be positive")
         if not 0.0 < self.subset_fraction < 1.0:
             raise ValueError("subset_fraction must be in (0, 1)")
-        if self.baseline_reps is not None and self.baseline_reps <= 0:
-            raise ValueError("baseline_reps must be positive when specified")
         if self.num_test_examples <= 0:
             raise ValueError("num_test_examples must be positive")

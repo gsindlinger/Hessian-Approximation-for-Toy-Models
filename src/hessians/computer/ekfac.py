@@ -35,8 +35,8 @@ class EKFACComputer(KroneckerEstimator):
         probs: Float[Array, "N k"],
     ) -> Dict[str, Dict[str, Float[Array, "D D"]]]:
         """Unnormalized per-chunk EKFAC sums:
-            act_sum[l]  = Σ_n a_n a_nᵀ
-            grad_sum[l] = Σ_{n,k} p[n,k] g_{n,k} g_{n,k}ᵀ
+        act_sum[l]  = Σ_n a_n a_nᵀ
+        grad_sum[l] = Σ_{n,k} p[n,k] g_{n,k} g_{n,k}ᵀ
         """
         act_sums: Dict[str, Array] = {}
         grad_sums: Dict[str, Array] = {}
@@ -57,5 +57,7 @@ class EKFACComputer(KroneckerEstimator):
         """EKFAC normalization: A = act_sum / N, G = grad_sum / Σp."""
         return {
             "activation_cov": {layer: act_sums[layer] / N for layer in act_sums},
-            "gradient_cov": {layer: grad_sums[layer] / total_prob for layer in grad_sums},
+            "gradient_cov": {
+                layer: grad_sums[layer] / total_prob for layer in grad_sums
+            },
         }

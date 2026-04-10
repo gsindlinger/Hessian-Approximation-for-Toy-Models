@@ -63,6 +63,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import asdict
+from math import ceil
 from typing import Dict, List
 
 import hydra
@@ -143,6 +144,10 @@ def train_single_model(
         logger.info(f"[LOAD] {model_config.get_model_display_name()} from {model_dir}")
     else:
         logger.info(f"[TRAIN] {model_config.get_model_display_name()}")
+        total_steps = (
+            ceil(len(train_dataset.inputs) / model_config.training.batch_size)
+            * model_config.training.epochs
+        )
         model, params, _ = train_model(
             model_config=model_config,
             dataloader=train_dataset.get_dataloader(
@@ -153,6 +158,8 @@ def train_single_model(
                 optimizer_enum=model_config.training.optimizer,
                 lr=model_config.training.learning_rate,
                 weight_decay=model_config.training.weight_decay,
+                lr_schedule=model_config.training.lr_schedule,
+                total_steps=total_steps,
             ),
             epochs=model_config.training.epochs,
             seed=seed,
