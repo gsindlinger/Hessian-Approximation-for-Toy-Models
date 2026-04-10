@@ -249,13 +249,19 @@ class EKFACComputer(HessianEstimator):
     ) -> float:
         """Get damping value based on strategy.
 
-        For non-fixed strategies, reads `mean(Lambda)` across the per-layer
-        KroneckerFactors blocks of the built `LayerMatrix`.  (Lambda for
-        EKFAC is the eigenvalue correction; for KFAC it is `outer(λ_A, λ_G)`.)
+        Reads per-layer statistics from the `KroneckerFactors` blocks of the
+        built `LayerMatrix`:
 
-        Both `AUTO_MEAN_EIGENVALUE` and `AUTO_MEAN_EIGENVALUE_CORRECTION`
-        collapse to the same computation in this codepath: average over
-        layers of `mean(block.Lambda)`.
+        * `AUTO_MEAN_EIGENVALUE` → average over layers of
+          `mean(λ_A) * mean(λ_G)`, the product of the raw activation and
+          gradient covariance eigenvalue means.  For KFAC this equals
+          `mean(Lambda)` because `Lambda = outer(λ_A, λ_G)`, but for EKFAC
+          the eigenvalue correction diverges and this strategy reflects the
+          *uncorrected* basis.
+        * `AUTO_MEAN_EIGENVALUE_CORRECTION` → average over layers of
+          `mean(block.Lambda)`, i.e. the eigenvalue-corrected Λ (equivalent
+          to `AUTO_MEAN_EIGENVALUE` for KFAC, but the correction-aware
+          version for EKFAC).
         """
         if damping_strategy == RegularizationStrategy.FIXED:
             return factor
@@ -272,7 +278,17 @@ class EKFACComputer(HessianEstimator):
         for layer in self.get_layer_names():
             block = self.layer_matrix.blocks[(layer, layer)]
             assert isinstance(block, KroneckerFactors)
-            means.append(jnp.mean(block.Lambda))
+            if damping_strategy == RegularizationStrategy.AUTO_MEAN_EIGENVALUE:
+                if block.lambda_A is None or block.lambda_G is None:
+                    raise RuntimeError(
+                        f"Layer '{layer}' KroneckerFactors block is missing "
+                        f"`lambda_A` / `lambda_G` — AUTO_MEAN_EIGENVALUE "
+                        f"requires the raw covariance eigenvalues.  Rebuild "
+                        f"with the EKFAC pipeline, which populates them."
+                    )
+                means.append(jnp.mean(block.lambda_A) * jnp.mean(block.lambda_G))
+            else:  # AUTO_MEAN_EIGENVALUE_CORRECTION
+                means.append(jnp.mean(block.Lambda))
         if not means:
             return 0.0
         aggregated = jnp.mean(jnp.stack(means))
@@ -501,8 +517,8 @@ class EKFACComputer(HessianEstimator):
             "gradient_cov": gradient_cov_dict,
         }
 
-    @staticmethod
     def _batched_covariance_processing(
+        self,
         activations_dict: Dict[str, Float[Array, "N I"]],
         gradients_dict: Dict[str, Float[Array, "k N O"]],
         probabilities: Optional[Float[Array, "N K"]] = None,
@@ -510,6 +526,10 @@ class EKFACComputer(HessianEstimator):
     ) -> Dict[str, Dict[str, Float[Array, "..."]]]:
         """
         Process activations and gradients to compute covariances in batches.
+
+        Dispatches through ``self._compute_covariances`` /
+        ``self._compute_covariances_weighted`` so subclasses can override the
+        per-batch covariance math without reimplementing the batching loop.
         """
         if batch_size is None:
             batch_size = JAXDataLoader.get_batch_size()
@@ -533,13 +553,13 @@ class EKFACComputer(HessianEstimator):
 
             if probabilities is not None:
                 batch_probs = probabilities[start_idx:end_idx]
-                batch_result = EKFACComputer._compute_covariances_weighted(
+                batch_result = self._compute_covariances_weighted(
                     activation_batch_dict=activation_batch_dict,
                     gradient_batch_dict=gradient_batch_dict,
                     probabilities=batch_probs,
                 )
             else:
-                batch_result = EKFACComputer._compute_covariances(
+                batch_result = self._compute_covariances(
                     activation_batch_dict=activation_batch_dict,
                     gradient_batch_dict=gradient_batch_dict,
                 )
