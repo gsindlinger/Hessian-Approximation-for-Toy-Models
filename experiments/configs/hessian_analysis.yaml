@@ -15,8 +15,8 @@ hessian_analysis:
     - block_hessian
     - shampoo
     - eshampoo
-    - tkfac
-    - etkfac
+    # - tkfac
+    # - etkfac
     comparison_references:
     - exact
     - gnh
