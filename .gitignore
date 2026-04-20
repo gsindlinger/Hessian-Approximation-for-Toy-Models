@@ -24,7 +24,7 @@ experiments/**/*.md
 **/results/*
 **/logs/*
 **/configs/*
-plots**.ipynb
+plot**.ipynb
 *.png
 
 
