@@ -22,7 +22,6 @@ import numpy as np
 from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Float
 
-from src.config import PseudoTargetGenerationStrategy
 from src.utils.data.data import Dataset
 from src.utils.models.approximation_model import ApproximationModel
 
@@ -242,24 +241,26 @@ def layer_shapes_from_model_context(
 @dataclass
 class DataActivationsGradients(ApproximationData):
     """
-    Data structure to hold activations and gradients per layer.
+    Single collector run: per-layer activations and per-sample/per-k output gradients.
 
     Attributes:
-    activations: Per-layer activations, shape (N, I_l) per layer
-    gradients: Per-layer gradients, shape (K, N, O_l) per layer (K depending on pseudo-target strategy)
-    probabilities: Predicted probabilities p(c|x), shape (N, K), optional (only need when ALL_CLASS strategy is used for pseudo-targets)
-    layer_names: Ordered list of layer names
+        activations: Per-layer input activations, shape (N, I_l).
+        gradients: Per-layer output gradients, shape (N, O_l, k). k is the
+            number of pseudo-target draws (k=1 for empirical_fisher,
+            k=num_classes for all_classes, k=repetitions for mcmc).
+        probs: Per-sample, per-k weights, shape (N, k). Conventions:
+            - empirical_fisher: ones (N, 1)
+            - all_classes: softmax(logits), rows sum to 1
+            - mcmc: ones (N, k)  # FLAGGED: normalization convention deferred
+        layer_names: Ordered list of layer names.
     """
 
-    activations: Dict[str, Float[Array, "N I"]] = field(
-        default_factory=dict
-    )  # Only used for Block FIM
-    gradients: Dict[str, Float[Array, "K N O"]] = field(default_factory=dict)
-    layer_names: List[str] = field(default_factory=list)
-    probabilities: Optional[Float[Array, "N K"]] = field(default=None)
-    pseudo_target_strategy: PseudoTargetGenerationStrategy = field(
-        default=PseudoTargetGenerationStrategy.EMPIRICAL_FISHER
+    activations: Dict[str, Float[Array, "N I"]] = field(default_factory=dict)
+    gradients: Dict[str, Float[Array, "N O k"]] = field(default_factory=dict)
+    probs: Float[Array, "N k"] = field(
+        default_factory=lambda: jnp.zeros((0, 0), dtype=jnp.float32)
     )
+    layer_names: List[str] = field(default_factory=list)
 
     @classmethod
     def name(cls) -> str:

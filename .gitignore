@@ -144,4 +144,4 @@ logs/
 data/checkpoints/*
 # outputs/
 # results/
-
+*.tex

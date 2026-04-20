@@ -92,6 +92,21 @@ class HessianEstimator(ABC):
         d = 0.0 if damping is None else damping
         return M.damped(d).to_dense()
 
+    def estimate_inverse_hessian(
+        self,
+        damping: Optional[Float] = None,
+        pseudo_inverse_factor: Optional[float] = None,
+    ) -> Float[Array, "n_params n_params"]:
+        """Compute the full `(n_params, n_params)` inverse Hessian approximation."""
+        if pseudo_inverse_factor is not None and damping is not None:
+            raise ValueError(
+                "Cannot use both damping and pseudo-inverse factor simultaneously."
+            )
+        M = self._require_built("estimating the inverse Hessian")
+        d = 0.0 if damping is None else damping
+        p = 0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
+        return M.inverse(damping=d, pseudo_inverse_factor=p).to_dense()
+
     def compare_full_hessian_estimates(
         self,
         comparison_matrix: Float[Array, "n_params n_params"],

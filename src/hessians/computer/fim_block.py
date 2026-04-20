@@ -5,7 +5,6 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.config import PseudoTargetGenerationStrategy
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.layer_matrix import DenseBlock, LayerMatrix
 from src.hessians.utils.data import DataActivationsGradients
@@ -17,12 +16,12 @@ class FIMBlockComputer(HessianEstimator):
     """
     Block-diagonal Fisher Information Matrix approximation.
 
-    Computes F = block_diag(F_1, ..., F_L) where each F_l is the FIM for layer l.
+    F = block_diag(F_1, ..., F_L) where each F_l uses the unified formula
 
-    Supports different pseudo-target strategies:
-    - EMPIRICAL_FISHER: Uses ground truth labels (k=1)
-    - MCMC: Uses sampled pseudo-targets (k=num_samples)
-    - ALL_CLASSES: Uses all classes with probability weighting (k=num_classes)
+        F_l = (Σ_n Σ_k p[n,k] · v_{n,k} v_{n,k}^T) / Σ p
+
+    with v_{n,k} = a[n] ⊗ g[n,:,k] the layer's per-(sample,draw) parameter
+    gradient vector.
     """
 
     def get_layer_names(self) -> List[str]:
@@ -34,14 +33,13 @@ class FIMBlockComputer(HessianEstimator):
         return {
             l: (
                 int(compute_context.activations[l].shape[-1]),
-                int(compute_context.gradients[l].shape[-1]),
+                int(compute_context.gradients[l].shape[-2]),
             )
             for l in compute_context.layer_names
         }
 
     def _build(self, compute_context: DataActivationsGradients) -> LayerMatrix:
         """Build a block-diagonal `LayerMatrix` of per-layer dense FIM blocks."""
-        strategy = compute_context.pseudo_target_strategy
         layer_names = list(compute_context.layer_names)
         shapes = self._layer_shapes_from_context(compute_context)
 
@@ -49,12 +47,7 @@ class FIMBlockComputer(HessianEstimator):
         for layer in layer_names:
             act = compute_context.activations[layer]
             grad = compute_context.gradients[layer]
-            if strategy == PseudoTargetGenerationStrategy.ALL_CLASSES:
-                block = self._compute_layer_block_weighted(
-                    act, grad, compute_context.probabilities
-                )
-            else:
-                block = self._compute_layer_block_unweighted(act, grad)
+            block = self._compute_layer_block(act, grad, compute_context.probs)
             diag_blocks[layer] = DenseBlock(
                 matrix=block,
                 row_shape=shapes[layer],
@@ -68,37 +61,16 @@ class FIMBlockComputer(HessianEstimator):
 
     @staticmethod
     @jax.jit
-    def _compute_layer_block_unweighted(
+    def _compute_layer_block(
         act: Float[Array, "N I"],
-        grad: Float[Array, "K N O"],
+        grad: Float[Array, "N O k"],
+        probs: Float[Array, "N k"],
     ) -> Float[Array, "n n"]:
-        """Single-layer FIM block for EMPIRICAL_FISHER / MCMC strategies."""
-        N, I = act.shape
-        K, _, O = grad.shape
-        act_expanded = jnp.broadcast_to(act[None, :, :], (K, N, I))
-        per_sample_vecs = jnp.einsum(
-            "kni,kno->knio", act_expanded, grad
-        ).reshape(K, N, -1)
-        vecs_flat = per_sample_vecs.reshape(K * N, -1)
-        block = (vecs_flat.T @ vecs_flat) / (K * N)
-        return 0.5 * (block + block.T)
-
-    @staticmethod
-    @jax.jit
-    def _compute_layer_block_weighted(
-        act: Float[Array, "N I"],
-        grad: Float[Array, "K N O"],
-        probabilities: Float[Array, "N K"],
-    ) -> Float[Array, "n n"]:
-        """Single-layer FIM block for ALL_CLASSES strategy."""
-        N, I = act.shape
-        K, _, _ = grad.shape
-        act_expanded = jnp.broadcast_to(act[None, :, :], (K, N, I))
-        per_sample_vecs = jnp.einsum(
-            "kni,kno->knio", act_expanded, grad
-        ).reshape(K, N, -1)
-        sqrt_probs = jnp.sqrt(probabilities.T)[..., None]  # (K, N, 1)
-        weighted_vecs = per_sample_vecs * sqrt_probs
-        weighted_vecs_flat = weighted_vecs.reshape(K * N, -1)
-        block = (weighted_vecs_flat.T @ weighted_vecs_flat) / N
+        """
+        F_l = (Σ_n Σ_k p[n,k] v_{n,k} v_{n,k}^T) / Σ p
+        """
+        # (N, I, O, k) -> (N, I*O, k)
+        N = act.shape[0]
+        vecs = jnp.einsum("ni,nok->niok", act, grad).reshape(N, -1, grad.shape[-1])
+        block = jnp.einsum("npk,nqk,nk->pq", vecs, vecs, probs) / probs.sum()
         return 0.5 * (block + block.T)

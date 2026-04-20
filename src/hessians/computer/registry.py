@@ -58,15 +58,19 @@ class HessianComputerRegistry:
     def get_computer(
         approximator: HessianApproximationMethod,
         compute_context: ModelContext | DataActivationsGradients,
+        corr_context: DataActivationsGradients | None = None,
     ) -> HessianEstimator:
         computer_cls = HessianComputerRegistry.REGISTRY[approximator]
         layer_matrix_directory = HessianComputerRegistry.LAYER_MATRIX_DIRECTORY.get(
             approximator
         )
-        return computer_cls(
-            compute_context=compute_context,
-            layer_matrix_directory=layer_matrix_directory,
-        )
+        kwargs = {
+            "compute_context": compute_context,
+            "layer_matrix_directory": layer_matrix_directory,
+        }
+        if corr_context is not None and issubclass(computer_cls, EKFACComputer):
+            kwargs["corr_context"] = corr_context
+        return computer_cls(**kwargs)
 
     @staticmethod
     def get_compute_context(

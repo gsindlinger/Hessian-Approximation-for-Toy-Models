@@ -228,7 +228,8 @@ def test_gradient_consistency(
     for i, (layer, gt) in enumerate(gt_grads["params"].items()):
         assert layer == layer_names[i], "Layer names do not match"
         W_grad = gt["kernel"]
-        a, g = activations[layer], gradients[layer][0]
+        # gradients have shape (N, O, k); take k=0 slice -> (N, O)
+        a, g = activations[layer], gradients[layer][..., 0]
 
         ag = jnp.einsum("ni,no->io", a, g)
         assert jnp.allclose(W_grad, ag, atol=1e-4)
@@ -267,9 +268,9 @@ def test_kfac_via_kron_equals_eigenvector_method(
     the K-FAC Hessian computed via the eigenvector method implemented in KFACComputer."""
 
     assert all(
-        gradients.shape[0] == 1
+        gradients.shape[-1] == 1
         for gradients in collector_data_single.gradients.values()
-    ), "This test assumes that gradients have shape (1, N, O) for each layer. "
+    ), "This test assumes that gradients have shape (N, O, 1) for each layer. "
 
     activations, gradients, layer_names = (
         collector_data_single.activations,
@@ -283,7 +284,7 @@ def test_kfac_via_kron_equals_eigenvector_method(
 
     for layer in layer_names:
         a = activations[layer]
-        g = gradients[layer][0]
+        g = gradients[layer][..., 0]  # (N, O, 1) -> (N, O)
 
         covariances_activations[layer] = (a.T @ a) / a.shape[0]
         covariances_gradients[layer] = (g.T @ g) / g.shape[0]
