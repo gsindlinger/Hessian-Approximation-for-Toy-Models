@@ -451,7 +451,12 @@ class DenseBlock(LayerBlock):
                 "DenseBlock.inverse only defined for square diagonal blocks"
             )
         n = self.matrix.shape[0]
-        M = self.matrix + damping * jnp.eye(n, dtype=self.matrix.dtype)
+        orig_dtype = self.matrix.dtype
+        # eigh on a near-rank-deficient matrix is unreliable in float32; always
+        # run the decomposition in float64 and cast the result back.
+        M = self.matrix.astype(jnp.float64) + jnp.float64(damping) * jnp.eye(
+            n, dtype=jnp.float64
+        )
         if pseudo_inverse_factor is not None and pseudo_inverse_factor > 0.0:
             eigvals, eigvecs = jnp.linalg.eigh(0.5 * (M + M.T))
             eigvals_inv = jnp.where(
@@ -461,7 +466,9 @@ class DenseBlock(LayerBlock):
         else:
             M_inv = jnp.linalg.inv(M)
         return DenseBlock(
-            matrix=M_inv, row_shape=self.row_shape, col_shape=self.col_shape
+            matrix=M_inv.astype(orig_dtype),
+            row_shape=self.row_shape,
+            col_shape=self.col_shape,
         )
 
     def damped(self, damping: Float) -> "DenseBlock":
