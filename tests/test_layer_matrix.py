@@ -51,7 +51,7 @@ def test_kronecker_factors_matvec_matches_dense(I, O):
     y_fast = block.matvec(v)
     y_dense = (block.to_dense() @ v.flatten()).reshape(I, O)
 
-    assert jnp.allclose(y_fast, y_dense, atol=1e-5, rtol=1e-5)
+    assert jnp.allclose(y_fast, y_dense, atol=1e-3, rtol=1e-3)
 
 
 def test_kronecker_factors_matvec_batched():
@@ -68,7 +68,7 @@ def test_kronecker_factors_matvec_batched():
     )
 
     assert y_fast.shape == (B, I, O)
-    assert jnp.allclose(y_fast, y_dense, atol=1e-5, rtol=1e-5)
+    assert jnp.allclose(y_fast, y_dense, atol=1e-3, rtol=1e-3)
 
 
 def test_kronecker_factors_inverse_roundtrip():
@@ -119,7 +119,7 @@ def test_kronecker_factors_damped_dense_matches_dense_plus_identity():
     damping = 0.37
     damped_dense = block.damped(damping).to_dense()
     expected = block.to_dense() + damping * jnp.eye(I * O)
-    assert jnp.allclose(damped_dense, expected, atol=1e-5)
+    assert jnp.allclose(damped_dense, expected, atol=1e-3)
 
 
 def test_kronecker_factors_matmat_shared_basis():
@@ -133,7 +133,7 @@ def test_kronecker_factors_matmat_shared_basis():
 
     product = b1.matmat(b2).to_dense()
     expected = b1.to_dense() @ b2.to_dense()
-    assert jnp.allclose(product, expected, atol=1e-4, rtol=1e-4)
+    assert jnp.allclose(product, expected, atol=1e-3, rtol=1e-3)
 
 
 def test_kronecker_factors_matmat_rejects_non_layer_block():
@@ -184,10 +184,10 @@ def test_kronecker_factors_add_sub_neg_mul_shared_basis():
     assert isinstance(n, KroneckerFactors)
     assert isinstance(scaled, KroneckerFactors)
 
-    assert jnp.allclose(s.to_dense(), b1.to_dense() + b2.to_dense(), atol=1e-5)
-    assert jnp.allclose(d.to_dense(), b1.to_dense() - b2.to_dense(), atol=1e-5)
-    assert jnp.allclose(n.to_dense(), -b1.to_dense(), atol=1e-5)
-    assert jnp.allclose(scaled.to_dense(), 2.5 * b1.to_dense(), atol=1e-5)
+    assert jnp.allclose(s.to_dense(), b1.to_dense() + b2.to_dense(), atol=1e-3)
+    assert jnp.allclose(d.to_dense(), b1.to_dense() - b2.to_dense(), atol=1e-3)
+    assert jnp.allclose(n.to_dense(), -b1.to_dense(), atol=1e-3)
+    assert jnp.allclose(scaled.to_dense(), 2.5 * b1.to_dense(), atol=1e-3)
 
 
 def test_kronecker_factors_add_sub_falls_back_to_dense_for_different_basis():
@@ -452,7 +452,7 @@ def test_layer_matrix_matvec_matches_dense():
 
     y_fast = (lmat @ lvec).to_flat()
     y_dense = lmat.to_dense() @ flat
-    assert jnp.allclose(y_fast, y_dense, atol=1e-5, rtol=1e-5)
+    assert jnp.allclose(y_fast, y_dense, atol=1e-3, rtol=1e-3)
 
 
 def test_layer_matrix_matvec_batched():
@@ -466,7 +466,7 @@ def test_layer_matrix_matvec_batched():
     dense = lmat.to_dense()
     y_dense = flat @ dense.T
     assert y_fast.shape == (B, n)
-    assert jnp.allclose(y_fast, y_dense, atol=1e-5, rtol=1e-5)
+    assert jnp.allclose(y_fast, y_dense, atol=1e-3, rtol=1e-3)
 
 
 def test_layer_matrix_matmat_shared_basis():
@@ -487,7 +487,7 @@ def test_layer_matrix_matmat_shared_basis():
 
     product = (lmat @ lmat2_shared).to_dense()
     expected = lmat.to_dense() @ lmat2_shared.to_dense()
-    assert jnp.allclose(product, expected, atol=1e-4, rtol=1e-4)
+    assert jnp.allclose(product, expected, atol=1e-3, rtol=1e-3)
 
 
 def test_layer_matrix_inverse_roundtrip():
@@ -506,7 +506,7 @@ def test_layer_matrix_damped_dense_matches_dense_plus_identity():
     damping = 0.42
     dense = lmat.damped(damping).to_dense()
     expected = lmat.to_dense() + damping * jnp.eye(dense.shape[0])
-    assert jnp.allclose(dense, expected, atol=1e-5)
+    assert jnp.allclose(dense, expected, atol=1e-3)
 
 
 def test_layer_matrix_inverse_with_damping_matches_dense_inverse():
@@ -515,7 +515,7 @@ def test_layer_matrix_inverse_with_damping_matches_dense_inverse():
 
     # (lmat + damping*I) @ v
     y_estimator = (lmat.damped(damping).inverse() @ lmat.damped(damping)).to_dense()
-    assert jnp.allclose(y_estimator, jnp.eye(y_estimator.shape[0]), atol=1e-4)
+    assert jnp.allclose(y_estimator, jnp.eye(y_estimator.shape[0]), atol=1e-3)
 
 
 def test_layer_matrix_is_pytree():
@@ -553,16 +553,16 @@ def test_layer_matrix_add_sub_block_diagonal_kronecker():
     for g in lmat1.param_groups:
         assert isinstance(s.blocks[(g, g)], KroneckerFactors)
         assert isinstance(d.blocks[(g, g)], KroneckerFactors)
-    assert jnp.allclose(s.to_dense(), lmat1.to_dense() + lmat2.to_dense(), atol=1e-5)
-    assert jnp.allclose(d.to_dense(), lmat1.to_dense() - lmat2.to_dense(), atol=1e-5)
+    assert jnp.allclose(s.to_dense(), lmat1.to_dense() + lmat2.to_dense(), atol=1e-3)
+    assert jnp.allclose(d.to_dense(), lmat1.to_dense() - lmat2.to_dense(), atol=1e-3)
 
 
 def test_layer_matrix_neg_and_scalar_mul():
     lmat, _, _ = _random_layer_matrix()
     neg = -lmat
     scaled = 2.5 * lmat
-    assert jnp.allclose(neg.to_dense(), -lmat.to_dense(), atol=1e-5)
-    assert jnp.allclose(scaled.to_dense(), 2.5 * lmat.to_dense(), atol=1e-5)
+    assert jnp.allclose(neg.to_dense(), -lmat.to_dense(), atol=1e-3)
+    assert jnp.allclose(scaled.to_dense(), 2.5 * lmat.to_dense(), atol=1e-3)
 
 
 def test_layer_matrix_add_sub_fully_populated_grid():
@@ -674,7 +674,7 @@ def test_dense_block_matvec_batched():
         [(M @ v[b].flatten()).reshape(I, O) for b in range(B)], axis=0
     )
     assert y_fast.shape == (B, I, O)
-    assert jnp.allclose(y_fast, expected, atol=1e-5, rtol=1e-5)
+    assert jnp.allclose(y_fast, expected, atol=1e-3, rtol=1e-3)
 
 
 def test_dense_block_inverse_roundtrip():

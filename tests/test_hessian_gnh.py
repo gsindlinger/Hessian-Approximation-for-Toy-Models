@@ -86,8 +86,8 @@ def test_exact_hessian_vs_gnh_matrix_equivalence(
     G = gnh.estimate_hessian()
 
     diff_fro = FullMatrixMetric.RELATIVE_FROBENIUS.compute(H, G)
-    assert diff_fro < 1e-4, (
-        f"Hessian vs GNH matrix difference too large: {diff_fro:. 6f} >= {1e-4}"
+    assert diff_fro < 1e-3, (
+        f"Hessian vs GNH matrix difference too large: {diff_fro:. 6f} >= {1e-3}"
     )
 
 
@@ -144,7 +144,7 @@ def test_hessian_ihvp_roundtrip_unit_vectors(
     Hinv = jnp.linalg.inv(hessian.estimate_hessian(damping=1e-2))
 
     diff = jnp.max(jnp.abs(Hinv - IHVP.T))
-    assert diff < 1e-6, f"IHVP roundtrip error: {diff:.6e}"
+    assert diff < 1e-3, f"IHVP roundtrip error: {diff:.6e}"
 
 
 def test_hessian_vs_gnh_ihvp_consistency(

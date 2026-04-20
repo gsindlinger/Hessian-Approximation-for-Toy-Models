@@ -240,9 +240,12 @@ class HessianComputer(HessianEstimator):
         # Vectorize over the batch dimension
         hessian = HessianComputer._compute_hessian(compute_context, damping)
         if pseudo_inverse_factor > 0.0:
-            jax.config.update("jax_enable_x64", True)
-            eigvals, eigvecs = jnp.linalg.eigh(hessian)
-            jax.config.update("jax_enable_x64", False)
+            # eigh needs float64 for a near-rank-deficient Hessian; cast back
+            # to input dtype after the decomposition.
+            orig_dtype = hessian.dtype
+            eigvals, eigvecs = jnp.linalg.eigh(hessian.astype(jnp.float64))
+            eigvals = eigvals.astype(orig_dtype)
+            eigvecs = eigvecs.astype(orig_dtype)
             eigvals_inv = jnp.where(
                 jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
             )

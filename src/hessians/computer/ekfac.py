@@ -437,19 +437,17 @@ class EKFACComputer(HessianEstimator):
         Float[Array, "O O"],
     ]:
         """Compute eigenvectors of covariance matrices A and G for a single layer."""
-        jax.config.update("jax_enable_x64", True)
-        A = A.astype(jnp.float64)
-        G = G.astype(jnp.float64)
-
-        eigenvals_A, eigvecs_A = jnp.linalg.eigh(A)
-        eigenvals_G, eigvecs_G = jnp.linalg.eigh(G)
-        jax.config.update("jax_enable_x64", False)
+        # eigh on near-rank-deficient covariances is unreliable in float32;
+        # promote to float64 for the decomposition and cast back to orig_dtype.
+        orig_dtype = A.dtype
+        eigenvals_A, eigvecs_A = jnp.linalg.eigh(A.astype(jnp.float64))
+        eigenvals_G, eigvecs_G = jnp.linalg.eigh(G.astype(jnp.float64))
 
         return (
-            eigenvals_A.astype(jnp.float64),
-            eigenvals_G.astype(jnp.float64),
-            eigvecs_A.astype(jnp.float64),
-            eigvecs_G.astype(jnp.float64),
+            eigenvals_A.astype(orig_dtype),
+            eigenvals_G.astype(orig_dtype),
+            eigvecs_A.astype(orig_dtype),
+            eigvecs_G.astype(orig_dtype),
         )
 
     @staticmethod

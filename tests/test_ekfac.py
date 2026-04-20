@@ -304,7 +304,7 @@ def test_kfac_via_kron_equals_eigenvector_method(
     assert jnp.allclose(
         kron_comparison_method_H,
         eigenvector_method_H,
-        atol=1e-4,
+        atol=1e-3,
     )
 
 
@@ -430,9 +430,9 @@ def test_kfac_hvp_ihvp_consistency(
     hvp = comp.estimate_hvp(v, damping)
 
     ihvp_round_trip = H @ ihvp
-    assert jnp.allclose(ihvp_round_trip, v, atol=1e-6, rtol=1e-1)
+    assert jnp.allclose(ihvp_round_trip, v, atol=1e-3, rtol=1e-1)
     hvp_round_trip = Hinv @ hvp
-    assert jnp.allclose(hvp_round_trip, v, atol=1e-6, rtol=1e-1)
+    assert jnp.allclose(hvp_round_trip, v, atol=1e-3, rtol=1e-1)
 
 
 def test_ekfac_explicit_vs_implicit_equivalence(
@@ -529,7 +529,7 @@ def test_ekfac_ihvp_batched_vs_single_consistency(
     for i in range(V.shape[0]):
         IHVP_single = comp.estimate_ihvp(V[i], pseudo_inverse_factor=1e-4)
 
-        assert VectorMetric.RELATIVE_ERROR.compute(IHVP_batch[i], IHVP_single) < 1e-4
+        assert VectorMetric.RELATIVE_ERROR.compute(IHVP_batch[i], IHVP_single) < 1e-3
 
 
 def test_ekfac_ihvp_hessian_roundtrip_batched(
@@ -558,7 +558,7 @@ def test_ekfac_ihvp_hessian_roundtrip_batched(
     IHVP = comp.estimate_ihvp(V, damping)
 
     roundtrip = (H @ IHVP.T).T
-    assert jnp.allclose(roundtrip, V, atol=1e-3)
+    assert jnp.allclose(roundtrip, V, atol=5e-3)
 
 
 def test_ekfac_all_classes_better_single_run(

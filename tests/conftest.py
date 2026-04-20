@@ -17,7 +17,20 @@ At the moment, a full test session trains 5 distinct models total:
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Tuple
 
+import jax
+
+jax.config.update("jax_enable_x64", True)
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reassert_x64():
+    """Several computers call ``jax.config.update("jax_enable_x64", False)``
+    inside ``@jax.jit`` bodies. Those updates fire at trace time and flip the
+    flag globally, so later tests observe float32 and fail tolerances the
+    suite was written against. Re-assert x64 before every test."""
+    jax.config.update("jax_enable_x64", True)
 
 from src.config import (
     ActivationFunction,

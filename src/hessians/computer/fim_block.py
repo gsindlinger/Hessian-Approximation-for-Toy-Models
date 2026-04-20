@@ -80,7 +80,8 @@ class FIMBlockComputer(HessianEstimator):
             "kni,kno->knio", act_expanded, grad
         ).reshape(K, N, -1)
         vecs_flat = per_sample_vecs.reshape(K * N, -1)
-        return (vecs_flat.T @ vecs_flat) / (K * N)
+        block = (vecs_flat.T @ vecs_flat) / (K * N)
+        return 0.5 * (block + block.T)
 
     @staticmethod
     @jax.jit
@@ -99,4 +100,5 @@ class FIMBlockComputer(HessianEstimator):
         sqrt_probs = jnp.sqrt(probabilities.T)[..., None]  # (K, N, 1)
         weighted_vecs = per_sample_vecs * sqrt_probs
         weighted_vecs_flat = weighted_vecs.reshape(K * N, -1)
-        return (weighted_vecs_flat.T @ weighted_vecs_flat) / N
+        block = (weighted_vecs_flat.T @ weighted_vecs_flat) / N
+        return 0.5 * (block + block.T)

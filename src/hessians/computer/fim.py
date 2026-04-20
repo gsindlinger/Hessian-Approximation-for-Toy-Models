@@ -171,9 +171,13 @@ class FIMComputer(HessianEstimator):
         Currently unused — retained as the lazy IHVP escape hatch.
         """
         if pseudo_inverse_factor > 0.0:
-            jax.config.update("jax_enable_x64", True)
-            eigvals, eigvecs = jnp.linalg.eigh(0.5 * (fim + fim.T))
-            jax.config.update("jax_enable_x64", False)
+            # eigh needs float64 for a near-rank-deficient FIM; cast back to
+            # input dtype after the decomposition.
+            orig_dtype = fim.dtype
+            sym = (0.5 * (fim + fim.T)).astype(jnp.float64)
+            eigvals, eigvecs = jnp.linalg.eigh(sym)
+            eigvals = eigvals.astype(orig_dtype)
+            eigvecs = eigvecs.astype(orig_dtype)
             eigvals_inv = jnp.where(
                 jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
             )

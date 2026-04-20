@@ -50,6 +50,7 @@ from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 
 import hydra
+from tqdm.auto import tqdm
 from hydra.core.config_store import ConfigStore
 from jax.random import PRNGKey
 from jaxtyping import Array, Float
@@ -84,6 +85,11 @@ from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.train import check_saved_model, load_model_checkpoint
 
 logger = logging.getLogger(__name__)
+
+# Quiet per-iteration chatter that interleaves with tqdm bars. These loggers
+# fire inside the inner approximator loops; silence anything below WARNING.
+logging.getLogger("experiments.utils").setLevel(logging.WARNING)
+logging.getLogger("src.hessians.computer.computer").setLevel(logging.WARNING)
 
 cs = ConfigStore.instance()
 cs.store(name="hessian_experiment", node=ExperimentConfig)
@@ -206,19 +212,21 @@ def compute_hessian_comparison_for_single_model(
 
         # Matrix comparisons
         if ComputationType.MATRIX in comp_config.computation_types:
-            logger.info(f"[HESSIAN] Computing {reference_approx.value} matrix")
-
             ref_hessian = block_tree(
                 reference_computer.estimate_hessian(),
                 f"{reference_approx.value}_matrix",
             )
 
-            for approx in comp_config.approximators:
-                if approx == reference_approx:
-                    continue
-                logger.info(
-                    f"[HESSIAN] Comparing {reference_approx.value} vs {approx.value} (matrix)"
-                )
+            matrix_approxs = [
+                a for a in comp_config.approximators if a != reference_approx
+            ]
+            bar = tqdm(
+                matrix_approxs,
+                desc=f"matrix vs {reference_approx.value}",
+                leave=True,
+            )
+            for approx in bar:
+                bar.set_postfix_str(approx.value)
                 approx_data = HessianComputerRegistry.get_compute_context(
                     approximator=approx,
                     collector_data=collector_data,
@@ -248,19 +256,21 @@ def compute_hessian_comparison_for_single_model(
 
         # HVP comparisons
         if ComputationType.HVP in comp_config.computation_types:
-            logger.info(f"[HESSIAN] Computing {reference_approx.value} HVP")
-
             ref_hvp = block_tree(
                 reference_computer.estimate_hvp(grads_1),
                 f"{reference_approx.value}_hvp",
             )
 
-            for approx in comp_config.approximators:
-                if approx == reference_approx:
-                    continue
-                logger.info(
-                    f"[HESSIAN] Comparing {reference_approx.value} vs {approx.value} (HVP)"
-                )
+            hvp_approxs = [
+                a for a in comp_config.approximators if a != reference_approx
+            ]
+            bar = tqdm(
+                hvp_approxs,
+                desc=f"hvp vs {reference_approx.value}",
+                leave=True,
+            )
+            for approx in bar:
+                bar.set_postfix_str(approx.value)
                 approx_data = HessianComputerRegistry.get_compute_context(
                     approximator=approx,
                     collector_data=collector_data,
@@ -298,19 +308,21 @@ def compute_hessian_comparison_for_single_model(
 
         # IHVP comparisons
         if ComputationType.IHVP in comp_config.computation_types:
-            logger.info(f"[HESSIAN] Computing {reference_approx.value} IHVP")
-
             ref_ihvp = block_tree(
                 reference_computer.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
                 f"{reference_approx.value}_ihvp",
             )
 
-            for approx in comp_config.approximators:
-                if approx == reference_approx:
-                    continue
-                logger.info(
-                    f"[HESSIAN] Comparing {reference_approx.value} vs {approx.value} (IHVP)"
-                )
+            ihvp_approxs = [
+                a for a in comp_config.approximators if a != reference_approx
+            ]
+            bar = tqdm(
+                ihvp_approxs,
+                desc=f"ihvp vs {reference_approx.value}",
+                leave=True,
+            )
+            for approx in bar:
+                bar.set_postfix_str(approx.value)
                 approx_data = HessianComputerRegistry.get_compute_context(
                     approximator=approx,
                     collector_data=collector_data,
@@ -419,10 +431,15 @@ def analyze_single_model(
         "directory must be set in model_config for Hessian analysis."
     )
 
-    # Create epoch-specific collector directories
-    collector_dir = os.path.join(model_config.directory, "collector")
+    # Collector (acts/grads) is shared: anchor it to the caller-supplied
+    # absolute model_directory so both worktrees share one cache.
+    collector_dir = os.path.join(model_directory, "collector")
+    # Build dir (approximator matrices) is per-tree: anchor to the relative
+    # model_config.directory so each worktree keeps its own outputs.
+    build_base_dir = os.path.join(model_config.directory, "collector")
     if epoch is not None:
         collector_dir = os.path.join(collector_dir, f"epoch_{epoch}")
+        build_base_dir = os.path.join(build_base_dir, f"epoch_{epoch}")
 
     grads_1, grads_2, collector_data, model_ctx = collect_data(
         model=model,
@@ -441,7 +458,7 @@ def analyze_single_model(
         model_ctx,
         grads_1,
         grads_2,
-        build_base_dir=collector_dir,    
+        build_base_dir=build_base_dir,
     )
 
     result = {

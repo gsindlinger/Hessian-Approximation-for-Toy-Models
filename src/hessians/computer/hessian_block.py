@@ -110,7 +110,7 @@ class BlockHessianComputer(HessianEstimator):
         def compute_single_block_static(start: int, end: int):
             """Compute Hessian for a single block with static dimensions."""
             block_size = end - start
-            I_block = jnp.eye(block_size)
+            I_block = jnp.eye(block_size, dtype=p_flat.dtype)
 
             def compute_block_hvps(identity_vectors):
                 n_vectors = identity_vectors.shape[0]
@@ -132,7 +132,7 @@ class BlockHessianComputer(HessianEstimator):
 
                 summed, _ = jax.lax.scan(
                     body_fn,
-                    jnp.zeros((n_vectors, block_size)),
+                    jnp.zeros((n_vectors, block_size), dtype=p_flat.dtype),
                     (X, Y),
                 )
                 return summed / n_samples
@@ -157,7 +157,7 @@ class BlockHessianComputer(HessianEstimator):
                     chunks.append(chunk_result)
                 H_block = jnp.concatenate(chunks, axis=0)
 
-            H_block = H_block + damping * jnp.eye(block_size)
+            H_block = H_block + damping * jnp.eye(block_size, dtype=p_flat.dtype)
             return H_block
 
         result_blocks = [
