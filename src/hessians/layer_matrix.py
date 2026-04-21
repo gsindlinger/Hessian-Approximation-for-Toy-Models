@@ -178,74 +178,18 @@ class KroneckerFactors(LayerBlock):
         return self.Q_A @ scaled @ self.Q_G.T
 
     def matmat(self, other: "LayerBlock") -> "LayerBlock":
-        """Multiply two Kronecker blocks.
-
-        Fast path: `other` is a `KroneckerFactors` sharing the same
-        eigenbasis (same `Q_A`, `Q_G` arrays).  This is always true within
-        a single estimator pipeline (e.g. `M` and `M.inverse()`) and the
-        result stays in eigendecomposed form.  Otherwise falls back to
-        materializing both sides and returning a `DenseBlock`.
-        """
-        if isinstance(other, KroneckerFactors) and self._same_basis(other):
-            return KroneckerFactors(
-                Q_A=self.Q_A,
-                Q_G=self.Q_G,
-                Lambda=self.Lambda * other.Lambda,
-                lambda_A=self.lambda_A,
-                lambda_G=self.lambda_G,
-            )
+        """Multiply two blocks by materializing both sides to dense."""
         return _fallback_block_matmat(self, other)
-
-    def _same_basis(
-        self,
-        other: "KroneckerFactors",
-        atol: float = 1e-8,
-        rtol: float = 1e-5,
-    ) -> bool:
-        """Approximate eigenbasis-equality check for closed-form Kronecker arithmetic.
-
-        Uses `np.allclose` rather than object identity — the same basis can flow
-        through `tree_unflatten` / `jit` and come out as distinct array objects,
-        so `is` would miss it.  The shape check short-circuits the common
-        "different layers / different-sized bases" case for free.
-        """
-        if self.Q_A.shape != other.Q_A.shape or self.Q_G.shape != other.Q_G.shape:
-            return False
-        return bool(
-            np.allclose(
-                np.asarray(self.Q_A), np.asarray(other.Q_A), atol=atol, rtol=rtol
-            )
-        ) and bool(
-            np.allclose(
-                np.asarray(self.Q_G), np.asarray(other.Q_G), atol=atol, rtol=rtol
-            )
-        )
 
     # ---- arithmetic ----
     #
-    # Every operation below preserves `Q_A` and `Q_G`, so it also preserves
-    # `lambda_A` / `lambda_G` (which describe the basis itself, not the
-    # current `Lambda`).  We thread them through unchanged.
+    # Unary ops (`__neg__`, `__mul__`, `damped`, `inverse`) preserve `Q_A` /
+    # `Q_G` and therefore `lambda_A` / `lambda_G`.  Binary ops always go
+    # through the dense fallback.
     def __add__(self, other: "LayerBlock") -> "LayerBlock":
-        if isinstance(other, KroneckerFactors) and self._same_basis(other):
-            return KroneckerFactors(
-                Q_A=self.Q_A,
-                Q_G=self.Q_G,
-                Lambda=self.Lambda + other.Lambda,
-                lambda_A=self.lambda_A,
-                lambda_G=self.lambda_G,
-            )
         return _fallback_block_add(self, other)
 
     def __sub__(self, other: "LayerBlock") -> "LayerBlock":
-        if isinstance(other, KroneckerFactors) and self._same_basis(other):
-            return KroneckerFactors(
-                Q_A=self.Q_A,
-                Q_G=self.Q_G,
-                Lambda=self.Lambda - other.Lambda,
-                lambda_A=self.lambda_A,
-                lambda_G=self.lambda_G,
-            )
         return _fallback_block_add(self, -other)
 
     def __neg__(self) -> "KroneckerFactors":
@@ -457,8 +401,9 @@ class DenseBlock(LayerBlock):
         M = self.matrix.astype(jnp.float64) + jnp.float64(damping) * jnp.eye(
             n, dtype=jnp.float64
         )
+        M = 0.5 * (M + M.T)
         if pseudo_inverse_factor is not None and pseudo_inverse_factor > 0.0:
-            eigvals, eigvecs = jnp.linalg.eigh(0.5 * (M + M.T))
+            eigvals, eigvecs = jnp.linalg.eigh(M)
             eigvals_inv = jnp.where(
                 jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
             )
@@ -997,8 +942,9 @@ class LayerMatrix:
         dense = self.to_dense()
         n = dense.shape[0]
         M = dense + damping * jnp.eye(n, dtype=dense.dtype)
+        M = 0.5 * (M + M.T)
         if pseudo_inverse_factor is not None and pseudo_inverse_factor > 0.0:
-            eigvals, eigvecs = jnp.linalg.eigh(0.5 * (M + M.T))
+            eigvals, eigvecs = jnp.linalg.eigh(M)
             eigvals_inv = jnp.where(
                 jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
             )

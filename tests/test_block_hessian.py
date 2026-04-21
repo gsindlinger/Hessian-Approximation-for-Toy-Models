@@ -32,10 +32,12 @@ def test_block_hessian_computation(
     block_hessian = BlockHessianComputer(
         compute_context=block_test_model_context
     ).build()
-    full_hessian = HessianComputer(compute_context=block_test_model_context)
+    full_hessian = HessianComputer(
+        compute_context=block_test_model_context
+    ).build()
 
     H_block = block_hessian.estimate_hessian(damping=damping)
-    H_full = full_hessian.compute_hessian(damping=damping)
+    H_full = full_hessian.estimate_hessian(damping=damping)
 
     assert jnp.allclose(H_block, H_full, atol=1e-5), (
         "Block-diagonal Hessian does not match full Hessian for linear model."
@@ -57,10 +59,12 @@ def test_block_hessian_computation_multi_layer(
     block_hessian = BlockHessianComputer(
         compute_context=block_test_model_context
     ).build()
-    full_hessian = HessianComputer(compute_context=block_test_model_context)
+    full_hessian = HessianComputer(
+        compute_context=block_test_model_context
+    ).build()
 
     H_block = block_hessian.estimate_hessian(damping=damping)
-    H_full = full_hessian.compute_hessian(damping=damping)
+    H_full = full_hessian.estimate_hessian(damping=damping)
 
     # Check each per-layer block matches
     layer_matrix = block_hessian.layer_matrix
@@ -96,7 +100,9 @@ def test_block_hessian_hvp_ihvp_roundtrip_linear(
     block_hessian = BlockHessianComputer(
         compute_context=block_test_model_context
     ).build()
-    full_hessian = HessianComputer(compute_context=block_test_model_context)
+    full_hessian = HessianComputer(
+        compute_context=block_test_model_context
+    ).build()
 
     params_flat = block_test_model_context.params_flat
     v_ones = jnp.ones_like(params_flat)
@@ -106,14 +112,14 @@ def test_block_hessian_hvp_ihvp_roundtrip_linear(
     # HVP consistency
     # ------------------------------------------------------------------
     hvp_block = block_hessian.estimate_hvp(v_ones, damping=damping)
-    hvp_full = full_hessian.compute_hvp(v_ones, damping=damping)
+    hvp_full = full_hessian.estimate_hvp(v_ones, damping=damping)
 
     assert VectorMetric.RELATIVE_ERROR.compute(hvp_block, hvp_full) < 1e-3, (
         "Block Hessian HVP does not match full Hessian HVP (ones vector)"
     )
 
     hvp_block_r = block_hessian.estimate_hvp(v_rand, damping=damping)
-    hvp_full_r = full_hessian.compute_hvp(v_rand, damping=damping)
+    hvp_full_r = full_hessian.estimate_hvp(v_rand, damping=damping)
 
     assert VectorMetric.RELATIVE_ERROR.compute(hvp_block_r, hvp_full_r) < 1e-3, (
         "Block Hessian HVP does not match full Hessian HVP (random vector)"
@@ -123,14 +129,14 @@ def test_block_hessian_hvp_ihvp_roundtrip_linear(
     # IHVP consistency
     # ------------------------------------------------------------------
     ihvp_block = block_hessian.estimate_ihvp(v_ones, damping=damping)
-    ihvp_full = full_hessian.compute_ihvp(v_ones, damping=damping)
+    ihvp_full = full_hessian.estimate_ihvp(v_ones, damping=damping)
 
     assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block, ihvp_full) < 1e-3, (
         "Block Hessian IHVP does not match full Hessian IHVP (ones vector)"
     )
 
     ihvp_block_r = block_hessian.estimate_ihvp(v_rand, damping=damping)
-    ihvp_full_r = full_hessian.compute_ihvp(v_rand, damping=damping)
+    ihvp_full_r = full_hessian.estimate_ihvp(v_rand, damping=damping)
 
     assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block_r, ihvp_full_r) < 1e-3, (
         "Block Hessian IHVP does not match full Hessian IHVP (random vector)"
@@ -140,7 +146,7 @@ def test_block_hessian_hvp_ihvp_roundtrip_linear(
     # Round-trip sanity check:  H(H^{-1} v) ≈ v
     # ------------------------------------------------------------------
     roundtrip_block = block_hessian.estimate_hvp(ihvp_block_r, damping=damping)
-    roundtrip_full = full_hessian.compute_hvp(ihvp_full_r, damping=damping)
+    roundtrip_full = full_hessian.estimate_hvp(ihvp_full_r, damping=damping)
 
     assert VectorMetric.RELATIVE_ERROR.compute(roundtrip_block, v_rand) < 1e-4, (
         "Block Hessian round-trip H(H^{-1}v) failed"

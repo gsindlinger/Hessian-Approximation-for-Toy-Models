@@ -244,7 +244,7 @@ def test_kfac_hessian(
     """Test whether K-FAC Hessian can be computed without errors and matches dimensions of other methods."""
     damping = 0.1
 
-    H = HessianComputer(compute_context=model_context).compute_hessian(damping=damping)
+    H = HessianComputer(compute_context=model_context).build().estimate_hessian(damping=damping)
     G = (
         GNHComputer(compute_context=model_context)
         .build()
@@ -319,7 +319,7 @@ def test_ekfac_hessian(
     """Test whether EK-FAC Hessian can be computed and matches dimensions."""
     damping = 0.1
 
-    H = HessianComputer(compute_context=model_context).compute_hessian(damping=damping)
+    H = HessianComputer(compute_context=model_context).build().estimate_hessian(damping=damping)
     G = (
         GNHComputer(compute_context=model_context)
         .build()
@@ -581,7 +581,7 @@ def test_ekfac_all_classes_better_single_run(
     """Test whether EK-FAC collected with all classes performs better than single run EK-FAC in terms of Frobenius norm to true Hessian."""
     damping = 0.1
 
-    H = HessianComputer(compute_context=model_context).compute_hessian(damping=damping)
+    H = HessianComputer(compute_context=model_context).build().estimate_hessian(damping=damping)
     G = (
         GNHComputer(compute_context=model_context)
         .build()

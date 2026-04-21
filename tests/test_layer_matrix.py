@@ -167,7 +167,7 @@ def test_kronecker_factors_matmat_falls_back_to_dense_for_different_basis():
 
 
 def test_kronecker_factors_add_sub_neg_mul_shared_basis():
-    """Same-basis arithmetic stays in eigendecomposed Kronecker form."""
+    """Binary ops go through dense fallback; unary ops preserve Kronecker form."""
     I, O = 3, 4
     key = jax.random.PRNGKey(9)
     Q_A, Q_G, Lambda_1 = _random_orthogonal_and_lambda(key, I, O)
@@ -179,8 +179,8 @@ def test_kronecker_factors_add_sub_neg_mul_shared_basis():
     d = b1 - b2
     n = -b1
     scaled = 2.5 * b1
-    assert isinstance(s, KroneckerFactors)
-    assert isinstance(d, KroneckerFactors)
+    assert isinstance(s, DenseBlock)
+    assert isinstance(d, DenseBlock)
     assert isinstance(n, KroneckerFactors)
     assert isinstance(scaled, KroneckerFactors)
 
@@ -266,7 +266,7 @@ def test_kronecker_factors_from_raw_factors_populates_basis_eigenvalues():
 
 
 def test_kronecker_factors_ops_preserve_basis_eigenvalues():
-    """damped / inverse / +/- / neg / scalar-* / same-basis matmat must all forward lambda_A/lambda_G."""
+    """Unary ops (damped / inverse / neg / scalar-*) forward lambda_A/lambda_G."""
     I, O = 3, 4
     key = jax.random.PRNGKey(23)
     Q_A, Q_G, Lambda = _random_orthogonal_and_lambda(key, I, O)
@@ -276,15 +276,11 @@ def test_kronecker_factors_ops_preserve_basis_eigenvalues():
         Q_A=Q_A, Q_G=Q_G, Lambda=Lambda, lambda_A=lam_A, lambda_G=lam_G
     )
 
-    # Unary ops preserve the basis eigenvalues (Q_A / Q_G unchanged).
     for result in (
         block.damped(0.1),
         block.inverse(damping=0.1),
         -block,
         2.5 * block,
-        block.matmat(block),  # same basis → fast path
-        block + block,
-        block - block,
     ):
         assert isinstance(result, KroneckerFactors)
         assert result.lambda_A is not None and result.lambda_G is not None
@@ -527,9 +523,8 @@ def test_layer_matrix_is_pytree():
 
 
 def test_layer_matrix_add_sub_block_diagonal_kronecker():
-    """Same-basis block-diagonal Kronecker add/sub stays in Kronecker form."""
+    """Block-diagonal Kronecker add/sub materializes per-block to DenseBlock."""
     lmat1, _, _ = _random_layer_matrix(seed=0)
-    # Build a second matrix sharing lmat1's eigenbasis.
     other_blocks = {}
     for g in lmat1.param_groups:
         block = lmat1.blocks[(g, g)]
@@ -551,8 +546,8 @@ def test_layer_matrix_add_sub_block_diagonal_kronecker():
     s = lmat1 + lmat2
     d = lmat1 - lmat2
     for g in lmat1.param_groups:
-        assert isinstance(s.blocks[(g, g)], KroneckerFactors)
-        assert isinstance(d.blocks[(g, g)], KroneckerFactors)
+        assert isinstance(s.blocks[(g, g)], DenseBlock)
+        assert isinstance(d.blocks[(g, g)], DenseBlock)
     assert jnp.allclose(s.to_dense(), lmat1.to_dense() + lmat2.to_dense(), atol=1e-3)
     assert jnp.allclose(d.to_dense(), lmat1.to_dense() - lmat2.to_dense(), atol=1e-3)
 

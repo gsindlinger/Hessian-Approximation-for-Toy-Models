@@ -141,15 +141,35 @@ class HessianEstimator(ABC):
         vectors: Float[Array, "*batch_size n_params"],
         damping: Optional[Float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
-        """Compute the Hessian-vector product `(H + dI) @ v` for each row of `vectors`."""
-        M = self._require_built("estimating the Hessian-vector product")
+        """Compute the Hessian-vector product `(H + dI) @ v` for each row of `vectors`.
+
+        If `.build()` has been called, uses the cached `LayerMatrix`.  Otherwise
+        dispatches to `_lazy_hvp` — subclasses with a true JVP-through-the-model
+        path (`HessianComputer`, `GNHComputer`) override it to skip the
+        `(n_params, n_params)` materialization entirely.  Estimators without a
+        lazy path raise `NotImplementedError` and require `.build()` first.
+        """
         d = 0.0 if damping is None else damping
-        lvec = LayerVector.from_flat(
-            jnp.asarray(vectors),
-            shapes=M.layer_shapes,
-            param_groups=M.param_groups,
+        if self.is_built and self.layer_matrix is not None:
+            M = self.layer_matrix
+            lvec = LayerVector.from_flat(
+                jnp.asarray(vectors),
+                shapes=M.layer_shapes,
+                param_groups=M.param_groups,
+            )
+            return (M.damped(d) @ lvec).to_flat()
+        return self._lazy_hvp(jnp.asarray(vectors), d)
+
+    def _lazy_hvp(
+        self,
+        vectors: Float[Array, "*batch_size n_params"],
+        damping: Float,
+    ) -> Float[Array, "*batch_size n_params"]:
+        """Lazy HVP hook — override in estimators with a JVP-through-the-model path."""
+        raise NotImplementedError(
+            f"{type(self).__name__} has no lazy HVP path — call `.build()` "
+            f"before `estimate_hvp`."
         )
-        return (M.damped(d) @ lvec).to_flat()
 
     def estimate_ihvp(
         self,
@@ -157,7 +177,11 @@ class HessianEstimator(ABC):
         damping: Optional[Float] = None,
         pseudo_inverse_factor: Optional[float] = None,
     ) -> Float[Array, "*batch_size n_params"]:
-        """Compute the inverse-Hessian-vector product `(H + dI)^{-1} @ v`."""
+        """Compute the inverse-Hessian-vector product `(H + dI)^{-1} @ v`.
+
+        Always requires `.build()` — there's no lazy IHVP path (materializing
+        the dense matrix + solve is how every estimator does it today).
+        """
         if pseudo_inverse_factor is not None and damping is not None:
             raise ValueError(
                 "Cannot use both damping and pseudo-inverse factor simultaneously."

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
 from typing import Dict, List, Optional, Tuple
 
 import jax
@@ -20,12 +19,15 @@ class HessianComputer(HessianEstimator):
     """
     Exact Hessian computation via JAX automatic differentiation.
 
-    Materializes the full `(n_params, n_params)` Hessian and slices it into
-    per-layer `(I_i*O_i, I_j*O_j)` `DenseBlock`s via `LayerMatrix.from_dense`.
-    For big models where materialization is not affordable, the lazy
-    `_compute_hvp` helper below remains available — a future big-model
-    subclass can override `estimate_hvp` to call it directly and bypass
-    `LayerMatrix` entirely.
+    Two modes:
+    - `.build()` materializes the full `(n_params, n_params)` Hessian and
+      slices it into per-layer `DenseBlock`s via `LayerMatrix.from_dense`.
+      `estimate_hessian` / `estimate_hvp` / `estimate_ihvp` then use the
+      cached matrix.
+    - Skip `.build()` → `estimate_hvp` falls through to `_lazy_hvp`, which
+      does JVP-through-the-model via `_compute_hvp` and never materializes
+      the dense matrix.  `estimate_hessian` / `estimate_ihvp` still require
+      `.build()`.
     """
 
     @staticmethod
@@ -71,43 +73,6 @@ class HessianComputer(HessianEstimator):
         )
 
     # ------------------------------------------------------------------
-    # Backwards-compatibility aliases (deprecated — delete in follow-up).
-    # The notebook and any stray callers still use the old `compute_*` names.
-    # ------------------------------------------------------------------
-
-    def _lazy_build(self) -> None:
-        """Auto-build on first use so legacy `HessianComputer(ctx).compute_*`
-        call sites work without an explicit `.build()`."""
-        if not self.is_built:
-            self.build()
-
-    def compute_hessian(
-        self, damping: Optional[Float] = None
-    ) -> Float[Array, "n_params n_params"]:
-        """Deprecated alias for `estimate_hessian`."""
-        self._lazy_build()
-        return self.estimate_hessian(damping)
-
-    def compute_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        """Deprecated alias for `estimate_hvp`."""
-        self._lazy_build()
-        return self.estimate_hvp(vectors, damping)
-
-    def compute_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-        pseudo_inverse_factor: Optional[float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        """Deprecated alias for `estimate_ihvp`."""
-        self._lazy_build()
-        return self.estimate_ihvp(vectors, damping, pseudo_inverse_factor)
-
-    # ------------------------------------------------------------------
     # Materialization helper (used by `_build`)
     # ------------------------------------------------------------------
 
@@ -147,9 +112,16 @@ class HessianComputer(HessianEstimator):
         return H_full + damping * jnp.eye(H_full.shape[0])
 
     # ------------------------------------------------------------------
-    # Lazy HVP / IHVP escape hatches (retained for future big-model
-    # overrides; not used by the refactored `_estimate_*` paths).
+    # Lazy HVP — dispatched from `estimate_hvp` when `.build()` was skipped.
     # ------------------------------------------------------------------
+
+    def _lazy_hvp(
+        self,
+        vectors: Float[Array, "batch_size n_params"],
+        damping: Float,
+    ) -> Float[Array, "batch_size n_params"]:
+        """JVP-through-the-model HVP — no matrix materialized.  Expects 2D input."""
+        return self._compute_hvp(self.compute_context, vectors, damping)
 
     @staticmethod
     @jax.jit
@@ -161,10 +133,6 @@ class HessianComputer(HessianEstimator):
         """
         Memory-efficient Hessian-vector product computation.
         Uses scan over samples and vmap over vectors, matching GNH strategy.
-
-        Currently unused — retained as the lazy HVP escape hatch for a future
-        big-model subclass that overrides `estimate_hvp` to bypass
-        `LayerMatrix`.
         """
         p_flat = compute_context.params_flat
         X = compute_context.inputs
@@ -222,38 +190,6 @@ class HessianComputer(HessianEstimator):
                 chunk = vectors[i : i + CHUNK_SIZE]
                 outs.append(jax.vmap(hvp_single)(chunk))
             return jnp.concatenate(outs, axis=0)
-
-    @staticmethod
-    @partial(jax.jit, static_argnames=["damping", "pseudo_inverse_factor"])
-    def _compute_ihvp(
-        compute_context: ModelContext,
-        vectors: Float[Array, "batch_size n_params"],
-        damping: Float,
-        pseudo_inverse_factor: float,
-    ) -> Float[Array, "batch_size n_params"]:
-        """
-        JIT-compiled Inverse Hessian-vector product (IHVP) computation.
-
-        Currently unused — retained as the lazy IHVP escape hatch for a future
-        big-model subclass.
-        """
-        # Vectorize over the batch dimension
-        hessian = HessianComputer._compute_hessian(compute_context, damping)
-        if pseudo_inverse_factor > 0.0:
-            # eigh needs float64 for a near-rank-deficient Hessian; cast back
-            # to input dtype after the decomposition.
-            orig_dtype = hessian.dtype
-            eigvals, eigvecs = jnp.linalg.eigh(hessian.astype(jnp.float64))
-            eigvals = eigvals.astype(orig_dtype)
-            eigvecs = eigvecs.astype(orig_dtype)
-            eigvals_inv = jnp.where(
-                jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
-            )
-            return jnp.einsum(
-                "ij,j,jk,nk->ni", eigvecs, eigvals_inv, eigvecs.T, vectors
-            )
-        else:
-            return jnp.linalg.solve(hessian, vectors.T).T
 
     # ------------------------------------------------------------------
     # Persistence helpers (unchanged)

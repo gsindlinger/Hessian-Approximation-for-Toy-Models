@@ -7,7 +7,6 @@ from typing import Dict, List, Tuple
 import jax
 import jax.numpy as jnp
 from jax import lax
-from jax.tree_util import tree_flatten_with_path
 from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import HessianEstimator
@@ -38,27 +37,15 @@ class BlockHessianComputer(HessianEstimator):
         layer_shapes = layer_shapes_from_model_context(ctx)
         layer_names: List[str] = list(ctx.model.get_layer_names())
 
-        # Walk the flat tree to get per-layer (start, end) ranges in params_flat.
-        params = ctx.unravel_fn(ctx.params_flat)
-        params_root = params["params"] if "params" in params else params
-        leaves_with_paths, _ = tree_flatten_with_path(params_root)
-
-        leaf_layer_of: List[str] = []
-        leaf_sizes: List[int] = []
-        for path, leaf in leaves_with_paths:
-            layer = "/".join(k.key for k in path[:-1])
-            leaf_layer_of.append(layer)
-            leaf_sizes.append(int(leaf.size))
-
+        # layer_shapes_from_model_context already validated that each layer's
+        # leaves are contiguous and that declared order matches flat layout,
+        # so cumulative I*O offsets give the correct per-block ranges.
         block_ranges: List[Tuple[int, int]] = []
         idx = 0
-        for layer in layer_names:
-            start = idx
-            for leaf_layer, size in zip(leaf_layer_of, leaf_sizes):
-                if leaf_layer == layer:
-                    idx += size
-            end = idx
-            block_ranges.append((start, end))
+        for name in layer_names:
+            I, O = layer_shapes[name]
+            block_ranges.append((idx, idx + I * O))
+            idx += I * O
 
         block_arrays = self._compute_blocks(
             compute_context=ctx,

@@ -6,6 +6,13 @@ import pytest
 from jax import flatten_util
 from jax.random import PRNGKey
 
+from src.config import (
+    ActivationFunction,
+    LossType,
+    ModelArchitecture,
+    ModelConfig,
+    TrainingConfig,
+)
 from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.utils.data import ModelContext
@@ -14,7 +21,11 @@ from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.models.approximation_model import ApproximationModel
 from tests.conftest import TrainingScenario
-from tests._helpers import cached_train_model_for_dataset, create_model_context
+from tests._helpers import (
+    cached_train_model_for_dataset,
+    create_model_context,
+    verify_architecture_layer_alignment,
+)
 
 # ---------------------------------------------------------------------
 # Fixtures
@@ -165,3 +176,55 @@ def test_hessian_vs_gnh_ihvp_consistency(
 
     err = VectorMetric.RELATIVE_ERROR.compute(ihvp_h, ihvp_g)
     assert err < 1e-3, f"Hessian vs GNH IHVP error: {err:.6e}"
+
+
+@pytest.mark.parametrize(
+    "arch_config",
+    [
+        pytest.param(
+            ModelConfig(
+                architecture=ModelArchitecture.LINEAR,
+                input_dim=6,
+                output_dim=3,
+                loss=LossType.CROSS_ENTROPY,
+                training=TrainingConfig(epochs=1, batch_size=1),
+            ),
+            id="linear_classification",
+        ),
+        pytest.param(
+            ModelConfig(
+                architecture=ModelArchitecture.MLP,
+                input_dim=7,
+                hidden_dim=[5, 4],
+                activation=ActivationFunction.TANH,
+                output_dim=3,
+                loss=LossType.CROSS_ENTROPY,
+                training=TrainingConfig(epochs=1, batch_size=1),
+            ),
+            id="mlp_tanh_two_hidden",
+        ),
+        pytest.param(
+            ModelConfig(
+                architecture=ModelArchitecture.MLP,
+                input_dim=5,
+                hidden_dim=[6],
+                activation=ActivationFunction.RELU,
+                output_dim=2,
+                loss=LossType.MSE,
+                training=TrainingConfig(epochs=1, batch_size=1),
+            ),
+            id="mlp_relu_one_hidden_mse",
+        ),
+    ],
+)
+def test_hessian_layer_blocks_align_with_flax_flat_layout(arch_config: ModelConfig):
+    """Every per-layer block in the built `LayerMatrix` must equal the slice
+    of the exact JAX Hessian at Flax's true flat offsets.
+
+    Full-vector HVP tests can't catch layer-ordering bugs — `from_flat →
+    matvec → to_flat` is self-consistent regardless of `param_groups` order.
+    Only per-block comparison against `jax.hessian` truth at Flax's tree-flatten
+    offsets does. Drop any `ModelConfig` into the parametrize list to verify a
+    new architecture.
+    """
+    verify_architecture_layer_alignment(arch_config)

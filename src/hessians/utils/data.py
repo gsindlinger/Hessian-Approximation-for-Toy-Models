@@ -187,53 +187,82 @@ def layer_shapes_from_model_context(
     the KFAC layer convention (kernel + optional bias as a single
     bias-augmented block).
 
-    Uses `ctx.model.get_layer_names()` for the canonical layer ordering and
-    `ctx.unravel_fn(ctx.params_flat)` to read shapes.  Asserts that the
-    layer-aggregated total matches `params_flat.size`, so callers can rely
-    on each layer's parameters being contiguous in `params_flat` (which is
-    the standard Flax tree-flatten ordering for sequential models).
+    Walks leaves in the order `tree_flatten_with_path` yields them — which
+    matches `ravel_pytree`'s flat layout — and enforces:
+
+    - every name in `model.get_layer_names()` has at least one leaf,
+    - each layer's leaves are *contiguous* in the flat vector,
+    - the declared layer order matches the flat-layout order.
+
+    Callers slicing the flat vector by `layer_shapes` (`LayerVector.from_flat`,
+    `LayerMatrix.from_dense`) can then rely on offsets accumulating correctly.
     """
     if ctx.model is None:
         raise ValueError(
             "ModelContext.model is required to derive layer shapes."
         )
     params = ctx.unravel_fn(ctx.params_flat)
-    if "params" in params:
-        params_root = params["params"]
-    else:
-        params_root = params
+    params_root = params["params"] if "params" in params else params
     leaves_with_paths, _ = jax.tree_util.tree_flatten_with_path(params_root)
-    layer_names = ctx.model.get_layer_names()
+    layer_names = list(ctx.model.get_layer_names())
+
+    # Walk leaves in flat-layout order, record (start, end) runs per layer.
+    layer_set = set(layer_names)
+    per_layer_runs: Dict[str, List[Tuple[int, int]]] = {n: [] for n in layer_names}
+    per_layer_leaves: Dict[str, List] = {n: [] for n in layer_names}
+    offset = 0
+    for path, leaf in leaves_with_paths:
+        layer = "/".join(k.key for k in path[:-1])
+        if layer in layer_set:
+            per_layer_runs[layer].append((offset, offset + leaf.size))
+            per_layer_leaves[layer].append(leaf)
+        offset += int(leaf.size)
+
+    # Contiguity: each layer's leaves must form one unbroken run.
+    for name in layer_names:
+        runs = per_layer_runs[name]
+        if not runs:
+            raise ValueError(
+                f"No leaves found for layer '{name}' in Flax param tree."
+            )
+        for (_, prev_end), (next_start, _) in zip(runs, runs[1:]):
+            if prev_end != next_start:
+                raise ValueError(
+                    f"Layer '{name}' leaves are not contiguous in the flat "
+                    f"param vector (gap between offsets {prev_end} and {next_start}). "
+                    f"Flax sorts param keys alphabetically; another layer's leaf "
+                    f"is interleaved with this one."
+                )
+
+    # Declared order must match flat-layout order.
+    first_offsets = [per_layer_runs[n][0][0] for n in layer_names]
+    if first_offsets != sorted(first_offsets):
+        layout_order = sorted(layer_names, key=lambda n: per_layer_runs[n][0][0])
+        raise ValueError(
+            f"model.get_layer_names() returns {layer_names} but the Flax flat "
+            f"layout order is {layout_order}. Declare layers in the order Flax "
+            f"places them (alphabetical at each level of the param tree)."
+        )
 
     shapes: Dict[str, Tuple[int, int]] = {}
-    for layer in layer_names:
-        layer_leaves = [
-            leaf
-            for path, leaf in leaves_with_paths
-            if "/".join(k.key for k in path[:-1]) == layer
-        ]
-        if not layer_leaves:
-            raise ValueError(
-                f"No leaves found for layer '{layer}' in Flax param tree."
-            )
-        # Expected: one kernel (I, O) and optional bias (O,).
+    for name in layer_names:
+        layer_leaves = per_layer_leaves[name]
         kernel_candidates = [l for l in layer_leaves if l.ndim == 2]
         if not kernel_candidates:
             raise ValueError(
-                f"Layer '{layer}' has no 2-D kernel leaf — cannot derive (I, O)."
+                f"Layer '{name}' has no 2-D kernel leaf — cannot derive (I, O)."
             )
         kernel = kernel_candidates[0]
         I, O = kernel.shape
         has_bias = any(l.ndim == 1 for l in layer_leaves)
-        shapes[layer] = ((I + 1) if has_bias else I, O)
+        shapes[name] = ((I + 1) if has_bias else I, O)
 
     total = sum(I * O for (I, O) in shapes.values())
     if total != ctx.params_flat.size:
         raise ValueError(
             f"Sum of layer sizes ({total}) does not match params_flat.size "
-            f"({ctx.params_flat.size}).  Either the model has parameters "
-            f"outside named layers, or layers are not contiguous in the "
-            f"flattened param vector."
+            f"({ctx.params_flat.size}). The model has parameters outside "
+            f"named layers."
         )
     return shapes
 

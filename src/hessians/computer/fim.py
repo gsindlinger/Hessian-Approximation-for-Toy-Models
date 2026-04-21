@@ -76,5 +76,6 @@ class FIMComputer(HessianEstimator):
         """
         fim_sum = jnp.einsum("npk,nqk,nk->pq", gradients, gradients, probs)
         fim = fim_sum / probs.sum()
+        fim = 0.5 * (fim + fim.T)
 
         return fim

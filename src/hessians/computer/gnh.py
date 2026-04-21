@@ -29,11 +29,12 @@ class GNHComputer(HessianEstimator):
     For exponential family losses (e.g., CrossEntropy), GNH equals FIM.
     GNH is always positive semi-definite, unlike the full Hessian.
 
-    Note: this estimator materializes the full GNH and slices it into per-layer
-    `(I_i*O_i, I_j*O_j)` `DenseBlock`s via `LayerMatrix.from_dense`.  For big
-    models where materialization is not affordable, the lazy `_compute_gnhvp`
-    helper below remains available — a future big-model subclass can override
-    `estimate_hvp` to call it directly and bypass `LayerMatrix` entirely.
+    Two modes, same contract as `HessianComputer`:
+    - `.build()` materializes the full GNH and slices it into per-layer
+      `DenseBlock`s; the `estimate_*` methods use the cached matrix.
+    - Skip `.build()` → `estimate_hvp` dispatches to `_lazy_hvp`, which does
+      JVP-through-the-model via `_compute_gnhvp` and never materializes the
+      dense matrix.  `estimate_hessian` / `estimate_ihvp` still require `.build()`.
     """
 
     # ------------------------------------------------------------------
@@ -110,10 +111,10 @@ class GNHComputer(HessianEstimator):
 
         p_flat = compute_context.params_flat
         X = compute_context.inputs
-        X = X.astype(jnp.float64)
+
         n_params = p_flat.size
 
-        G0 = jnp.zeros((n_params, n_params))
+        G0 = jnp.zeros((n_params, n_params), dtype=p_flat.dtype)
         (_, G_full), _ = jax.lax.scan(scan_body, init=(p_flat, G0), xs=X)
 
         G_full = 2 * G_full / X.shape[0]
@@ -167,7 +168,7 @@ class GNHComputer(HessianEstimator):
         Y = compute_context.targets
         n_params = p_flat.size
 
-        G0 = jnp.zeros((n_params, n_params))
+        G0 = jnp.zeros((n_params, n_params), dtype=p_flat.dtype)
         (_, G_full), _ = jax.lax.scan(scan_body, init=(p_flat, G0), xs=(X, Y))
 
         G_full = G_full / X.shape[0]
@@ -220,7 +221,7 @@ class GNHComputer(HessianEstimator):
         Y = compute_context.targets
         n_params = p_flat.size
 
-        G0 = jnp.zeros((n_params, n_params))
+        G0 = jnp.zeros((n_params, n_params), dtype=p_flat.dtype)
 
         (_, G_full), _ = jax.lax.scan(scan_body, init=(p_flat, G0), xs=(X, Y))
 
@@ -229,9 +230,16 @@ class GNHComputer(HessianEstimator):
         return G_full + damping * jnp.eye(n_params)
 
     # ------------------------------------------------------------------
-    # Lazy HVP escape hatch (retained for future big-model overrides;
-    # not used by the refactored `estimate_hvp` path).
+    # Lazy HVP — dispatched from `estimate_hvp` when `.build()` was skipped.
     # ------------------------------------------------------------------
+
+    def _lazy_hvp(
+        self,
+        vectors: Float[Array, "batch_size n_params"],
+        damping: Float,
+    ) -> Float[Array, "batch_size n_params"]:
+        """JVP-through-the-model GNH vector product — no matrix materialized.  Expects 2D input."""
+        return self._compute_gnhvp(self.compute_context, vectors, damping)
 
     @staticmethod
     def _compute_gnhvp(
@@ -245,10 +253,6 @@ class GNHComputer(HessianEstimator):
         - Handles mse and cross_entropy losses analytically.
         - Avoids nested Hessian inside scans.
         - Uses vmap over vectors with chunking for memory efficiency.
-
-        Currently unused — retained as the lazy HVP escape hatch for a future
-        big-model subclass that overrides `estimate_hvp` to bypass
-        `LayerMatrix`.
         """
         p_flat = compute_context.params_flat
         X = compute_context.inputs
