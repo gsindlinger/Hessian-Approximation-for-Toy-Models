@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Dict, List, Tuple
 
 import jax
@@ -42,7 +43,7 @@ class GNHComputer(HessianEstimator):
     # ------------------------------------------------------------------
 
     def get_layer_names(self) -> List[str]:
-        return list(self.compute_context.model.get_layer_names())
+        return list(self.compute_context.model.get_layer_names())  # type: ignore
 
     def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
         return layer_shapes_from_model_context(self.compute_context)
@@ -62,10 +63,28 @@ class GNHComputer(HessianEstimator):
             param_groups=self.get_layer_names(),
             layer_shapes=self._layer_shapes(),
         )
+        return result
 
-    # ------------------------------------------------------------------
-    # Materialization helpers (used by _build)
-    # ------------------------------------------------------------------
+    @staticmethod
+    @partial(jax.jit, static_argnames=["damping", "pseudo_inverse_factor"])
+    def _compute_ignhvp_batched(
+        data: ModelContext,
+        vectors: Float[Array, "batch_size n_params"],
+        damping: Float,
+        pseudo_inverse_factor: Float,
+    ) -> Float[Array, "batch_size n_params"]:
+        """
+        Compute inverse Gauss-Newton-vector products for a batch of vectors.
+        """
+        gnh = GNHComputer._compute_gnh(data, damping)
+        if pseudo_inverse_factor > 0.0:
+            eigvals, eigvecs = jnp.linalg.eigh(gnh)
+            eigvals_inv = jnp.where(eigvals > pseudo_inverse_factor, 1.0 / eigvals, 0.0)
+            return jnp.einsum(
+                "ij,j,jk,nk->ni", eigvecs, eigvals_inv, eigvecs.T, vectors
+            )
+        else:
+            return jnp.linalg.solve(gnh, vectors.T).T
 
     @staticmethod
     @jax.jit
