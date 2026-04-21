@@ -729,7 +729,7 @@ class LayerMatrix:
     Two storage modes are supported:
 
     - **Block-diagonal**: only `(l, l)` diagonal keys are populated.
-      Used by KFAC / EKFAC / TKFAC / ... and by per-layer FIM/Hessian
+      Used by KFAC / EKFAC / Shampoo / ... and by per-layer FIM/Hessian
       block estimators.  All ops dispatch through the per-block methods
       and avoid materializing the full matrix.
 

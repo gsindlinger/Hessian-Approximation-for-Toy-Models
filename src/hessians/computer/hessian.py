@@ -61,9 +61,9 @@ class HessianComputer(HessianEstimator):
     def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
         return layer_shapes_from_model_context(self.compute_context)
 
-    def _build(self, compute_context: ModelContext) -> LayerMatrix:
+    def _build(self) -> LayerMatrix:
         """Materialize the full Hessian and slice it into per-layer DenseBlocks."""
-        dense = self._compute_hessian(compute_context, 0.0)
+        dense = self._compute_hessian(self.compute_context, 0.0)
         return LayerMatrix.from_dense(
             dense,
             param_groups=self.get_layer_names(),

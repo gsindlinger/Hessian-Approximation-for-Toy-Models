@@ -38,16 +38,17 @@ class FIMBlockComputer(HessianEstimator):
             for l in compute_context.layer_names
         }
 
-    def _build(self, compute_context: DataActivationsGradients) -> LayerMatrix:
+    def _build(self) -> LayerMatrix:
         """Build a block-diagonal `LayerMatrix` of per-layer dense FIM blocks."""
-        layer_names = list(compute_context.layer_names)
-        shapes = self._layer_shapes_from_context(compute_context)
+        ctx = self.compute_context
+        layer_names = list(ctx.layer_names)
+        shapes = self._layer_shapes_from_context(ctx)
 
         diag_blocks: Dict[str, DenseBlock] = {}
         for layer in layer_names:
-            act = compute_context.activations[layer]
-            grad = compute_context.gradients[layer]
-            block = self._compute_layer_block(act, grad, compute_context.probs)
+            act = ctx.activations[layer]
+            grad = ctx.gradients[layer]
+            block = self._compute_layer_block(act, grad, ctx.probs)
             diag_blocks[layer] = DenseBlock(
                 matrix=block,
                 row_shape=shapes[layer],

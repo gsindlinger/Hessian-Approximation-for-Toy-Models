@@ -192,7 +192,7 @@ def test_ekfac_existence(
     collector_data_single: DataActivationsGradients,
 ):
     """Test if EKFAC Hessian approximation can be computed without errors."""
-    ekfac_computer = EKFACComputer(compute_context=collector_data_single).build()
+    ekfac_computer = EKFACComputer(compute_context=collector_data_single, corr_context=collector_data_single).build()
 
     H = ekfac_computer.estimate_hessian(damping=1e-3)
     assert jnp.isfinite(H).all()
@@ -326,7 +326,10 @@ def test_ekfac_hessian(
         .estimate_hessian(damping=damping)
     )
     E = (
-        EKFACComputer(compute_context=collector_data_single)
+        EKFACComputer(
+            compute_context=collector_data_single,
+            corr_context=collector_data_single,
+        )
         .build()
         .estimate_hessian(damping=damping)
     )
@@ -340,10 +343,11 @@ def test_collector_batched_vs_single_consistency(
 ):
     """Test whether EK-FAC data collected with different batch sizes is consistent."""
 
-    ekfac_computer = EKFACComputer(compute_context=collector_data_single).build()
+    ekfac_computer = EKFACComputer(compute_context=collector_data_single, corr_context=collector_data_single).build()
 
     ekfac_computer_batched = EKFACComputer(
-        compute_context=collector_data_batched
+        compute_context=collector_data_batched,
+        corr_context=collector_data_batched,
     ).build()
 
     assert isinstance(ekfac_computer, EKFACComputer)
@@ -377,7 +381,7 @@ def test_ekfac_hvp_ihvp_consistency(
     Test whether the HVP and IHVP implementations are consistent
     in the sense of comparing it with multiplication of the full hessian / inverse hessian with the test vector.
     """
-    comp = EKFACComputer(compute_context=collector_data_single).build()
+    comp = EKFACComputer(compute_context=collector_data_single, corr_context=collector_data_single).build()
     assert isinstance(comp, EKFACComputer)
     damping = 0.1
 
@@ -446,7 +450,7 @@ def test_ekfac_explicit_vs_implicit_equivalence(
     collector_data_single: DataActivationsGradients,
 ):
     """Test whether the EK-FAC Hessian explicit computation matches the implicit computation via HVPs / IHVPs on basis vectors."""
-    comp = EKFACComputer(compute_context=collector_data_single).build()
+    comp = EKFACComputer(compute_context=collector_data_single, corr_context=collector_data_single).build()
     assert isinstance(comp, EKFACComputer)
     damping = 0.1
 
@@ -490,7 +494,7 @@ def test_ekfac_ihvp_batched_shape_and_finiteness(
     collector_data_single: DataActivationsGradients,
 ):
     """Test whether EK-FAC IHVP with batched vectors works and produces finite outputs of correct shape."""
-    comp = EKFACComputer(compute_context=collector_data_single).build()
+    comp = EKFACComputer(compute_context=collector_data_single, corr_context=collector_data_single).build()
     assert isinstance(comp, EKFACComputer)
     damping = 0.1
 
@@ -518,7 +522,7 @@ def test_ekfac_ihvp_batched_vs_single_consistency(
     collector_data_single: DataActivationsGradients,
 ):
     """Test whether EK-FAC IHVP with batched vectors is consistent with single vector IHVP computation."""
-    comp = EKFACComputer(compute_context=collector_data_single).build()
+    comp = EKFACComputer(compute_context=collector_data_single, corr_context=collector_data_single).build()
 
     model, params, loss = model_params_loss
     assert model_context.targets is not None, "ModelContext targets must not be None"
@@ -546,7 +550,7 @@ def test_ekfac_ihvp_hessian_roundtrip_batched(
     collector_data_single: DataActivationsGradients,
 ):
     """Test whether EK-FAC IHVP with batched vectors is consistent in the sense of comparing it with multiplication of the full hessian / inverse hessian with the test vector."""
-    comp = EKFACComputer(compute_context=collector_data_single).build()
+    comp = EKFACComputer(compute_context=collector_data_single, corr_context=collector_data_single).build()
     assert isinstance(comp, EKFACComputer)
 
     model, params, loss = model_params_loss
@@ -584,7 +588,10 @@ def test_ekfac_all_classes_better_single_run(
         .estimate_hessian(damping=damping)
     )
     E = (
-        EKFACComputer(compute_context=collector_data_single)
+        EKFACComputer(
+            compute_context=collector_data_single,
+            corr_context=collector_data_single,
+        )
         .build()
         .estimate_hessian(damping=damping)
     )
@@ -592,7 +599,10 @@ def test_ekfac_all_classes_better_single_run(
     error_single = FullMatrixMetric.FROBENIUS.compute(H, E)
 
     E_all_classes = (
-        EKFACComputer(compute_context=collector_data_all_classes)
+        EKFACComputer(
+            compute_context=collector_data_all_classes,
+            corr_context=collector_data_all_classes,
+        )
         .build()
         .estimate_hessian(damping=damping)
     )
@@ -641,7 +651,10 @@ def test_ekfac_better_approximation_than_kfac(
 
     # Compute EKFAC approximation
     E = (
-        EKFACComputer(compute_context=collector_data_all_classes)
+        EKFACComputer(
+            compute_context=collector_data_all_classes,
+            corr_context=collector_data_all_classes,
+        )
         .build()
         .estimate_hessian(damping=damping)
     )
@@ -693,7 +706,10 @@ def test_ekfac_better_approximation_than_kfac_relative(
 
     # Compute EKFAC approximation
     E = (
-        EKFACComputer(compute_context=collector_data_all_classes)
+        EKFACComputer(
+            compute_context=collector_data_all_classes,
+            corr_context=collector_data_all_classes,
+        )
         .build()
         .estimate_hessian(damping=damping)
     )

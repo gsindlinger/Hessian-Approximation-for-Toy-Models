@@ -42,21 +42,22 @@ class FIMComputer(HessianEstimator):
             for l in compute_context.layer_names
         }
 
-    def _build(self, compute_context: DataActivationsGradients) -> LayerMatrix:
+    def _build(self) -> LayerMatrix:
         """Assemble per-sample parameter gradients, materialize the FIM, and slice."""
-        layer_names = list(compute_context.layer_names)
-        layer_shapes = self._layer_shapes_from_context(compute_context)
+        ctx = self.compute_context
+        layer_names = list(ctx.layer_names)
+        layer_shapes = self._layer_shapes_from_context(ctx)
 
         grads_per_layer = []
         for layer in layer_names:
-            a = compute_context.activations[layer]  # (N, I_l)
-            g = compute_context.gradients[layer]  # (N, O_l, k)
+            a = ctx.activations[layer]  # (N, I_l)
+            g = ctx.gradients[layer]  # (N, O_l, k)
             # (N, I_l, O_l, k) -> (N, I_l*O_l, k)
             G_l = jnp.einsum("ni,nok->niok", a, g).reshape(a.shape[0], -1, g.shape[-1])
             grads_per_layer.append(G_l)
         grads_all = jnp.concatenate(grads_per_layer, axis=1)  # (N, n_params, k)
 
-        dense = self._compute_fim(grads_all, compute_context.probs)
+        dense = self._compute_fim(grads_all, ctx.probs)
 
         return LayerMatrix.from_dense(
             dense,

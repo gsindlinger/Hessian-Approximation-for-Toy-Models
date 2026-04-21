@@ -21,7 +21,7 @@ from src.hessians.utils.data import (
 # pass).  KFAC/SHAMPOO are E-variants with the correction disabled, so
 # passing `corr_context` to them would be silently ignored — reject it at
 # the registry boundary instead.
-_EKFAC_FAMILY_METHODS = frozenset({
+_CORRECTED_KRONECKER_METHODS = frozenset({
     HessianApproximationMethod.EKFAC,
     HessianApproximationMethod.ESHAMPOO,
 })
@@ -77,7 +77,7 @@ class HessianComputerRegistry:
             "compute_context": compute_context,
             "layer_matrix_directory": layer_matrix_directory,
         }
-        if corr_context is not None and approximator in _EKFAC_FAMILY_METHODS:
+        if corr_context is not None and approximator in _CORRECTED_KRONECKER_METHODS:
             kwargs["corr_context"] = corr_context
         return computer_cls(**kwargs)
 

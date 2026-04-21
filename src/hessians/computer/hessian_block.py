@@ -32,13 +32,14 @@ class BlockHessianComputer(HessianEstimator):
     `estimate_hvp`.
     """
 
-    def _build(self, compute_context: ModelContext) -> LayerMatrix:
+    def _build(self) -> LayerMatrix:
         """Materialize each per-layer Hessian block and return a block-diagonal LayerMatrix."""
-        layer_shapes = layer_shapes_from_model_context(compute_context)
-        layer_names: List[str] = list(compute_context.model.get_layer_names())
+        ctx = self.compute_context
+        layer_shapes = layer_shapes_from_model_context(ctx)
+        layer_names: List[str] = list(ctx.model.get_layer_names())
 
         # Walk the flat tree to get per-layer (start, end) ranges in params_flat.
-        params = compute_context.unravel_fn(compute_context.params_flat)
+        params = ctx.unravel_fn(ctx.params_flat)
         params_root = params["params"] if "params" in params else params
         leaves_with_paths, _ = tree_flatten_with_path(params_root)
 
@@ -60,7 +61,7 @@ class BlockHessianComputer(HessianEstimator):
             block_ranges.append((start, end))
 
         block_arrays = self._compute_blocks(
-            compute_context=compute_context,
+            compute_context=ctx,
             blocks=tuple(block_ranges),
             damping=0.0,
         )

@@ -46,15 +46,16 @@ class GNHComputer(HessianEstimator):
     def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
         return layer_shapes_from_model_context(self.compute_context)
 
-    def _build(self, compute_context: ModelContext) -> LayerMatrix:
+    def _build(self) -> LayerMatrix:
         """Materialize the full GNH and slice it into per-layer DenseBlocks."""
-        loss_name = get_loss_name(compute_context.loss_fn)
+        ctx = self.compute_context
+        loss_name = get_loss_name(ctx.loss_fn)
         if loss_name == "mse":
-            dense = self._compute_gnh_mse(compute_context, 0.0)
+            dense = self._compute_gnh_mse(ctx, 0.0)
         elif loss_name == "cross_entropy":
-            dense = self._compute_gnh_cross_entropy(compute_context, 0.0)
+            dense = self._compute_gnh_cross_entropy(ctx, 0.0)
         else:
-            dense = self._compute_gnh(compute_context, 0.0)
+            dense = self._compute_gnh(ctx, 0.0)
         return LayerMatrix.from_dense(
             dense,
             param_groups=self.get_layer_names(),
