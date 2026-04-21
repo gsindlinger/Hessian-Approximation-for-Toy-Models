@@ -145,3 +145,4 @@ data/checkpoints/*
 # outputs/
 # results/
 *.tex
+*.txt
