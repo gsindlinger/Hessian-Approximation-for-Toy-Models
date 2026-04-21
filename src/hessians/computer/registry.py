@@ -1,39 +1,50 @@
 from collections.abc import Callable
+from functools import partial
 from typing import Dict
 
 from src.config import HessianApproximationMethod
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.eshampoo import EShampooComputer
-from src.hessians.computer.etkfac import ETKFACComputer
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.computer.fim_block import FIMBlockComputer
 from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.hessian_block import BlockHessianComputer
-from src.hessians.computer.kfac import KFACComputer
-from src.hessians.computer.shampoo import ShampooComputer
-from src.hessians.computer.tkfac import TKFACComputer
 from src.hessians.utils.data import (
     DataActivationsGradients,
     ModelContext,
 )
 
 
+# Methods that actually consume `corr_context` (the eigenvalue-correction
+# pass).  KFAC/SHAMPOO are E-variants with the correction disabled, so
+# passing `corr_context` to them would be silently ignored — reject it at
+# the registry boundary instead.
+_EKFAC_FAMILY_METHODS = frozenset({
+    HessianApproximationMethod.EKFAC,
+    HessianApproximationMethod.ESHAMPOO,
+})
+
+
 class HessianComputerRegistry:
+    # KFAC / SHAMPOO are E-variants with the eigenvalue correction turned
+    # off (Lambda = outer(λ_A, λ_G)), so they share the same classes.
     REGISTRY: Dict[
         HessianApproximationMethod, Callable[..., HessianEstimator]
     ] = {
-        HessianApproximationMethod.KFAC: KFACComputer,
+        HessianApproximationMethod.KFAC: partial(
+            EKFACComputer, apply_eigenvalue_correction=False
+        ),
         HessianApproximationMethod.EKFAC: EKFACComputer,
         HessianApproximationMethod.GNH: GNHComputer,
         HessianApproximationMethod.FIM: FIMComputer,
         HessianApproximationMethod.BLOCK_FIM: FIMBlockComputer,
         HessianApproximationMethod.BLOCK_HESSIAN: BlockHessianComputer,
         HessianApproximationMethod.EXACT: HessianComputer,
-        HessianApproximationMethod.TKFAC: TKFACComputer,
-        HessianApproximationMethod.ETKFAC: ETKFACComputer,
-        HessianApproximationMethod.SHAMPOO: ShampooComputer,
+        HessianApproximationMethod.SHAMPOO: partial(
+            EShampooComputer, apply_eigenvalue_correction=False
+        ),
         HessianApproximationMethod.ESHAMPOO: EShampooComputer,
     }
 
@@ -48,8 +59,6 @@ class HessianComputerRegistry:
         HessianApproximationMethod.BLOCK_HESSIAN: "block_hessian_layer_matrix",
         HessianApproximationMethod.GNH: "gnh_layer_matrix",
         HessianApproximationMethod.EXACT: "exact_hessian_layer_matrix",
-        HessianApproximationMethod.TKFAC: "tkfac_layer_matrix",
-        HessianApproximationMethod.ETKFAC: "etkfac_layer_matrix",
         HessianApproximationMethod.SHAMPOO: "shampoo_layer_matrix",
         HessianApproximationMethod.ESHAMPOO: "eshampoo_layer_matrix",
     }
@@ -68,7 +77,7 @@ class HessianComputerRegistry:
             "compute_context": compute_context,
             "layer_matrix_directory": layer_matrix_directory,
         }
-        if corr_context is not None and issubclass(computer_cls, EKFACComputer):
+        if corr_context is not None and approximator in _EKFAC_FAMILY_METHODS:
             kwargs["corr_context"] = corr_context
         return computer_cls(**kwargs)
 

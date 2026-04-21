@@ -65,10 +65,12 @@ def _autograd_shampoo_factors(
     loss_fn: Callable,
     dataset: Dataset,
 ) -> Tuple[Dict[str, jnp.ndarray], Dict[str, jnp.ndarray]]:
-    """Per-sample param gradients via autograd, reduced into Shampoo factors:
+    """Per-sample param gradients via autograd, reduced into Shampoo factors
+    with Shampoo paper's trace-restricted normalization:
 
-        gradient_cov[o,p] = (1/N) Σ_n (W_grad[n]^T W_grad[n])[o,p]   (O, O)
-        activation_cov[i,j] = (1/N) Σ_n (W_grad[n] W_grad[n]^T)[i,j] (I, I)
+        R[o,p]   = (1/N) Σ_n (W_grad[n]^T W_grad[n])[o,p]   (O, O)  ← gradient_cov
+        L[i,j]   = (1/N) Σ_n (W_grad[n] W_grad[n]^T)[i,j]   (I, I)  ← activation_cov
+        L ← L / tr(L)                                       (Shampoo Corollary)
 
     where `W_grad[n]` is shape `(I, O)` — the per-sample gradient of the
     sum-reduced loss w.r.t. the Dense kernel.
@@ -87,7 +89,8 @@ def _autograd_shampoo_factors(
     for layer, leaf in per_sample["params"].items():
         W_grad = leaf["kernel"]  # (N, I, O)
         grad_covs[layer] = jnp.einsum("nio,nip->op", W_grad, W_grad) / N
-        act_covs[layer] = jnp.einsum("nio,njo->ij", W_grad, W_grad) / N
+        L = jnp.einsum("nio,njo->ij", W_grad, W_grad) / N
+        act_covs[layer] = L / jnp.trace(L)
     return grad_covs, act_covs
 
 

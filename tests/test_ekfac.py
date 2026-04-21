@@ -15,7 +15,6 @@ from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
-from src.hessians.computer.kfac import KFACComputer
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import (
     sample_gradients,
@@ -252,7 +251,9 @@ def test_kfac_hessian(
         .estimate_hessian(damping=damping)
     )
     K = (
-        KFACComputer(compute_context=collector_data_single)
+        EKFACComputer(
+            compute_context=collector_data_single, apply_eigenvalue_correction=False
+        )
         .build()
         .estimate_hessian(damping=damping)
     )
@@ -265,7 +266,7 @@ def test_kfac_via_kron_equals_eigenvector_method(
     model_context: ModelContext,
 ):
     """This test verifies that the K-FAC Hessian computed via the Kronecker product of the covariances directly equals
-    the K-FAC Hessian computed via the eigenvector method implemented in KFACComputer."""
+    the K-FAC Hessian computed via the eigenvector method (EKFACComputer with correction off)."""
 
     assert all(
         gradients.shape[-1] == 1
@@ -298,8 +299,10 @@ def test_kfac_via_kron_equals_eigenvector_method(
 
     kron_comparison_method_H = jax.scipy.linalg.block_diag(*H_kron_blocks.values())
 
-    # Use KFACComputer to compute the Hessian via eigenvalue decomposition
-    kfac_computer = KFACComputer(compute_context=collector_data_single).build()
+    # Use EKFACComputer (correction off) to compute the Hessian via eigenvalue decomposition
+    kfac_computer = EKFACComputer(
+        compute_context=collector_data_single, apply_eigenvalue_correction=False
+    ).build()
     eigenvector_method_H = kfac_computer.estimate_hessian(damping=0.0)
 
     assert jnp.allclose(
@@ -408,8 +411,10 @@ def test_kfac_hvp_ihvp_consistency(
 ):
     """Test whether the HVP and IHVP implementations are consistent
     in the sense of comparing it with multiplication of the full hessian / inverse hessian with the test vector."""
-    comp = KFACComputer(compute_context=collector_data_single).build()
-    assert isinstance(comp, KFACComputer)
+    comp = EKFACComputer(
+        compute_context=collector_data_single, apply_eigenvalue_correction=False
+    ).build()
+    assert isinstance(comp, EKFACComputer) and not comp.apply_eigenvalue_correction
     damping = 0.1
 
     assert model_context.targets is not None, "ModelContext targets must not be None"
@@ -461,8 +466,10 @@ def test_kfac_explicit_vs_implicit_equivalence(
     collector_data_single: DataActivationsGradients,
 ):
     """Test whether the K-FAC Hessian explicit computation matches the implicit computation via HVPs / IHVPs on basis vectors."""
-    comp = KFACComputer(compute_context=collector_data_single).build()
-    assert isinstance(comp, KFACComputer)
+    comp = EKFACComputer(
+        compute_context=collector_data_single, apply_eigenvalue_correction=False
+    ).build()
+    assert isinstance(comp, EKFACComputer) and not comp.apply_eigenvalue_correction
     damping = 0.1
 
     _, params, _ = model_params_loss
@@ -624,7 +631,10 @@ def test_ekfac_better_approximation_than_kfac(
 
     # Compute KFAC approximation
     K = (
-        KFACComputer(compute_context=collector_data_all_classes)
+        EKFACComputer(
+            compute_context=collector_data_all_classes,
+            apply_eigenvalue_correction=False,
+        )
         .build()
         .estimate_hessian(damping=damping)
     )
@@ -673,7 +683,10 @@ def test_ekfac_better_approximation_than_kfac_relative(
 
     # Compute KFAC approximation
     K = (
-        KFACComputer(compute_context=collector_data_all_classes)
+        EKFACComputer(
+            compute_context=collector_data_all_classes,
+            apply_eigenvalue_correction=False,
+        )
         .build()
         .estimate_hessian(damping=damping)
     )

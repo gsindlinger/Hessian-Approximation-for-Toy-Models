@@ -65,6 +65,7 @@ from experiments.utils import (
 )
 from src.config import (
     ComputationType,
+    PseudoTargetGenerationStrategy,
     RegularizationStrategy,
     ExperimentConfig,
     HessianAnalysisConfig,
@@ -125,22 +126,39 @@ def collect_data(
 
     cleanup_memory("gradient_sampling")
 
-    # Collect Activation & Gradients (2 runs)
+    # Collect Activation & Gradients
     logger.info("[HESSIAN] Collecting Activations & Gradients")
-    collector = CollectorActivationsGradients(
-        model=model, 
-        params=params, 
-        loss_fn=loss_fn,
-        pseudo_target_repetitions=hessian_config.computation_config.pseudo_target_generation_repetitions, 
-        pseudo_target_strategy=hessian_config.computation_config.pseudo_target_generation_strategy
-    )
-    
-    collected_data: DataActivationsGradients = collector.collect(
+    strategy = hessian_config.computation_config.pseudo_target_generation_strategy
+
+    def _make_collector():
+        return CollectorActivationsGradients(
+            model=model,
+            params=params,
+            loss_fn=loss_fn,
+            pseudo_target_repetitions=hessian_config.computation_config.pseudo_target_generation_repetitions,
+            pseudo_target_strategy=strategy,
+        )
+
+    collected_data: DataActivationsGradients = _make_collector().collect(
         dataset=Dataset(train_inputs, train_targets),
         save_directory=collector_dir,
         try_load=True,
         rng_key=PRNGKey(seed),
     )
+
+    # For MCMC, collect a second independent dataset (different rng) for
+    # EKFAC's eigenvalue correction so the correction is not fit on the
+    # same samples as the covariances.  For EF/ALL_CLASSES the collection
+    # is deterministic, so reuse the primary dataset.
+    if strategy == PseudoTargetGenerationStrategy.MCMC:
+        collected_data_corr = _make_collector().collect(
+            dataset=Dataset(train_inputs, train_targets),
+            save_directory=f"{collector_dir}_corr",
+            try_load=True,
+            rng_key=PRNGKey(seed + 1),
+        )
+    else:
+        collected_data_corr = collected_data
 
     # Create model context
     model_ctx = ModelContext.create(
@@ -150,12 +168,13 @@ def collect_data(
         loss_fn=loss_fn,
     )
 
-    return grads_1, grads_2, collected_data, model_ctx
+    return grads_1, grads_2, collected_data, collected_data_corr, model_ctx
 
 
 def compute_hessian_comparison_for_single_model(
     hessian_config: HessianAnalysisConfig,
     collector_data: DataActivationsGradients,
+    collector_data_corr: DataActivationsGradients,
     model_ctx: ModelContext,
     grads_1: Float[Array, "*batch_size n_params"],
     grads_2: Float[Array, "*batch_size n_params"],
@@ -176,7 +195,9 @@ def compute_hessian_comparison_for_single_model(
         logger.info(
             "[HESSIAN] Using EKFAC to estimate damping for other methods."
         )
-        ekfac_computer = EKFACComputer(compute_context=collector_data)
+        ekfac_computer = EKFACComputer(
+            compute_context=collector_data, corr_context=collector_data_corr
+        )
         ekfac_computer.build(base_directory=build_base_dir)
         damping = ekfac_computer.get_damping(
             damping_strategy=hessian_config.computation_config.regularization_strategy,
@@ -206,7 +227,7 @@ def compute_hessian_comparison_for_single_model(
             reference_approx, collector_data, model_ctx
         )
         reference_computer = HessianComputerRegistry.get_computer(
-            reference_approx, reference_data
+            reference_approx, reference_data, corr_context=collector_data_corr
         )
         reference_computer.build(base_directory=build_base_dir)
 
@@ -233,7 +254,7 @@ def compute_hessian_comparison_for_single_model(
                     model_ctx=model_ctx,
                 )
                 approx_computer = HessianComputerRegistry.get_computer(
-                    approx, approx_data
+                    approx, approx_data, corr_context=collector_data_corr
                 )
                 approx_computer.build(base_directory=build_base_dir)
 
@@ -277,7 +298,7 @@ def compute_hessian_comparison_for_single_model(
                     model_ctx=model_ctx,
                 )
                 approx_computer = HessianComputerRegistry.get_computer(
-                    approx, approx_data
+                    approx, approx_data, corr_context=collector_data_corr
                 )
 
                 assert isinstance(approx_computer, HessianEstimator), (
@@ -329,7 +350,7 @@ def compute_hessian_comparison_for_single_model(
                     model_ctx=model_ctx,
                 )
                 approx_computer = HessianComputerRegistry.get_computer(
-                    approx, approx_data
+                    approx, approx_data, corr_context=collector_data_corr
                 )
 
                 assert isinstance(approx_computer, HessianEstimator), (
@@ -441,7 +462,7 @@ def analyze_single_model(
         collector_dir = os.path.join(collector_dir, f"epoch_{epoch}")
         build_base_dir = os.path.join(build_base_dir, f"epoch_{epoch}")
 
-    grads_1, grads_2, collector_data, model_ctx = collect_data(
+    grads_1, grads_2, collector_data, collector_data_corr, model_ctx = collect_data(
         model=model,
         params=params,
         model_config=model_config,
@@ -455,6 +476,7 @@ def analyze_single_model(
     hessian_results = compute_hessian_comparison_for_single_model(
         hessian_config,
         collector_data,
+        collector_data_corr,
         model_ctx,
         grads_1,
         grads_2,
