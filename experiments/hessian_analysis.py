@@ -50,6 +50,7 @@ from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 
 import hydra
+from tqdm.auto import tqdm
 from hydra.core.config_store import ConfigStore
 from jax.random import PRNGKey
 from jaxtyping import Array, Float
@@ -64,6 +65,7 @@ from experiments.utils import (
 )
 from src.config import (
     ComputationType,
+    PseudoTargetGenerationStrategy,
     RegularizationStrategy,
     ExperimentConfig,
     HessianAnalysisConfig,
@@ -73,7 +75,6 @@ from src.config import (
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
-from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import (
@@ -85,6 +86,11 @@ from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.train import check_saved_model, load_model_checkpoint
 
 logger = logging.getLogger(__name__)
+
+# Quiet per-iteration chatter that interleaves with tqdm bars. These loggers
+# fire inside the inner approximator loops; silence anything below WARNING.
+logging.getLogger("experiments.utils").setLevel(logging.WARNING)
+logging.getLogger("src.hessians.computer.computer").setLevel(logging.WARNING)
 
 cs = ConfigStore.instance()
 cs.store(name="hessian_experiment", node=ExperimentConfig)
@@ -120,22 +126,39 @@ def collect_data(
 
     cleanup_memory("gradient_sampling")
 
-    # Collect Activation & Gradients (2 runs)
+    # Collect Activation & Gradients
     logger.info("[HESSIAN] Collecting Activations & Gradients")
-    collector = CollectorActivationsGradients(
-        model=model, 
-        params=params, 
-        loss_fn=loss_fn,
-        pseudo_target_repetitions=hessian_config.computation_config.pseudo_target_generation_repetitions, 
-        pseudo_target_strategy=hessian_config.computation_config.pseudo_target_generation_strategy
-    )
-    
-    collected_data: DataActivationsGradients = collector.collect(
+    strategy = hessian_config.computation_config.pseudo_target_generation_strategy
+
+    def _make_collector():
+        return CollectorActivationsGradients(
+            model=model,
+            params=params,
+            loss_fn=loss_fn,
+            pseudo_target_repetitions=hessian_config.computation_config.pseudo_target_generation_repetitions,
+            pseudo_target_strategy=strategy,
+        )
+
+    collected_data: DataActivationsGradients = _make_collector().collect(
         dataset=Dataset(train_inputs, train_targets),
         save_directory=collector_dir,
         try_load=True,
         rng_key=PRNGKey(seed),
     )
+
+    # For MCMC, collect a second independent dataset (different rng) for
+    # EKFAC's eigenvalue correction so the correction is not fit on the
+    # same samples as the covariances.  For EF/ALL_CLASSES the collection
+    # is deterministic, so reuse the primary dataset.
+    if strategy == PseudoTargetGenerationStrategy.MCMC:
+        collected_data_corr = _make_collector().collect(
+            dataset=Dataset(train_inputs, train_targets),
+            save_directory=f"{collector_dir}_corr",
+            try_load=True,
+            rng_key=PRNGKey(seed + 1),
+        )
+    else:
+        collected_data_corr = collected_data
 
     # Create model context
     model_ctx = ModelContext.create(
@@ -145,12 +168,13 @@ def collect_data(
         loss_fn=loss_fn,
     )
 
-    return grads_1, grads_2, collected_data, model_ctx
+    return grads_1, grads_2, collected_data, collected_data_corr, model_ctx
 
 
 def compute_hessian_comparison_for_single_model(
     hessian_config: HessianAnalysisConfig,
     collector_data: DataActivationsGradients,
+    collector_data_corr: DataActivationsGradients,
     model_ctx: ModelContext,
     grads_1: Float[Array, "*batch_size n_params"],
     grads_2: Float[Array, "*batch_size n_params"],
@@ -171,10 +195,11 @@ def compute_hessian_comparison_for_single_model(
         logger.info(
             "[HESSIAN] Using EKFAC to estimate damping for other methods."
         )
-        ekfac_computer = EKFACComputer(compute_context=collector_data)
+        ekfac_computer = EKFACComputer(
+            compute_context=collector_data, corr_context=collector_data_corr
+        )
         ekfac_computer.build(base_directory=build_base_dir)
-        damping = EKFACComputer.get_damping(
-            ekfac_data=ekfac_computer.precomputed_data,
+        damping = ekfac_computer.get_damping(
             damping_strategy=hessian_config.computation_config.regularization_strategy,
             factor=hessian_config.computation_config.regularization_value,
         )
@@ -202,46 +227,36 @@ def compute_hessian_comparison_for_single_model(
             reference_approx, collector_data, model_ctx
         )
         reference_computer = HessianComputerRegistry.get_computer(
-            reference_approx, reference_data
+            reference_approx, reference_data, corr_context=collector_data_corr
         )
-        if isinstance(reference_computer, HessianEstimator):
-            reference_computer.build(base_directory=build_base_dir)
+        reference_computer.build(base_directory=build_base_dir)
 
         # Matrix comparisons
         if ComputationType.MATRIX in comp_config.computation_types:
-            logger.info(f"[HESSIAN] Computing {reference_approx.value} matrix")
+            ref_hessian = block_tree(
+                reference_computer.estimate_hessian(),
+                f"{reference_approx.value}_matrix",
+            )
 
-            if isinstance(reference_computer, HessianComputer):
-                ref_hessian = block_tree(
-                    reference_computer.compute_hessian(),
-                    f"{reference_approx.value}_matrix",
-                )
-            elif isinstance(reference_computer, HessianEstimator):
-                ref_hessian = block_tree(
-                    reference_computer.estimate_hessian(),
-                    f"{reference_approx.value}_matrix",
-                )
-
-            for approx in comp_config.approximators:
-                if approx == reference_approx:
-                    continue
-                logger.info(
-                    f"[HESSIAN] Comparing {reference_approx.value} vs {approx.value} (matrix)"
-                )
+            matrix_approxs = [
+                a for a in comp_config.approximators if a != reference_approx
+            ]
+            bar = tqdm(
+                matrix_approxs,
+                desc=f"matrix vs {reference_approx.value}",
+                leave=True,
+            )
+            for approx in bar:
+                bar.set_postfix_str(approx.value)
                 approx_data = HessianComputerRegistry.get_compute_context(
                     approximator=approx,
                     collector_data=collector_data,
                     model_ctx=model_ctx,
                 )
                 approx_computer = HessianComputerRegistry.get_computer(
-                    approx, approx_data
+                    approx, approx_data, corr_context=collector_data_corr
                 )
-                if isinstance(approx_computer, HessianEstimator):
-                    approx_computer.build(base_directory=build_base_dir)
-                else:
-                    raise RuntimeError(
-                        "Matrix comparisons require HessianEstimator, don't use exact Hessian as approximation method."
-                    )
+                approx_computer.build(base_directory=build_base_dir)
 
                 # Evaluate metrics
                 for metric in hessian_config.matrix_config.metrics:
@@ -249,7 +264,7 @@ def compute_hessian_comparison_for_single_model(
                     results["matrix_comparisons"][metric.value].setdefault(
                         reference_approx.value, {}
                     )
-                    score = approx_computer._compare_full_hessian_estimates(
+                    score = approx_computer.compare_full_hessian_estimates(
                         comparison_matrix=ref_hessian,
                         metric=metric,
                     )
@@ -262,32 +277,28 @@ def compute_hessian_comparison_for_single_model(
 
         # HVP comparisons
         if ComputationType.HVP in comp_config.computation_types:
-            logger.info(f"[HESSIAN] Computing {reference_approx.value} HVP")
+            ref_hvp = block_tree(
+                reference_computer.estimate_hvp(grads_1),
+                f"{reference_approx.value}_hvp",
+            )
 
-            if isinstance(reference_computer, HessianComputer):
-                ref_hvp = block_tree(
-                    reference_computer.compute_hvp(grads_1),
-                    f"{reference_approx.value}_hvp",
-                )
-            elif isinstance(reference_computer, HessianEstimator):
-                ref_hvp = block_tree(
-                    reference_computer.estimate_hvp(grads_1),
-                    f"{reference_approx.value}_hvp",
-                )
-
-            for approx in comp_config.approximators:
-                if approx == reference_approx:
-                    continue
-                logger.info(
-                    f"[HESSIAN] Comparing {reference_approx.value} vs {approx.value} (HVP)"
-                )
+            hvp_approxs = [
+                a for a in comp_config.approximators if a != reference_approx
+            ]
+            bar = tqdm(
+                hvp_approxs,
+                desc=f"hvp vs {reference_approx.value}",
+                leave=True,
+            )
+            for approx in bar:
+                bar.set_postfix_str(approx.value)
                 approx_data = HessianComputerRegistry.get_compute_context(
                     approximator=approx,
                     collector_data=collector_data,
                     model_ctx=model_ctx,
                 )
                 approx_computer = HessianComputerRegistry.get_computer(
-                    approx, approx_data
+                    approx, approx_data, corr_context=collector_data_corr
                 )
 
                 assert isinstance(approx_computer, HessianEstimator), (
@@ -318,32 +329,28 @@ def compute_hessian_comparison_for_single_model(
 
         # IHVP comparisons
         if ComputationType.IHVP in comp_config.computation_types:
-            logger.info(f"[HESSIAN] Computing {reference_approx.value} IHVP")
+            ref_ihvp = block_tree(
+                reference_computer.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
+                f"{reference_approx.value}_ihvp",
+            )
 
-            if isinstance(reference_computer, HessianComputer):
-                ref_ihvp = block_tree(
-                    reference_computer.compute_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
-                    f"{reference_approx.value}_ihvp",
-                )
-            elif isinstance(reference_computer, HessianEstimator):
-                ref_ihvp = block_tree(
-                    reference_computer.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
-                    f"{reference_approx.value}_ihvp",
-                )
-
-            for approx in comp_config.approximators:
-                if approx == reference_approx:
-                    continue
-                logger.info(
-                    f"[HESSIAN] Comparing {reference_approx.value} vs {approx.value} (IHVP)"
-                )
+            ihvp_approxs = [
+                a for a in comp_config.approximators if a != reference_approx
+            ]
+            bar = tqdm(
+                ihvp_approxs,
+                desc=f"ihvp vs {reference_approx.value}",
+                leave=True,
+            )
+            for approx in bar:
+                bar.set_postfix_str(approx.value)
                 approx_data = HessianComputerRegistry.get_compute_context(
                     approximator=approx,
                     collector_data=collector_data,
                     model_ctx=model_ctx,
                 )
                 approx_computer = HessianComputerRegistry.get_computer(
-                    approx, approx_data
+                    approx, approx_data, corr_context=collector_data_corr
                 )
 
                 assert isinstance(approx_computer, HessianEstimator), (
@@ -369,14 +376,9 @@ def compute_hessian_comparison_for_single_model(
 
                 if compute_approximation_error:
                     # Compute round-trip approximation error
-                    if isinstance(reference_computer, HessianComputer):
-                        round_trip_V = reference_computer.compute_hvp(
-                            approx_ihvp
-                        )
-                    else:
-                        round_trip_V = reference_computer.estimate_hvp(
-                            approx_ihvp
-                        )
+                    round_trip_V = reference_computer.estimate_hvp(
+                        approx_ihvp
+                    )
                     approx_error = VectorMetric.RELATIVE_ERROR.compute(
                         grads_1, round_trip_V, x=None, power=2.0
                     )
@@ -450,12 +452,17 @@ def analyze_single_model(
         "directory must be set in model_config for Hessian analysis."
     )
 
-    # Create epoch-specific collector directories
-    collector_dir = os.path.join(model_config.directory, "collector")
+    # Collector (acts/grads) is shared: anchor it to the caller-supplied
+    # absolute model_directory so both worktrees share one cache.
+    collector_dir = os.path.join(model_directory, "collector")
+    # Build dir (approximator matrices) is per-tree: anchor to the relative
+    # model_config.directory so each worktree keeps its own outputs.
+    build_base_dir = os.path.join(model_config.directory, "collector")
     if epoch is not None:
         collector_dir = os.path.join(collector_dir, f"epoch_{epoch}")
+        build_base_dir = os.path.join(build_base_dir, f"epoch_{epoch}")
 
-    grads_1, grads_2, collector_data, model_ctx = collect_data(
+    grads_1, grads_2, collector_data, collector_data_corr, model_ctx = collect_data(
         model=model,
         params=params,
         model_config=model_config,
@@ -469,10 +476,11 @@ def analyze_single_model(
     hessian_results = compute_hessian_comparison_for_single_model(
         hessian_config,
         collector_data,
+        collector_data_corr,
         model_ctx,
         grads_1,
         grads_2,
-        build_base_dir=collector_dir,    
+        build_base_dir=build_base_dir,
     )
 
     result = {

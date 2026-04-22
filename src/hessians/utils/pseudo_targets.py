@@ -33,11 +33,11 @@ def generate_pseudo_targets(
     loss_name = get_loss_name(loss_fn)
 
     if loss_name == "cross_entropy":
-        compute_fn = lambda rng_key: _generate_classification_pseudo_targets(
+        compute_fn = lambda rng_key: _generate_classification_pseudo_targets(  # noqa: E731
             model=model, params=params, inputs=inputs, rng_key=rng_key
-        )
+        )  
     elif loss_name == "mse":
-        compute_fn = lambda rng_key: _generate_regression_pseudo_targets(
+        compute_fn = lambda rng_key: _generate_regression_pseudo_targets(  # noqa: E731
             model=model,
             params=params,
             inputs=inputs,

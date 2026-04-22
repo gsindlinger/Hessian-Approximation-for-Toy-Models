@@ -195,7 +195,7 @@ def test_fim_block_computation_multi_layer(
     for layer_name in layer_names:
         act = fim_data_empirical.activations[layer_name]
         grad = fim_data_empirical.gradients[layer_name]
-        layer_sizes.append(act.shape[1] * grad.shape[2])
+        layer_sizes.append(act.shape[1] * grad.shape[1])
 
     # Check that off-diagonal blocks are essentially zero
     start_idx = 0
@@ -239,14 +239,14 @@ def test_fim_block_hvp_consistency(
         jax.random.PRNGKey(0),
         (
             fim_data.activations[fim_data.layer_names[0]].shape[1]
-            * fim_data.gradients[fim_data.layer_names[0]].shape[2],
+            * fim_data.gradients[fim_data.layer_names[0]].shape[1],
         ),
     )
 
     hvp_block = block_fim.estimate_hvp(v_rand, damping=damping)
     hvp_full = full_fim.estimate_hvp(v_rand, damping=damping)
 
-    strategy_name = fim_data.pseudo_target_strategy.value
+    strategy_name = strategy_fixture
     assert VectorMetric.RELATIVE_ERROR.compute(hvp_block, hvp_full) < 1e-3, (
         f"Block FIM HVP does not match full FIM HVP ({strategy_name})"
     )
@@ -274,14 +274,14 @@ def test_fim_block_ihvp_consistency(
         jax.random.PRNGKey(0),
         (
             fim_data.activations[fim_data.layer_names[0]].shape[1]
-            * fim_data.gradients[fim_data.layer_names[0]].shape[2],
+            * fim_data.gradients[fim_data.layer_names[0]].shape[1],
         ),
     )
 
     ihvp_block = block_fim.estimate_ihvp(v_rand, damping=damping)
     ihvp_full = full_fim.estimate_ihvp(v_rand, damping=damping)
 
-    strategy_name = fim_data.pseudo_target_strategy.value
+    strategy_name = strategy_fixture
     assert VectorMetric.RELATIVE_ERROR.compute(ihvp_block, ihvp_full) < 1e-3, (
         f"Block FIM IHVP does not match full FIM IHVP ({strategy_name})"
     )
@@ -308,14 +308,14 @@ def test_fim_block_roundtrip(
         jax.random.PRNGKey(0),
         (
             fim_data.activations[fim_data.layer_names[0]].shape[1]
-            * fim_data.gradients[fim_data.layer_names[0]].shape[2],
+            * fim_data.gradients[fim_data.layer_names[0]].shape[1],
         ),
     )
 
     ihvp = block_fim.estimate_ihvp(v_rand, damping=damping)
     roundtrip = block_fim.estimate_hvp(ihvp, damping=damping)
 
-    strategy_name = fim_data.pseudo_target_strategy.value
+    strategy_name = strategy_fixture
     assert VectorMetric.RELATIVE_ERROR.compute(roundtrip, v_rand) < 1e-3, (
         f"Block FIM round-trip H(H^{{-1}}v) failed ({strategy_name})"
     )
@@ -346,7 +346,7 @@ def test_fim_block_hvp_batched(
     n_vectors = 5
     dim = (
         fim_data.activations[fim_data.layer_names[0]].shape[1]
-        * fim_data.gradients[fim_data.layer_names[0]].shape[2]
+        * fim_data.gradients[fim_data.layer_names[0]].shape[1]
     )
     V = jax.random.normal(jax.random.PRNGKey(0), (n_vectors, dim))
 
@@ -358,7 +358,7 @@ def test_fim_block_hvp_batched(
         [block_fim.estimate_hvp(V[i], damping=damping) for i in range(n_vectors)]
     )
 
-    strategy_name = fim_data.pseudo_target_strategy.value
+    strategy_name = strategy_fixture
     for i in range(n_vectors):
         assert (
             VectorMetric.RELATIVE_ERROR.compute(hvp_batched[i], hvp_individual[i])
@@ -386,7 +386,7 @@ def test_fim_block_ihvp_batched(
     n_vectors = 5
     dim = (
         fim_data.activations[fim_data.layer_names[0]].shape[1]
-        * fim_data.gradients[fim_data.layer_names[0]].shape[2]
+        * fim_data.gradients[fim_data.layer_names[0]].shape[1]
     )
     V = jax.random.normal(jax.random.PRNGKey(0), (n_vectors, dim))
 
@@ -398,7 +398,7 @@ def test_fim_block_ihvp_batched(
         [block_fim.estimate_ihvp(V[i], damping=damping) for i in range(n_vectors)]
     )
 
-    strategy_name = fim_data.pseudo_target_strategy.value
+    strategy_name = strategy_fixture
     for i in range(n_vectors):
         assert (
             VectorMetric.RELATIVE_ERROR.compute(ihvp_batched[i], ihvp_individual[i])
@@ -460,7 +460,7 @@ def test_fim_block_pseudo_inverse_idempotent_projector(
 
     dim = (
         fim_data_empirical.activations[fim_data_empirical.layer_names[0]].shape[1]
-        * fim_data_empirical.gradients[fim_data_empirical.layer_names[0]].shape[2]
+        * fim_data_empirical.gradients[fim_data_empirical.layer_names[0]].shape[1]
     )
     v = jax.random.normal(jax.random.PRNGKey(0), (dim,))
 
@@ -502,7 +502,7 @@ def test_fim_block_pseudo_inverse_moore_penrose(
 
     dim = (
         fim_data_empirical.activations[fim_data_empirical.layer_names[0]].shape[1]
-        * fim_data_empirical.gradients[fim_data_empirical.layer_names[0]].shape[2]
+        * fim_data_empirical.gradients[fim_data_empirical.layer_names[0]].shape[1]
     )
     v = jax.random.normal(jax.random.PRNGKey(0), (dim,))
 

@@ -16,12 +16,12 @@ from typing import (
 )
 
 import flax.struct as struct
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Float
 
-from src.config import PseudoTargetGenerationStrategy
 from src.utils.data.data import Dataset
 from src.utils.models.approximation_model import ApproximationModel
 
@@ -179,104 +179,120 @@ class ModelContext:
         )
 
 
-@dataclass
-class EKFACData(ApproximationData):
+def layer_shapes_from_model_context(
+    ctx: ModelContext,
+) -> Dict[str, Tuple[int, int]]:
     """
-    Data class to hold EK-FAC related data.
+    Walk the Flax param tree and return `{layer_name: (I_aug, O)}` matching
+    the KFAC layer convention (kernel + optional bias as a single
+    bias-augmented block).
+
+    Walks leaves in the order `tree_flatten_with_path` yields them — which
+    matches `ravel_pytree`'s flat layout — and enforces:
+
+    - every name in `model.get_layer_names()` has at least one leaf,
+    - each layer's leaves are *contiguous* in the flat vector,
+    - the declared layer order matches the flat-layout order.
+
+    Callers slicing the flat vector by `layer_shapes` (`LayerVector.from_flat`,
+    `LayerMatrix.from_dense`) can then rely on offsets accumulating correctly.
     """
+    if ctx.model is None:
+        raise ValueError(
+            "ModelContext.model is required to derive layer shapes."
+        )
+    params = ctx.unravel_fn(ctx.params_flat)
+    params_root = params["params"] if "params" in params else params
+    leaves_with_paths, _ = jax.tree_util.tree_flatten_with_path(params_root)
+    layer_names = list(ctx.model.get_layer_names())
 
-    activation_eigenvectors: Dict[str, Float[Array, "I I"]] = field(
-        default_factory=dict
-    )
-    gradient_eigenvectors: Dict[str, Float[Array, "O O"]] = field(default_factory=dict)
-    activation_eigenvalues: Dict[str, Float[Array, "I"]] = field(default_factory=dict)
-    gradient_eigenvalues: Dict[str, Float[Array, "O"]] = field(default_factory=dict)
-    eigenvalue_corrections: Dict[str, Float[Array, "I O"]] = field(default_factory=dict)
+    # Walk leaves in flat-layout order, record (start, end) runs per layer.
+    layer_set = set(layer_names)
+    per_layer_runs: Dict[str, List[Tuple[int, int]]] = {n: [] for n in layer_names}
+    per_layer_leaves: Dict[str, List] = {n: [] for n in layer_names}
+    offset = 0
+    for path, leaf in leaves_with_paths:
+        layer = "/".join(k.key for k in path[:-1])
+        if layer in layer_set:
+            per_layer_runs[layer].append((offset, offset + leaf.size))
+            per_layer_leaves[layer].append(leaf)
+        offset += int(leaf.size)
 
-    mean_eigenvalues: Dict[str, Float] = field(
-        default_factory=dict
-    )  # mean eigenvalues per layer
-    mean_eigenvalues_aggregated: Float = field(
-        default=0.0
-    )  # mean eigenvalue over all layers
-    mean_corrections: Dict[str, Float] = field(
-        default_factory=dict
-    )  # mean eigenvalue corrections per layer
-    mean_corrections_aggregated: Float = field(
-        default=0.0
-    )  # mean eigenvalue correction over all layers
+    # Contiguity: each layer's leaves must form one unbroken run.
+    for name in layer_names:
+        runs = per_layer_runs[name]
+        if not runs:
+            raise ValueError(
+                f"No leaves found for layer '{name}' in Flax param tree."
+            )
+        for (_, prev_end), (next_start, _) in zip(runs, runs[1:]):
+            if prev_end != next_start:
+                raise ValueError(
+                    f"Layer '{name}' leaves are not contiguous in the flat "
+                    f"param vector (gap between offsets {prev_end} and {next_start}). "
+                    f"Flax sorts param keys alphabetically; another layer's leaf "
+                    f"is interleaved with this one."
+                )
 
-    @classmethod
-    def name(cls) -> str:
-        return "ekfac_data"
+    # Declared order must match flat-layout order.
+    first_offsets = [per_layer_runs[n][0][0] for n in layer_names]
+    if first_offsets != sorted(first_offsets):
+        layout_order = sorted(layer_names, key=lambda n: per_layer_runs[n][0][0])
+        raise ValueError(
+            f"model.get_layer_names() returns {layer_names} but the Flax flat "
+            f"layout order is {layout_order}. Declare layers in the order Flax "
+            f"places them (alphabetical at each level of the param tree)."
+        )
 
+    shapes: Dict[str, Tuple[int, int]] = {}
+    for name in layer_names:
+        layer_leaves = per_layer_leaves[name]
+        kernel_candidates = [l for l in layer_leaves if l.ndim == 2]
+        if not kernel_candidates:
+            raise ValueError(
+                f"Layer '{name}' has no 2-D kernel leaf — cannot derive (I, O)."
+            )
+        kernel = kernel_candidates[0]
+        I, O = kernel.shape
+        has_bias = any(l.ndim == 1 for l in layer_leaves)
+        shapes[name] = ((I + 1) if has_bias else I, O)
 
-@dataclass
-class ETKFACData(ApproximationData):
-    """
-    Data class to hold (E)TK-FAC related data.
-    """
-
-    @classmethod
-    def name(cls) -> str:
-        return "ekfac_data"
-
-
-@dataclass
-class FIMData(ApproximationData):
-    """
-    Data class to hold FIM related data.
-    """
-
-    per_sample_grads: Float[Array, "N n_params | N K n_params"] = field(
-        default_factory=lambda: jnp.array([])
-    )
-    probabilities: Optional[Float[Array, "N K"]] = field(default=None)
-
-    @classmethod
-    def name(cls) -> str:
-        return "fim_data"
+    total = sum(I * O for (I, O) in shapes.values())
+    if total != ctx.params_flat.size:
+        raise ValueError(
+            f"Sum of layer sizes ({total}) does not match params_flat.size "
+            f"({ctx.params_flat.size}). The model has parameters outside "
+            f"named layers."
+        )
+    return shapes
 
 
 @dataclass
 class DataActivationsGradients(ApproximationData):
     """
-    Data structure to hold activations and gradients per layer.
+    Single collector run: per-layer activations and per-sample/per-k output gradients.
 
     Attributes:
-    activations: Per-layer activations, shape (N, I_l) per layer
-    gradients: Per-layer gradients, shape (K, N, O_l) per layer (K depending on pseudo-target strategy)
-    probabilities: Predicted probabilities p(c|x), shape (N, K), optional (only need when ALL_CLASS strategy is used for pseudo-targets)
-    layer_names: Ordered list of layer names
+        activations: Per-layer input activations, shape (N, I_l).
+        gradients: Per-layer output gradients, shape (N, O_l, k). k is the
+            number of pseudo-target draws (k=1 for empirical_fisher,
+            k=num_classes for all_classes, k=repetitions for mcmc).
+        probs: Per-sample, per-k weights, shape (N, k). Conventions:
+            - empirical_fisher: ones (N, 1)
+            - all_classes: softmax(logits), rows sum to 1
+            - mcmc: ones (N, k)  # FLAGGED: normalization convention deferred
+        layer_names: Ordered list of layer names.
     """
 
-    activations: Dict[str, Float[Array, "N I"]] = field(
-        default_factory=dict
-    )  # Only used for Block FIM
-    gradients: Dict[str, Float[Array, "K N O"]] = field(default_factory=dict)
-    layer_names: List[str] = field(default_factory=list)
-    probabilities: Optional[Float[Array, "N K"]] = field(default=None)
-    pseudo_target_strategy: PseudoTargetGenerationStrategy = field(
-        default=PseudoTargetGenerationStrategy.EMPIRICAL_FISHER
+    activations: Dict[str, Float[Array, "N I"]] = field(default_factory=dict)
+    gradients: Dict[str, Float[Array, "N O k"]] = field(default_factory=dict)
+    probs: Float[Array, "N k"] = field(
+        default_factory=lambda: jnp.zeros((0, 0), dtype=jnp.float32)
     )
+    layer_names: List[str] = field(default_factory=list)
 
     @classmethod
     def name(cls) -> str:
         return "activations_gradients"
 
 
-@dataclass
-class BlockHessianData(ApproximationData):
-    """
-    Data class to hold Block Hessian related data.
-    """
-
-    blocks: List[Tuple[int, int]] = field(default_factory=list)
-    n_params: int = 0
-    block_mask: Float[Array, "n_params n_params"] = field(
-        default_factory=lambda: jnp.array([[]])
-    )
-
-    @classmethod
-    def name(cls) -> str:
-        return "block_hessian_data"

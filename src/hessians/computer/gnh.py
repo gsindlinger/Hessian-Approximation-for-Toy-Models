@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
-from typing import Optional
+from typing import Dict, List, Tuple
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.hessians.computer.computer import ModelBasedHessianEstimator
-from src.hessians.utils.data import ModelContext
+from src.hessians.computer.computer import HessianEstimator
+from src.hessians.layer_matrix import LayerMatrix
+from src.hessians.utils.data import ModelContext, layer_shapes_from_model_context
 from src.utils.loss import get_loss_name
-from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
 
 @dataclass
-class GNHComputer(ModelBasedHessianEstimator):
+class GNHComputer(HessianEstimator):
+    compute_context: ModelContext
     """
     Gauss-Newton Hessian approximation.
 
@@ -28,104 +28,44 @@ class GNHComputer(ModelBasedHessianEstimator):
 
     For exponential family losses (e.g., CrossEntropy), GNH equals FIM.
     GNH is always positive semi-definite, unlike the full Hessian.
+
+    Two modes, same contract as `HessianComputer`:
+    - `.build()` materializes the full GNH and slices it into per-layer
+      `DenseBlock`s; the `estimate_*` methods use the cached matrix.
+    - Skip `.build()` → `estimate_hvp` dispatches to `_lazy_hvp`, which does
+      JVP-through-the-model via `_compute_gnhvp` and never materializes the
+      dense matrix.  `estimate_hessian` / `estimate_ihvp` still require `.build()`.
     """
 
-    def _estimate_hessian(
-        self,
-        damping: Optional[Float] = None,
-    ) -> jnp.ndarray:
-        """
-        Compute the Generalized Gauss-Newton approximation of the Hessian.
-        """
+    # ------------------------------------------------------------------
+    # LayerMatrix construction
+    # ------------------------------------------------------------------
 
-        damping = damping if damping is not None else 0.0
-        if get_loss_name(self.compute_context.loss_fn) == "mse":
-            return self._compute_gnh_mse(self.compute_context, damping)
-        elif get_loss_name(self.compute_context.loss_fn) == "cross_entropy":
-            return self._compute_gnh_cross_entropy(self.compute_context, damping)
+    def get_layer_names(self) -> List[str]:
+        return list(self.compute_context.model.get_layer_names())
+
+    def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
+        return layer_shapes_from_model_context(self.compute_context)
+
+    def _build(self) -> LayerMatrix:
+        """Materialize the full GNH and slice it into per-layer DenseBlocks."""
+        ctx = self.compute_context
+        loss_name = get_loss_name(ctx.loss_fn)
+        if loss_name == "mse":
+            dense = self._compute_gnh_mse(ctx, 0.0)
+        elif loss_name == "cross_entropy":
+            dense = self._compute_gnh_cross_entropy(ctx, 0.0)
         else:
-            return self._compute_gnh(self.compute_context, damping)
-
-    def _compare_full_hessian_estimates(
-        self,
-        comparison_matrix: Float[Array, "n_params n_params"],
-        damping: Optional[Float] = None,
-        metric: FullMatrixMetric = FullMatrixMetric.FROBENIUS,
-    ) -> Float:
-        """
-        Compare the Gauss-Newton Hessian with another Hessian matrix using the specified metric.
-        """
-        damping = 0.0 if damping is None else damping
-
-        return metric.compute_fn()(
-            comparison_matrix,
-            self._compute_gnh(self.compute_context, damping),
+            dense = self._compute_gnh(ctx, 0.0)
+        return LayerMatrix.from_dense(
+            dense,
+            param_groups=self.get_layer_names(),
+            layer_shapes=self._layer_shapes(),
         )
 
-    def _estimate_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "*batch_size n_params"]:
-        """
-        Compute the Gauss-Newton-vector product (GNVP).
-        """
-        # Normalize to 2D: add batch dimension if needed
-        is_single = vectors.ndim == 1
-        vectors_2D: Float[Array, "batch_size n_params"] = (
-            vectors[None, :] if is_single else vectors
-        )
-
-        result_2D = self._compute_gnhvp(
-            self.compute_context,
-            vectors_2D,
-            damping=0.0 if damping is None else damping,
-        )
-        return result_2D.squeeze(0) if is_single else result_2D
-
-    def _estimate_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-        pseudo_inverse_factor: Optional[float] = None,
-    ) -> jnp.ndarray:
-        """
-        Compute the inverse Gauss-Newton-vector product (GNVP).
-        """
-        result = self._compute_ignhvp_batched(
-            data=self.compute_context,
-            vectors=vectors,
-            damping=0.0 if damping is None else damping,
-            pseudo_inverse_factor=(
-                0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
-            ),
-        )
-        return result
-
-    @staticmethod
-    @partial(jax.jit, static_argnames=["damping", "pseudo_inverse_factor"])
-    def _compute_ignhvp_batched(
-        data: ModelContext,
-        vectors: Float[Array, "batch_size n_params"],
-        damping: Float,
-        pseudo_inverse_factor: Float,
-    ) -> Float[Array, "batch_size n_params"]:
-        """
-        Compute inverse Gauss-Newton-vector products for a batch of vectors.
-        """
-        gnh = GNHComputer._compute_gnh(data, damping)
-        if pseudo_inverse_factor > 0.0:
-            jax.config.update("jax_enable_x64", True)
-            eigvals, eigvecs = jnp.linalg.eigh(gnh)
-            jax.config.update("jax_enable_x64", False)
-            eigvals_inv = jnp.where(
-                jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
-            )
-            return jnp.einsum(
-                "ij,j,jk,nk->ni", eigvecs, eigvals_inv, eigvecs.T, vectors
-            )
-        else:
-            return jnp.linalg.solve(gnh, vectors.T).T
+    # ------------------------------------------------------------------
+    # Materialization helpers (used by _build)
+    # ------------------------------------------------------------------
 
     @staticmethod
     @jax.jit
@@ -171,10 +111,10 @@ class GNHComputer(ModelBasedHessianEstimator):
 
         p_flat = compute_context.params_flat
         X = compute_context.inputs
-        X = X.astype(jnp.float64)
+
         n_params = p_flat.size
 
-        G0 = jnp.zeros((n_params, n_params))
+        G0 = jnp.zeros((n_params, n_params), dtype=p_flat.dtype)
         (_, G_full), _ = jax.lax.scan(scan_body, init=(p_flat, G0), xs=X)
 
         G_full = 2 * G_full / X.shape[0]
@@ -228,7 +168,7 @@ class GNHComputer(ModelBasedHessianEstimator):
         Y = compute_context.targets
         n_params = p_flat.size
 
-        G0 = jnp.zeros((n_params, n_params))
+        G0 = jnp.zeros((n_params, n_params), dtype=p_flat.dtype)
         (_, G_full), _ = jax.lax.scan(scan_body, init=(p_flat, G0), xs=(X, Y))
 
         G_full = G_full / X.shape[0]
@@ -281,13 +221,25 @@ class GNHComputer(ModelBasedHessianEstimator):
         Y = compute_context.targets
         n_params = p_flat.size
 
-        G0 = jnp.zeros((n_params, n_params))
+        G0 = jnp.zeros((n_params, n_params), dtype=p_flat.dtype)
 
         (_, G_full), _ = jax.lax.scan(scan_body, init=(p_flat, G0), xs=(X, Y))
 
         # Average over dataset + damping
         G_full = G_full / X.shape[0]
         return G_full + damping * jnp.eye(n_params)
+
+    # ------------------------------------------------------------------
+    # Lazy HVP — dispatched from `estimate_hvp` when `.build()` was skipped.
+    # ------------------------------------------------------------------
+
+    def _lazy_hvp(
+        self,
+        vectors: Float[Array, "batch_size n_params"],
+        damping: Float,
+    ) -> Float[Array, "batch_size n_params"]:
+        """JVP-through-the-model GNH vector product — no matrix materialized.  Expects 2D input."""
+        return self._compute_gnhvp(self.compute_context, vectors, damping)
 
     @staticmethod
     def _compute_gnhvp(

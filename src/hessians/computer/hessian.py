@@ -1,22 +1,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jax import flatten_util
 from jaxtyping import Array, Float
 
-from src.hessians.utils.data import ModelContext
+from src.hessians.computer.computer import HessianEstimator
+from src.hessians.layer_matrix import LayerMatrix
+from src.hessians.utils.data import ModelContext, layer_shapes_from_model_context
 
 
 @dataclass
-class HessianComputer:
-    """Hessian Calculation via automatic differentiation (JAX native)."""
-
+class HessianComputer(HessianEstimator):
     compute_context: ModelContext
+    """
+    Exact Hessian computation via JAX automatic differentiation.
+
+    Two modes:
+    - `.build()` materializes the full `(n_params, n_params)` Hessian and
+      slices it into per-layer `DenseBlock`s via `LayerMatrix.from_dense`.
+      `estimate_hessian` / `estimate_hvp` / `estimate_ihvp` then use the
+      cached matrix.
+    - Skip `.build()` → `estimate_hvp` falls through to `_lazy_hvp`, which
+      does JVP-through-the-model via `_compute_hvp` and never materializes
+      the dense matrix.  `estimate_hessian` / `estimate_ihvp` still require
+      `.build()`.
+    """
 
     @staticmethod
     def get_param_index_mapping(params: Dict):
@@ -41,60 +53,28 @@ class HessianComputer:
 
         return index_mapping, flat_params.size
 
-    def compute_hessian(
-        self,
-        damping: Optional[Float] = None,
-    ) -> jnp.ndarray:
-        """
-        Compute the exact Hessian matrix of the loss function for the whole model.
-        Args:
-            damping: Optional damping factor to add to the diagonal for numerical stability.
-        """
-        return self._compute_hessian(
-            compute_context=self.compute_context,
-            damping=0.0 if damping is None else damping,
+    # ------------------------------------------------------------------
+    # LayerMatrix construction
+    # ------------------------------------------------------------------
+
+    def get_layer_names(self) -> List[str]:
+        return list(self.compute_context.model.get_layer_names())
+
+    def _layer_shapes(self) -> Dict[str, Tuple[int, int]]:
+        return layer_shapes_from_model_context(self.compute_context)
+
+    def _build(self) -> LayerMatrix:
+        """Materialize the full Hessian and slice it into per-layer DenseBlocks."""
+        dense = self._compute_hessian(self.compute_context, 0.0)
+        return LayerMatrix.from_dense(
+            dense,
+            param_groups=self.get_layer_names(),
+            layer_shapes=self._layer_shapes(),
         )
 
-    def compute_hvp(
-        self,
-        vectors: Float[Array, "n_params"],
-        damping: Optional[Float] = None,
-    ) -> Float[Array, "n_params"]:
-        """
-        Compute the Hessian-vector product (HVP).
-        """
-
-        # Normalize to 2D: add batch dimension if needed
-        is_single = vectors.ndim == 1
-        vectors_2D: Float[Array, "batch_size n_params"] = (
-            vectors[None, :] if is_single else vectors
-        )
-
-        # Compute batched HVP
-        result: Float[Array, "batch_size n_params"] = self._compute_hvp(
-            compute_context=self.compute_context,
-            vectors=vectors_2D,
-            damping=0.0 if damping is None else damping,
-        )
-        return result.squeeze(0) if is_single else result
-
-    def compute_ihvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Optional[Float] = None,
-        pseudo_inverse_factor: Optional[float] = None,
-    ) -> Float[Array, "n_params"]:
-        """
-        Compute the inverse Hessian-vector product (IHVP).
-        """
-        return self._compute_ihvp(
-            self.compute_context,
-            vectors,
-            damping=0.0 if damping is None else damping,
-            pseudo_inverse_factor=(
-                0.0 if pseudo_inverse_factor is None else pseudo_inverse_factor
-            ),
-        )
+    # ------------------------------------------------------------------
+    # Materialization helper (used by `_build`)
+    # ------------------------------------------------------------------
 
     @staticmethod
     @jax.jit
@@ -130,6 +110,18 @@ class HessianComputer:
 
         H_full = 0.5 * (H_full + H_full.T)  # Ensure symmetry
         return H_full + damping * jnp.eye(H_full.shape[0])
+
+    # ------------------------------------------------------------------
+    # Lazy HVP — dispatched from `estimate_hvp` when `.build()` was skipped.
+    # ------------------------------------------------------------------
+
+    def _lazy_hvp(
+        self,
+        vectors: Float[Array, "batch_size n_params"],
+        damping: Float,
+    ) -> Float[Array, "batch_size n_params"]:
+        """JVP-through-the-model HVP — no matrix materialized.  Expects 2D input."""
+        return self._compute_hvp(self.compute_context, vectors, damping)
 
     @staticmethod
     @jax.jit
@@ -199,31 +191,9 @@ class HessianComputer:
                 outs.append(jax.vmap(hvp_single)(chunk))
             return jnp.concatenate(outs, axis=0)
 
-    @staticmethod
-    @partial(jax.jit, static_argnames=["damping", "pseudo_inverse_factor"])
-    def _compute_ihvp(
-        compute_context: ModelContext,
-        vectors: Float[Array, "batch_size n_params"],
-        damping: Float,
-        pseudo_inverse_factor: float,
-    ) -> Float[Array, "batch_size n_params"]:
-        """
-        JIT-compiled Inverse Hessian-vector product (IHVP) computation.
-        """
-        # Vectorize over the batch dimension
-        hessian = HessianComputer._compute_hessian(compute_context, damping)
-        if pseudo_inverse_factor > 0.0:
-            jax.config.update("jax_enable_x64", True)
-            eigvals, eigvecs = jnp.linalg.eigh(hessian)
-            jax.config.update("jax_enable_x64", False)
-            eigvals_inv = jnp.where(
-                jnp.abs(eigvals) > pseudo_inverse_factor, 1.0 / eigvals, 0.0
-            )
-            return jnp.einsum(
-                "ij,j,jk,nk->ni", eigvecs, eigvals_inv, eigvecs.T, vectors
-            )
-        else:
-            return jnp.linalg.solve(hessian, vectors.T).T
+    # ------------------------------------------------------------------
+    # Persistence helpers (unchanged)
+    # ------------------------------------------------------------------
 
     def save_hessian(
         self, hessian: Optional[Float[Array, "n_params n_params"]], path: str
