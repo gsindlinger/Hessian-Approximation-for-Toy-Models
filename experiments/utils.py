@@ -145,13 +145,11 @@ def cleanup_memory(stage: str | None = None):
 
 def block_tree(x, name: str):
     """Block until all arrays in a tree are ready."""
-    logger.info(f"[SYNC] Blocking on {name}")
     try:
         x = tree_map(lambda y: y.block_until_ready(), x)
     except Exception:
         logger.exception(f"[SYNC] Failure while blocking on {name}")
         raise
-    logger.info(f"[SYNC] Completed {name}")
     return x
 
 def json_safe(obj):
