@@ -14,19 +14,21 @@ from simple_parsing import ArgumentParser
 from src.config import (
     ActivationFunction,
     ComputationType,
-    PseudoTargetGenerationStrategy,
-    RegularizationStrategy,
     DatasetConfig,
     DatasetEnum,
-    ExperimentConfig,
     HessianAnalysisConfig,
     HessianApproximationMethod,
     HessianComputationConfig,
+    HessianEstimatorsConfig,
+    HessianExperimentConfig,
+    LDSExperimentConfig,
     LossType,
     MatrixAnalysisConfig,
     ModelArchitecture,
     ModelConfig,
     OptimizerType,
+    PseudoTargetGenerationStrategy,
+    RegularizationStrategy,
     TrainingConfig,
     TrainingExperimentConfig,
     VectorAnalysisConfig,
@@ -689,8 +691,98 @@ def register_enum_representers():
     yaml.add_representer(PseudoTargetGenerationStrategy, enum_representer)
 
 
+def train_digits_lds_simple():
+    """Single MLP[16] training config to accompany lds_digits_simple."""
+    model = (
+        ModelConfigBuilder(ModelArchitecture.MLP, [16], ActivationFunction.RELU)
+        .with_loss(LossType.CROSS_ENTROPY)
+        .with_training(
+            learning_rate=1e-3,
+            weight_decay=0.0,
+            optimizer=OptimizerType.ADAMW,
+            epochs=100,
+            batch_size=32,
+            input_dim=64,
+            output_dim=10,
+        )
+        .build()
+    )
+    return TrainingExperimentConfig(
+        experiment_name="digits_lds_simple",
+        seed=42,
+        base_output_dir="experiments/data/",
+        dataset=DatasetConfig(
+            name=DatasetEnum.SKLEARN_DIGITS,
+            path="experiments/datasets/sklearn_digits",
+        ),
+        models=[model],
+        selection_metric="val_accuracy",
+        selection_minimize=False,
+    )
+
+
+def lds_digits_simple():
+    """Single MLP[16] for quick local LDS runs."""
+    return LDSExperimentConfig(
+        experiment_name="digits_lds_simple",
+        seed=42,
+        dataset=DatasetConfig(
+            name=DatasetEnum.SKLEARN_DIGITS,
+            path="experiments/datasets/sklearn_digits",
+        ),
+        models=[],
+        hessian_estimators=HessianEstimatorsConfig(
+            approximators=[
+                HessianApproximationMethod.EXACT,
+                HessianApproximationMethod.GNH,
+                HessianApproximationMethod.FIM,
+                HessianApproximationMethod.BLOCK_FIM,
+                HessianApproximationMethod.KFAC,
+                HessianApproximationMethod.EKFAC,
+            ],
+            regularization_value=0.1,
+            regularization_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
+        ),
+        num_subsets=20,
+        reps_per_model=2,
+        subset_fraction=0.5,
+        num_test_examples=10,
+        results_output_dir="experiments/data/results/lds_analysis/digits_simple",
+    )
+
+
+def lds_digits_sweep():
+    """LDS experiment comparing Hessian approximations on sklearn digits MLPs."""
+    return LDSExperimentConfig(
+        experiment_name="digits_lds",
+        seed=42,
+        dataset=DatasetConfig(
+            name=DatasetEnum.SKLEARN_DIGITS,
+            path="experiments/datasets/sklearn_digits",
+        ),
+        models=[],
+        hessian_estimators=HessianEstimatorsConfig(
+            approximators=[
+                HessianApproximationMethod.EXACT,
+                HessianApproximationMethod.GNH,
+                HessianApproximationMethod.FIM,
+                HessianApproximationMethod.BLOCK_FIM,
+                HessianApproximationMethod.KFAC,
+                HessianApproximationMethod.EKFAC,
+            ],
+            regularization_value=0.1,
+            regularization_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
+        ),
+        num_subsets=100,
+        reps_per_model=3,
+        subset_fraction=0.5,
+        num_test_examples=20,
+        results_output_dir="experiments/data/results/lds_analysis/digits",
+    )
+
+
 def hessian_analysis_sweep():
-    config = ExperimentConfig(
+    config = HessianExperimentConfig(
         experiment_name="",
         seed=42,
         models=[],
@@ -706,9 +798,11 @@ def hessian_analysis_sweep():
                 )
             ),
             computation_config=HessianComputationConfig(
-                regularization_value=0.1,
-                regularization_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
-                approximators=HessianApproximationMethod.get_approximator_list_except_exact(),
+                estimators_config=HessianEstimatorsConfig(
+                    approximators=HessianApproximationMethod.get_approximator_list_except_exact(),
+                    regularization_value=0.1,
+                    regularization_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
+                ),
                 computation_types=[
                     ComputationType.MATRIX,
                     ComputationType.HVP,
@@ -733,6 +827,9 @@ if __name__ == "__main__":
         "--type",
         choices=[
             "hessian",
+            "lds_digits",
+            "lds_digits_simple",
+            "train_digits_lds_simple",
             "digits",
             "digits_all",
             "digits_simple",
@@ -752,6 +849,15 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     match args.type:
+        case "lds_digits":
+            config = lds_digits_sweep()
+            output_path = "experiments/configs/digits_lds.yaml"
+        case "lds_digits_simple":
+            config = lds_digits_simple()
+            output_path = "experiments/configs/digits_lds_simple.yaml"
+        case "train_digits_lds_simple":
+            config = train_digits_lds_simple()
+            output_path = "experiments/configs/train_digits_lds_simple.yaml"
         case "digits":
             config = digits_sweep()
             output_path = "experiments/configs/digits_sweep.yaml"

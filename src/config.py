@@ -47,7 +47,13 @@ class OptimizerType(str, Enum):
     SGD = "sgd"
     ADAM = "adam"
     ADAMW = "adamw"
-    SGD_SCHEDULE_COSINE = "sgd_schedule_cosine"
+
+
+class LRSchedule(str, Enum):
+    """Learning-rate schedule to apply on top of the base optimizer."""
+
+    NONE = "none"
+    COSINE = "cosine"
 
 
 class HessianApproximationMethod(str, Enum):
@@ -76,6 +82,25 @@ class HessianApproximationMethod(str, Enum):
             for approximator in HessianApproximationMethod
             if approximator not in exclude_list
         ]
+
+    @staticmethod
+    def num_collector_runs(approximator: HessianApproximationMethod) -> int:
+        """Get the number of collector runs required for a given approximator."""
+        if approximator in {
+            HessianApproximationMethod.KFAC,
+            HessianApproximationMethod.EKFAC,
+            HessianApproximationMethod.SHAMPOO,
+            HessianApproximationMethod.ESHAMPOO,
+        }:
+            return 2
+        elif approximator in {
+            HessianApproximationMethod.FIM,
+            HessianApproximationMethod.BLOCK_FIM,
+            HessianApproximationMethod.BLOCK_HESSIAN,
+        }:
+            return 1
+        else:
+            return 0
 
 
 class ComputationType(str, Enum):
@@ -150,6 +175,7 @@ class TrainingConfig:
     optimizer: OptimizerType = OptimizerType.ADAMW
     epochs: int = 500
     batch_size: int = 128
+    lr_schedule: LRSchedule = LRSchedule.NONE
 
     def __post_init__(self):
         if self.epochs <= 0:
@@ -234,26 +260,15 @@ class MatrixAnalysisConfig:
 
 
 @dataclass
-class HessianComputationConfig:
-    """Configuration specifying which Hessian computations to perform."""
+class HessianEstimatorsConfig:
+    """Shared hessian estimators settings combining
+    multiple settings for a single experiment (approximation or lds):
+    which approximators to use, pseudo-target strategy, and regularization."""
 
     approximators: List[HessianApproximationMethod] = field(
         default_factory=lambda: (
             HessianApproximationMethod.get_approximator_list_except_exact()
         )
-    )
-    comparison_references: List[HessianApproximationMethod] = field(
-        default_factory=lambda: [
-            HessianApproximationMethod.EXACT,
-            HessianApproximationMethod.GNH,
-        ]
-    )
-    computation_types: List[ComputationType] = field(
-        default_factory=lambda: [
-            ComputationType.MATRIX,
-            ComputationType.HVP,
-            ComputationType.IHVP,
-        ]
     )
     pseudo_target_generation_strategy: PseudoTargetGenerationStrategy = (
         PseudoTargetGenerationStrategy.MCMC
@@ -285,6 +300,28 @@ class HessianComputationConfig:
                     "since we use true labels as targets."
                 )
                 self.pseudo_target_generation_repetitions = 1
+
+
+@dataclass
+class HessianComputationConfig:
+    """Configuration specifying which Hessian computations to perform."""
+
+    estimators_config: HessianEstimatorsConfig = field(
+        default_factory=HessianEstimatorsConfig
+    )
+    comparison_references: List[HessianApproximationMethod] = field(
+        default_factory=lambda: [
+            HessianApproximationMethod.EXACT,
+            HessianApproximationMethod.GNH,
+        ]
+    )
+    computation_types: List[ComputationType] = field(
+        default_factory=lambda: [
+            ComputationType.MATRIX,
+            ComputationType.HVP,
+            ComputationType.IHVP,
+        ]
+    )
 
 
 @dataclass
@@ -349,7 +386,7 @@ class TrainingExperimentConfig:
 
 
 @dataclass
-class ExperimentConfig:
+class HessianExperimentConfig:
     """Top-level experiment configuration."""
 
     # Experiment identification
@@ -373,3 +410,52 @@ class ExperimentConfig:
 
     # If specified, allow for analyzing the different checkpoints saved during training
     epochs: Optional[List[int]] = None
+
+
+@dataclass
+class LDSExperimentConfig:
+    """Configuration for LDS experiments."""
+
+    # Experiment identification
+    experiment_name: str = "lds_experiment"
+    seed: int = 42
+
+    # Dataset
+    dataset: DatasetConfig = field(
+        default_factory=lambda: DatasetConfig(
+            name=DatasetEnum.DIGITS, path="experiments/data/datasets/digits"
+        )
+    )
+
+    # List of model directories to analyze
+    models: List[str] = field(default_factory=list)
+
+    # Hessian estimators configuration (approximators, pseudo-target strategy, regularization)
+    hessian_estimators: HessianEstimatorsConfig = field(
+        default_factory=HessianEstimatorsConfig
+    )
+
+    # ELSO sampling parameters
+    num_subsets: int = 100
+    reps_per_model: int = 1
+    subset_fraction: float = 0.5
+    num_test_examples: int = 50
+
+    # If specified, run LDS at each of these epoch checkpoints instead of the final model
+    epochs: Optional[List[int]] = None
+
+    # Cache the expensive ELSO retraining output (rep-averaged per-query losses)
+    # alongside the model directory so subsequent runs that only vary the
+    # Hessian / regularisation settings can reuse it.
+    cache_elso: bool = True
+
+    # Storage
+    results_output_dir: str = "experiments/results/lds_analysis"
+
+    def __post_init__(self):
+        if self.num_subsets <= 0:
+            raise ValueError("num_subsets must be positive")
+        if not 0.0 < self.subset_fraction < 1.0:
+            raise ValueError("subset_fraction must be in (0, 1)")
+        if self.num_test_examples <= 0:
+            raise ValueError("num_test_examples must be positive")
