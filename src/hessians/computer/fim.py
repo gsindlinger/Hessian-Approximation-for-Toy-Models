@@ -1,11 +1,11 @@
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.hessians.computer.computer import HessianEstimator
+from src.hessians.computer.computer import HessianEstimator, _accumulate_chunks
 from src.hessians.layer_matrix import LayerMatrix
 from src.hessians.utils.data import DataActivationsGradients
 
@@ -13,6 +13,7 @@ from src.hessians.utils.data import DataActivationsGradients
 @dataclass
 class FIMComputer(HessianEstimator):
     compute_context: DataActivationsGradients
+    batch_size: Optional[int] = field(default=None)
     """
     Fisher Information Matrix approximation.
 
@@ -43,39 +44,49 @@ class FIMComputer(HessianEstimator):
         }
 
     def _build(self) -> LayerMatrix:
-        """Assemble per-sample parameter gradients, materialize the FIM, and slice."""
+        """Stream per-chunk FIM contributions and assemble the LayerMatrix.
+
+        Each chunk reconstructs per-sample weight gradients from the
+        collector's per-layer `(a, g)` and accumulates the outer-product
+        sum — so we never materialize the full `(N, n_params, k)` tensor.
+        """
         ctx = self.compute_context
         layer_names = list(ctx.layer_names)
         layer_shapes = self._layer_shapes_from_context(ctx)
+        N = ctx.probs.shape[0]
 
-        grads_per_layer = []
-        for layer in layer_names:
-            a = ctx.activations[layer]  # (N, I_l)
-            g = ctx.gradients[layer]  # (N, O_l, k)
-            # (N, I_l, O_l, k) -> (N, I_l*O_l, k)
-            G_l = jnp.einsum("ni,nok->niok", a, g).reshape(a.shape[0], -1, g.shape[-1])
-            grads_per_layer.append(G_l)
-        grads_all = jnp.concatenate(grads_per_layer, axis=1)  # (N, n_params, k)
+        def _chunk(sl: slice):
+            return self._fim_chunk_sum(
+                {l: ctx.activations[l][sl] for l in layer_names},
+                {l: ctx.gradients[l][sl] for l in layer_names},
+                ctx.probs[sl],
+            )
 
-        dense = self._compute_fim(grads_all, ctx.probs)
+        fim_sum = _accumulate_chunks(N, self.batch_size, _chunk)
+        fim = fim_sum / ctx.probs.sum()
+        fim = 0.5 * (fim + fim.T)
 
         return LayerMatrix.from_dense(
-            dense,
+            fim,
             param_groups=layer_names,
             layer_shapes=layer_shapes,
         )
 
     @staticmethod
     @jax.jit
-    def _compute_fim(
-        gradients: Float[Array, "N n_params k"],
-        probs: Float[Array, "N k"],
+    def _fim_chunk_sum(
+        activations_dict: Dict[str, Float[Array, "n I"]],
+        gradients_dict: Dict[str, Float[Array, "n O k"]],
+        probs: Float[Array, "n k"],
     ) -> Float[Array, "n_params n_params"]:
-        """
-        FIM = (Σ_n Σ_k p[n,k] g_{n,k} g_{n,k}^T) / Σ p  + damping · I
-        """
-        fim_sum = jnp.einsum("npk,nqk,nk->pq", gradients, gradients, probs)
-        fim = fim_sum / probs.sum()
-        fim = 0.5 * (fim + fim.T)
-
-        return fim
+        """Unnormalized FIM contribution for one chunk:
+            Σ_{n∈chunk} Σ_k p[n,k] · g_{n,k} g_{n,k}^T
+        where g_{n,k} = concat_l( vec(a_{n,l} ⊗ (∂L/∂z_{n,l,k})) )."""
+        grads_per_layer = []
+        for layer in activations_dict.keys():
+            a = activations_dict[layer]  # (n, I_l)
+            g = gradients_dict[layer]  # (n, O_l, k)
+            G_l = jnp.einsum("ni,nok->niok", a, g).reshape(a.shape[0], -1, g.shape[-1])
+            grads_per_layer.append(G_l)
+        grads_chunk = jnp.concatenate(grads_per_layer, axis=1)  # (n, n_params, k)
+        return jnp.einsum("npk,nqk,nk->pq", grads_chunk, grads_chunk, probs)

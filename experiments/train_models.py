@@ -115,8 +115,7 @@ def generate_model_directory(
         length=12,
     )
 
-    model_display_name = model_config.get_model_display_name()
-    return os.path.join(base_dir, f"{model_display_name}_{config_hash}")
+    return os.path.join(base_dir, f"{model_config.architecture.value}_{config_hash}")
 
 
 def train_single_model(

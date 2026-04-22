@@ -7,6 +7,7 @@ experiment_name: ''
 hessian_analysis:
   computation_config:
     approximators:
+    - exact
     - kfac
     - ekfac
     - gnh
@@ -15,8 +16,7 @@ hessian_analysis:
     - block_hessian
     - shampoo
     - eshampoo
-    # - tkfac
-    # - etkfac
+    - identity
     comparison_references:
     - exact
     - gnh
@@ -26,7 +26,8 @@ hessian_analysis:
     - ihvp
     regularization_value: 0.1
     regularization_strategy: auto_mean_eigenvalue_correction
-    pseudo_target_generation_strategy: all_classes
+    pseudo_target_generation_strategy: mcmc
+    pseudo_target_generation_repetitions: 1
   matrix_config:
     metrics:
     - frobenius

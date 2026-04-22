@@ -1,7 +1,9 @@
+import json
 import logging
-import os
-from dataclasses import dataclass, field
+import tempfile
+from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import jax
@@ -47,15 +49,19 @@ class CollectorActivationsGradients:
     )
     pseudo_target_repetitions: Optional[int] = 1
 
-    FILENAME: str = "collected_activations_gradients.npz"
+    MANIFEST_FILENAME: str = "manifest.json"
 
     def __post_init__(self):
-        # Per-call accumulators for the backward hook: each list element is
-        # one hook invocation's chunk, shape matches `backward_collector_fn`'s
-        # signature.  `_teardown` concatenates + reshapes the lists into the
-        # final (N, O, k) layout.
-        self.activations: Dict[str, List[Float[Array, "N I"]]] = {}
-        self.gradients: Dict[str, List[Float[Array, "N O"]]] = {}
+        # Memmap-backed accumulators written to `_memmap_dir` during the
+        # backward hook.  Shape per layer: (k*N, I) for activations,
+        # (k*N, O) for gradients, lazily allocated on first hook call since
+        # layer shapes are only known once the forward runs.  `_teardown`
+        # returns views (no copy) that slice/reshape to the final layout.
+        self._act_memmap: Dict[str, np.memmap] = {}
+        self._grad_memmap: Dict[str, np.memmap] = {}
+        self._offsets: Dict[str, int] = {}
+        self._memmap_dir: Optional[Path] = None
+        self._total_n: int = 0
 
         if (
             self.pseudo_target_strategy
@@ -105,6 +111,16 @@ class CollectorActivationsGradients:
 
         collection_dataset, metadata = self._generate_pseudo_targets(dataset, rng_key)
 
+        # Memmaps are the primary storage: if no save directory was given
+        # we spill to a tmp dir so device memory never has to hold the
+        # full collection.
+        if save_directory is not None:
+            self._memmap_dir = Path(save_directory)
+        else:
+            self._memmap_dir = Path(tempfile.mkdtemp(prefix="hessian_collector_"))
+        self._memmap_dir.mkdir(parents=True, exist_ok=True)
+        self._total_n = metadata["k"] * metadata["n_samples"]
+
         self._run_collection_loop(
             collection_dataset.inputs,
             collection_dataset.targets,
@@ -116,7 +132,7 @@ class CollectorActivationsGradients:
 
         if save_directory is not None:
             logger.info(f"Saving collected data to: {save_directory}")
-            self.save(save_directory, collected_data)
+            self.save(save_directory, collected_data, metadata)
 
         return collected_data
 
@@ -127,8 +143,27 @@ class CollectorActivationsGradients:
     def backward_collector_fn(
         self, name: str, a: Float[Array, "N I"], g: Float[Array, "N O"]
     ) -> None:
-        self.activations.setdefault(name, []).append(a)
-        self.gradients.setdefault(name, []).append(g)
+        a_np = np.asarray(a)
+        g_np = np.asarray(g)
+        if name not in self._act_memmap:
+            assert self._memmap_dir is not None
+            I = a_np.shape[-1]
+            O = g_np.shape[-1] if g_np.ndim > 1 else 1
+            self._act_memmap[name] = np.lib.format.open_memmap(
+                self._memmap_dir / f"activations_{name}.npy",
+                mode="w+", dtype=a_np.dtype, shape=(self._total_n, I),
+            )
+            self._grad_memmap[name] = np.lib.format.open_memmap(
+                self._memmap_dir / f"gradients_{name}.npy",
+                mode="w+", dtype=g_np.dtype, shape=(self._total_n, O),
+            )
+            self._offsets[name] = 0
+
+        B = a_np.shape[0]
+        off = self._offsets[name]
+        self._act_memmap[name][off:off + B] = a_np
+        self._grad_memmap[name][off:off + B] = g_np.reshape(B, -1)
+        self._offsets[name] = off + B
 
     # ------------------------------------------------------------------
     # Pseudo-target generation
@@ -261,26 +296,17 @@ class CollectorActivationsGradients:
         n_samples = metadata["n_samples"]
         k = metadata["k"]
 
-        activations_concat = {
-            layer: jnp.concatenate(v, axis=0) for layer, v in self.activations.items()
-        }
-        gradients_concat = {
-            layer: jnp.concatenate(v, axis=0) for layer, v in self.gradients.items()
-        }
-
+        # All k reps share the same inputs (same activations), so take the
+        # first-rep slice for activations.  Gradients are reshaped in place
+        # to (N, O, k) as a non-contiguous view over the memmap — downstream
+        # chunked consumers materialize only the slices they touch.
         activations_final: Dict[str, Array] = {}
         gradients_final: Dict[str, Array] = {}
-        for layer_name in activations_concat.keys():
-            act = activations_concat[layer_name]  # (k*N, I)
-            grad = gradients_concat[layer_name]  # (k*N, O)
-
-            activations_final[layer_name] = act[:n_samples]
-
-            O_dim = grad.shape[-1] if grad.ndim > 1 else 1
-            # (k*N, O) -> (k, N, O) -> (N, O, k)
-            gradients_final[layer_name] = grad.reshape(k, n_samples, O_dim).transpose(
-                1, 2, 0
-            )
+        for layer_name, act_mm in self._act_memmap.items():
+            grad_mm = self._grad_memmap[layer_name]
+            O_dim = grad_mm.shape[-1]
+            activations_final[layer_name] = act_mm[:n_samples]
+            gradients_final[layer_name] = grad_mm.reshape(k, n_samples, O_dim).transpose(1, 2, 0)
 
         # Unified probs: (N, k).  ALL_CLASSES uses softmax; EF/MCMC use ones.
         # FLAGGED: MCMC normalization convention deferred.
@@ -305,41 +331,52 @@ class CollectorActivationsGradients:
     # Persistence
     # ------------------------------------------------------------------
 
-    def save(self, directory: str, data: DataActivationsGradients) -> None:
-        if os.path.isfile(directory):
-            logger.warning(
-                f"Provided save_path {directory} is a file. Using its directory instead."
-            )
-            directory = os.path.dirname(directory)
-        os.makedirs(directory, exist_ok=True)
-
-        file_path = os.path.join(directory, self.FILENAME)
-        data_dict = {
-            **{f"activations_{k}": np.array(v) for k, v in data.activations.items()},
-            **{f"gradients_{k}": np.array(v) for k, v in data.gradients.items()},
-            "layer_names": np.array(",".join(data.layer_names), dtype="U"),
-            "probs": np.array(data.probs),
-            "pseudo_target_strategy": np.array(
-                self.pseudo_target_strategy.value, dtype="U"
-            ),
-            "pseudo_target_repetitions": np.array(self.pseudo_target_repetitions),
+    def save(
+        self,
+        directory: str,
+        data: DataActivationsGradients,
+        metadata: Dict[str, Any],
+    ) -> None:
+        # Per-layer activations/gradients are already on disk as .npy
+        # memmaps in `directory`; only the small sidecar metadata + probs
+        # need writing here.
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        np.save(directory / "probs.npy", np.asarray(data.probs))
+        manifest = {
+            "layer_names": list(data.layer_names),
+            "n_samples": int(metadata["n_samples"]),
+            "k": int(metadata["k"]),
+            "pseudo_target_strategy": self.pseudo_target_strategy.value,
+            "pseudo_target_repetitions": int(self.pseudo_target_repetitions),
         }
-        np.savez_compressed(file=file_path, allow_pickle=False, **data_dict)
-        logger.info(f"Saved collected data to: {file_path}")
+        with open(directory / self.MANIFEST_FILENAME, "w") as f:
+            json.dump(manifest, f, indent=2)
+        logger.info(f"Saved collected data manifest to: {directory}")
 
     @staticmethod
     def load(directory: str) -> DataActivationsGradients:
-        load_path = f"{directory}/{CollectorActivationsGradients.FILENAME}"
-        try:
-            loaded = np.load(load_path)
-            assert isinstance(loaded, np.lib.npyio.NpzFile)
-        except FileNotFoundError:
-            raise ValueError(f"File not found: {load_path}")
+        directory = Path(directory)
+        manifest_path = directory / CollectorActivationsGradients.MANIFEST_FILENAME
+        if not manifest_path.is_file():
+            raise ValueError(f"File not found: {manifest_path}")
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
 
-        layer_names = loaded["layer_names"].item().split(",")
-        activations = {name: jnp.array(loaded[f"activations_{name}"]) for name in layer_names}
-        gradients = {name: jnp.array(loaded[f"gradients_{name}"]) for name in layer_names}
-        probs = jnp.array(loaded["probs"])
+        layer_names: List[str] = list(manifest["layer_names"])
+        n_samples = int(manifest["n_samples"])
+        k = int(manifest["k"])
+
+        activations: Dict[str, Array] = {}
+        gradients: Dict[str, Array] = {}
+        for name in layer_names:
+            act_mm = np.load(directory / f"activations_{name}.npy", mmap_mode="r")
+            grad_mm = np.load(directory / f"gradients_{name}.npy", mmap_mode="r")
+            O_dim = grad_mm.shape[-1]
+            activations[name] = act_mm[:n_samples]
+            gradients[name] = grad_mm.reshape(k, n_samples, O_dim).transpose(1, 2, 0)
+
+        probs = jnp.array(np.load(directory / "probs.npy"))
         return DataActivationsGradients(
             activations=activations,
             gradients=gradients,
