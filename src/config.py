@@ -62,6 +62,7 @@ class HessianApproximationMethod(str, Enum):
     BLOCK_HESSIAN = "block_hessian"
     SHAMPOO = "shampoo"
     ESHAMPOO = "eshampoo"
+    IDENTITY = "identity"
 
     @staticmethod
     def get_approximator_list_except_exact() -> List[HessianApproximationMethod]:

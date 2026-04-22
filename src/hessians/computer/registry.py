@@ -11,6 +11,7 @@ from src.hessians.computer.fim_block import FIMBlockComputer
 from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.hessian_block import BlockHessianComputer
+from src.hessians.computer.identity import IdentityComputer
 from src.hessians.utils.data import (
     DataActivationsGradients,
     ModelContext,
@@ -46,6 +47,7 @@ class HessianComputerRegistry:
             EShampooComputer, apply_eigenvalue_correction=False
         ),
         HessianApproximationMethod.ESHAMPOO: EShampooComputer,
+        HessianApproximationMethod.IDENTITY: IdentityComputer,
     }
 
     # Directory names used for `LayerMatrix.save/load` under a shared
@@ -61,6 +63,7 @@ class HessianComputerRegistry:
         HessianApproximationMethod.EXACT: "exact_hessian_layer_matrix",
         HessianApproximationMethod.SHAMPOO: "shampoo_layer_matrix",
         HessianApproximationMethod.ESHAMPOO: "eshampoo_layer_matrix",
+        HessianApproximationMethod.IDENTITY: "identity_layer_matrix",
     }
 
     @staticmethod
@@ -92,6 +95,7 @@ class HessianComputerRegistry:
             HessianApproximationMethod.GNH,
             HessianApproximationMethod.BLOCK_HESSIAN,
             HessianApproximationMethod.EXACT,
+            HessianApproximationMethod.IDENTITY,
         ]:
             return model_ctx
         return collector_data
