@@ -9,7 +9,6 @@ from jax import flatten_util
 from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import HessianEstimator
-from src.hessians.computer.hessian import HessianComputer
 from src.utils.loss import loss_wrapper_with_apply_fn
 
 logger = logging.getLogger(__name__)
@@ -50,7 +49,7 @@ def compute_per_example_flat_grads(
 def compute_influence_matrix(
     test_flat_grads: Float[Array, "n_test n_params"],
     train_flat_grads: Float[Array, "n_train n_params"],
-    computer: HessianEstimator | HessianComputer,
+    computer: HessianEstimator,
     damping: Optional[float] = None,
     pseudo_inverse_factor: Optional[float] = None,
 ) -> Float[Array, "n_test n_train"]:
@@ -77,16 +76,11 @@ def compute_influence_matrix(
         test_flat_grads.shape[1],
     )
 
-    if isinstance(computer, HessianComputer):
-        ihvps = computer.compute_ihvp(
-            test_flat_grads, damping, pseudo_inverse_factor
-        )  # (n_test, n_params)
-    else:
-        if not computer.is_built:
-            raise RuntimeError(
-                "HessianComputer not built. Please call the 'build' method before computing influence scores."
-            )
-        ihvps = computer.estimate_ihvp(
-            test_flat_grads, damping, pseudo_inverse_factor
-        )  # (n_test, n_params)
+    if not computer.is_built:
+        raise RuntimeError(
+            "HessianEstimator not built. Please call `.build()` before computing influence scores."
+        )
+    ihvps = computer.estimate_ihvp(
+        test_flat_grads, damping, pseudo_inverse_factor
+    )  # (n_test, n_params)
     return ihvps @ train_flat_grads.T  # (n_test, n_train)

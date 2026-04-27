@@ -1,11 +1,11 @@
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.hessians.computer.computer import HessianEstimator
+from src.hessians.computer.computer import HessianEstimator, _accumulate_chunks
 from src.hessians.layer_matrix import DenseBlock, LayerMatrix
 from src.hessians.utils.data import DataActivationsGradients
 
@@ -13,6 +13,7 @@ from src.hessians.utils.data import DataActivationsGradients
 @dataclass
 class FIMBlockComputer(HessianEstimator):
     compute_context: DataActivationsGradients
+    batch_size: Optional[int] = field(default=None)
     """
     Block-diagonal Fisher Information Matrix approximation.
 
@@ -39,16 +40,27 @@ class FIMBlockComputer(HessianEstimator):
         }
 
     def _build(self) -> LayerMatrix:
-        """Build a block-diagonal `LayerMatrix` of per-layer dense FIM blocks."""
+        """Stream per-chunk block-diagonal FIM contributions across all layers,
+        so we never materialize the full `(N, I·O, k)` per-layer tensor."""
         ctx = self.compute_context
         layer_names = list(ctx.layer_names)
         shapes = self._layer_shapes_from_context(ctx)
+        N = ctx.probs.shape[0]
+
+        def _chunk(sl: slice):
+            return self._block_chunk_sums(
+                {l: ctx.activations[l][sl] for l in layer_names},
+                {l: ctx.gradients[l][sl] for l in layer_names},
+                ctx.probs[sl],
+            )
+
+        block_sums = _accumulate_chunks(N, self.batch_size, _chunk)
+        total_prob = ctx.probs.sum()
 
         diag_blocks: Dict[str, DenseBlock] = {}
         for layer in layer_names:
-            act = ctx.activations[layer]
-            grad = ctx.gradients[layer]
-            block = self._compute_layer_block(act, grad, ctx.probs)
+            block = block_sums[layer] / total_prob
+            block = 0.5 * (block + block.T)
             diag_blocks[layer] = DenseBlock(
                 matrix=block,
                 row_shape=shapes[layer],
@@ -62,16 +74,19 @@ class FIMBlockComputer(HessianEstimator):
 
     @staticmethod
     @jax.jit
-    def _compute_layer_block(
-        act: Float[Array, "N I"],
-        grad: Float[Array, "N O k"],
-        probs: Float[Array, "N k"],
-    ) -> Float[Array, "n n"]:
+    def _block_chunk_sums(
+        activations_dict: Dict[str, Float[Array, "n I"]],
+        gradients_dict: Dict[str, Float[Array, "n O k"]],
+        probs: Float[Array, "n k"],
+    ) -> Dict[str, Float[Array, "n_l n_l"]]:
+        """Unnormalized per-layer chunk contribution:
+            Σ_{n∈chunk} Σ_k p[n,k] v_{n,k,l} v_{n,k,l}^T
+        with v_{n,k,l} = vec(a_{n,l} ⊗ g_{n,l,k}).
         """
-        F_l = (Σ_n Σ_k p[n,k] v_{n,k} v_{n,k}^T) / Σ p
-        """
-        # (N, I, O, k) -> (N, I*O, k)
-        N = act.shape[0]
-        vecs = jnp.einsum("ni,nok->niok", act, grad).reshape(N, -1, grad.shape[-1])
-        block = jnp.einsum("npk,nqk,nk->pq", vecs, vecs, probs) / probs.sum()
-        return 0.5 * (block + block.T)
+        out: Dict[str, Array] = {}
+        for layer in activations_dict.keys():
+            a = activations_dict[layer]
+            g = gradients_dict[layer]
+            vecs = jnp.einsum("ni,nok->niok", a, g).reshape(a.shape[0], -1, g.shape[-1])
+            out[layer] = jnp.einsum("npk,nqk,nk->pq", vecs, vecs, probs)
+        return out

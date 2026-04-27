@@ -263,6 +263,7 @@ class HessianComputationConfig:
     regularization_strategy: RegularizationStrategy = (
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE
     )
+    compute_influence: bool = False
 
     def __post_init__(self):
         if (

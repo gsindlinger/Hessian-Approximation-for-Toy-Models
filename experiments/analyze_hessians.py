@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import jax.numpy as jnp
+import numpy as np
 import yaml
 from jax.random import PRNGKey
 
@@ -35,6 +36,7 @@ from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import sample_vectors
 from src.utils.data.data import Dataset, DownloadableDataset
+from src.utils.influence import compute_influence_matrix, compute_per_example_flat_grads
 from src.utils.loss import get_loss
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 from src.utils.metrics.vector_metrics import VectorMetric
@@ -57,23 +59,30 @@ def model_epoch_pairs(
     return [(m, e) for m in models for e in epochs]
 
 
-def load_dataset(dataset_cfg: DatasetConfig, seed: int) -> Dataset:
+def load_train_test(
+    dataset_cfg: DatasetConfig, seed: int
+) -> Tuple[Dataset, Dataset]:
+    """Reproduce the model's train/test split from (seed, test_size)."""
     full = DownloadableDataset.load(
         dataset=dataset_cfg.name,
         directory=dataset_cfg.path,
         store_on_disk=dataset_cfg.store_on_disk,
     )
-    train, _ = full.train_test_split(test_size=dataset_cfg.test_size, seed=seed)
-    return train
+    return full.train_test_split(test_size=dataset_cfg.test_size, seed=seed)
 
 
-def prepare_dataset_for_model(dataset: Dataset, loss: LossType) -> Dataset:
-    """Return a fresh Dataset, MSE-normalized if regression."""
-    inputs, targets = dataset.inputs, dataset.targets
-    if loss == LossType.MSE:
-        inputs, _ = Dataset.normalize_data(inputs, None)
-        targets, _ = Dataset.normalize_data(targets, None)
-    return Dataset(inputs, targets)
+def prepare_datasets_for_model(
+    train: Dataset, test: Dataset, loss: LossType
+) -> Tuple[Dataset, Dataset]:
+    """Fresh (train, test) pair, MSE-normalized with a shared scaler."""
+    if loss != LossType.MSE:
+        return Dataset(train.inputs, train.targets), Dataset(test.inputs, test.targets)
+    train_inputs, test_inputs = Dataset.normalize_data(train.inputs, test.inputs)
+    train_targets, test_targets = Dataset.normalize_data(train.targets, test.targets)
+    return (
+        Dataset(train_inputs, train_targets),
+        Dataset(test_inputs, test_targets),
+    )
 
 
 def _has_cached_collection(save_dir: str) -> bool:
@@ -250,6 +259,39 @@ def resolve_collector_dir(model_dir: str, epoch: Optional[int]) -> str:
     return d
 
 
+def compute_influence_scores(
+    ctx: HessianCtx,
+    methods: List[HessianApproximationMethod],
+    train_flat_grads,
+    test_flat_grads,
+    damping: Optional[float],
+    pseudo_inverse_factor: Optional[float],
+    output_dir: str,
+    model_tag: str,
+) -> Dict[str, str]:
+    """Per-method `(n_train,)` influence score (mean over query dim), saved
+    as `.npy`.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    paths: Dict[str, str] = {}
+    pbar = tqdm(methods, desc="influence")
+    for approx in pbar:
+        pbar.set_postfix_str(approx.value)
+        matrix = compute_influence_matrix(
+            test_flat_grads=test_flat_grads,
+            train_flat_grads=train_flat_grads,
+            computer=ctx.get(approx),
+            damping=damping,
+            pseudo_inverse_factor=pseudo_inverse_factor,
+        )  # (n_test, n_train)
+        vec = np.asarray(jnp.mean(matrix, axis=0))  # (n_train,)
+        path = os.path.join(output_dir, f"{model_tag}_{approx.value}.npy")
+        np.save(path, vec)
+        paths[approx.value] = path
+
+    return paths
+
+
 def main(models_config_path: str, analysis_config_path: str) -> None:
     models_cfg = load_yaml(models_config_path)
     analysis_raw = load_yaml(analysis_config_path)
@@ -265,8 +307,13 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
         HessianAnalysisConfig, analysis_raw["hessian_analysis"]
     )  # type: ignore
 
-    base_dataset = load_dataset(dataset_cfg, seed)
-    logger.info("dataset %s: N=%d", dataset_cfg.name.value, base_dataset.inputs.shape[0])
+    base_train, base_test = load_train_test(dataset_cfg, seed)
+    logger.info(
+        "dataset %s: N_train=%d, N_test=%d",
+        dataset_cfg.name.value,
+        base_train.inputs.shape[0],
+        base_test.inputs.shape[0],
+    )
 
     all_results: List[Dict] = []
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -286,7 +333,9 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
         )
         logger.info("=" * 70)
 
-        dataset = prepare_dataset_for_model(base_dataset, model_config.loss)
+        dataset, test_dataset = prepare_datasets_for_model(
+            base_train, base_test, model_config.loss
+        )
         loss_fn = get_loss(model_config.loss)
         collector_dir = resolve_collector_dir(model_dir, epoch)
 
@@ -368,6 +417,31 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
                     ihvp_comparisons.setdefault(metric, {})[reference.value] = scores
                 round_trip_errors[reference.value] = rt
 
+        influence_section: Optional[Dict] = None
+        if comp_cfg.compute_influence:
+            train_flat_grads = compute_per_example_flat_grads(
+                model, params, dataset.inputs, dataset.targets, loss_fn
+            )
+            test_flat_grads = compute_per_example_flat_grads(
+                model, params, test_dataset.inputs, test_dataset.targets, loss_fn
+            )
+            all_methods = list(dict.fromkeys(
+                list(comp_cfg.approximators) + list(comp_cfg.comparison_references)
+            ))
+            model_tag = f"{model_config.get_model_display_name()}_{tag}"
+            influence_dir = os.path.join(analysis_cfg.results_output_dir, "influence")
+            paths = compute_influence_scores(
+                ctx=ctx,
+                methods=all_methods,
+                train_flat_grads=train_flat_grads,
+                test_flat_grads=test_flat_grads,
+                damping=damping,
+                pseudo_inverse_factor=pif,
+                output_dir=influence_dir,
+                model_tag=model_tag,
+            )
+            influence_section = {"paths": paths}
+
         all_results.append({
             "model_name": model_config.get_model_display_name(),
             "model_directory": model_dir,
@@ -382,6 +456,7 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
                 "hvp_comparisons": hvp_comparisons,
                 "ihvp_comparisons": ihvp_comparisons,
                 "ihvp_round_trip_approximation_errors": round_trip_errors,
+                "influence": influence_section,
             },
         })
 
