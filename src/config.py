@@ -385,72 +385,51 @@ class TrainingExperimentConfig:
         return os.path.join(self.base_output_dir, self.experiment_name, "datasets")
 
 
-@dataclass
-class HessianExperimentConfig:
-    """Top-level experiment configuration."""
+class AnalysisStage(str, Enum):
+    """Which analysis stages to run per ``(model, epoch)`` pair.
 
-    # Experiment identification
-    experiment_name: str = "experiment"
-    seed: int = 42
+    Stages execute in a fixed order (``ERROR_ANALYSIS`` → ``ATTRIBUTION`` →
+    ``LDS``)
+    regardless of how they are listed in the config.
+    """
 
-    # Dataset
-    dataset: DatasetConfig = field(
-        default_factory=lambda: DatasetConfig(
-            name=DatasetEnum.DIGITS, path="experiments/data/datasets/digits"
-        )
-    )
+    ERROR_ANALYSIS = "error_analysis"
+    ATTRIBUTION = "attribution"
+    LDS = "lds"
 
-    # List of model_directories with model checkpoints and model definition
-    models: List[str] = field(default_factory=list)
-
-    # Which different approaches to compare and analyze
-    hessian_analysis: HessianAnalysisConfig = field(
-        default_factory=HessianAnalysisConfig
-    )
-
-    # If specified, allow for analyzing the different checkpoints saved during training
-    epochs: Optional[List[int]] = None
+    @classmethod
+    def _missing_(cls, value):
+        if value == "hessian":
+            return cls.ERROR_ANALYSIS
+        return None
 
 
 @dataclass
-class LDSExperimentConfig:
-    """Configuration for LDS experiments."""
+class LDSConfig:
+    """ELSO-specific parameters for the ``LDS`` analysis stage.
 
-    # Experiment identification
-    experiment_name: str = "lds_experiment"
-    seed: int = 42
+    Shared-run fields (``dataset``, ``seed``, ``models``, ``epochs``,
+    ``results_output_dir``) live on the top-level :class:`AnalysisConfig` and
+    are not duplicated here. Attribution-score files are located via either the
+    default per-model path ``{model_dir}/attribution_scores/{epoch_label}/``,
+    the top-level ``AnalysisConfig.attribution_dir``, or this stage's
+    ``override_attribution_dirs`` — run the ``ATTRIBUTION`` stage first, or
+    drop per-method ``.npy`` files into the expected directory by hand.
+    """
 
-    # Dataset
-    dataset: DatasetConfig = field(
-        default_factory=lambda: DatasetConfig(
-            name=DatasetEnum.DIGITS, path="experiments/data/datasets/digits"
-        )
-    )
-
-    # List of model directories to analyze
-    models: List[str] = field(default_factory=list)
-
-    # Hessian estimators configuration (approximators, pseudo-target strategy, regularization)
-    hessian_estimators: HessianEstimatorsConfig = field(
-        default_factory=HessianEstimatorsConfig
-    )
-
-    # ELSO sampling parameters
     num_subsets: int = 100
     reps_per_model: int = 1
     subset_fraction: float = 0.5
     num_test_examples: int = 50
-
-    # If specified, run LDS at each of these epoch checkpoints instead of the final model
-    epochs: Optional[List[int]] = None
-
-    # Cache the expensive ELSO retraining output (rep-averaged per-query losses)
-    # alongside the model directory so subsequent runs that only vary the
-    # Hessian / regularisation settings can reuse it.
+    # Cache rep-averaged per-query losses alongside the model directory so
+    # subsequent runs with different attribution files can reuse them.
     cache_elso: bool = True
-
-    # Storage
-    results_output_dir: str = "experiments/results/lds_analysis"
+    # Override list of base directories to read attribution files from. Each
+    # entry resolves to ``{dir}/{model_basename}/{epoch_label}/`` (a directory
+    # of per-method ``.npy`` files). When None, falls back to
+    # ``AnalysisConfig.attribution_dir`` (if set) or the default
+    # per-model path.
+    override_attribution_dirs: Optional[List[str]] = None
 
     def __post_init__(self):
         if self.num_subsets <= 0:
@@ -459,3 +438,52 @@ class LDSExperimentConfig:
             raise ValueError("subset_fraction must be in (0, 1)")
         if self.num_test_examples <= 0:
             raise ValueError("num_test_examples must be positive")
+
+
+@dataclass
+class AnalysisConfig:
+    """Unified top-level config for ``experiments.analysis``.
+
+    Iterates ``models × epochs`` once and dispatches to the requested
+    ``stages`` per pair. Stage-specific configs are only consulted when the
+    corresponding stage is listed in ``stages``.
+    """
+
+    # Experiment identification
+    experiment_name: str = "analysis"
+    seed: int = 42
+
+    # Dataset
+    dataset: DatasetConfig = field(
+        default_factory=lambda: DatasetConfig(
+            name=DatasetEnum.DIGITS, path="experiments/data/datasets/digits"
+        )
+    )
+
+    # Iteration axis — shared across stages
+    models: List[str] = field(default_factory=list)
+    epochs: Optional[List[int]] = None  # None → final checkpoint only
+
+    # Which stages to run, and their per-stage configs
+    stages: List[AnalysisStage] = field(default_factory=list)
+    error_analysis: HessianAnalysisConfig = field(default_factory=HessianAnalysisConfig)
+    hessian: Optional[HessianAnalysisConfig] = None
+    attribution: HessianEstimatorsConfig = field(
+        default_factory=HessianEstimatorsConfig
+    )
+    lds: LDSConfig = field(default_factory=LDSConfig)
+
+    # Base directory to write attribution files to. When set, the ATTRIBUTION
+    # stage writes per-method ``.npy`` files into
+    # ``{attribution_dir}/{model_basename}/{epoch_label}/`` instead of the
+    # default ``{model_dir}/attribution_scores/{epoch_label}/``.
+    # Also used as the default LDS read dir when
+    # ``lds.override_attribution_dirs`` is None.
+    attribution_dir: Optional[str] = None
+
+    # Storage — one combined JSON per invocation, only stage keys that ran
+    results_output_dir: str = "experiments/results/analysis"
+
+    def __post_init__(self):
+        if self.hessian is not None:
+            self.error_analysis = self.hessian

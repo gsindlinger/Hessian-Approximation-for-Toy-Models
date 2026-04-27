@@ -50,7 +50,7 @@ def compute_per_example_flat_grads(
 def compute_influence_matrix(
     test_flat_grads: Float[Array, "n_test n_params"],
     train_flat_grads: Float[Array, "n_train n_params"],
-    computer: HessianEstimator | HessianComputer,
+    estimator: HessianEstimator | HessianComputer,
     damping: Optional[float] = None,
     pseudo_inverse_factor: Optional[float] = None,
 ) -> Float[Array, "n_test n_train"]:
@@ -77,16 +77,16 @@ def compute_influence_matrix(
         test_flat_grads.shape[1],
     )
 
-    if isinstance(computer, HessianComputer):
-        ihvps = computer.compute_ihvp(
+    if isinstance(estimator, HessianComputer):
+        ihvps = estimator.estimate_ihvp(
             test_flat_grads, damping, pseudo_inverse_factor
         )  # (n_test, n_params)
     else:
-        if not computer.is_built:
+        if not estimator.is_built:
             raise RuntimeError(
-                "HessianComputer not built. Please call the 'build' method before computing influence scores."
+                f"{type(estimator).__name__} not built. Please call the 'build' method before computing influence scores."
             )
-        ihvps = computer.estimate_ihvp(
+        ihvps = estimator.estimate_ihvp(
             test_flat_grads, damping, pseudo_inverse_factor
         )  # (n_test, n_params)
     return ihvps @ train_flat_grads.T  # (n_test, n_train)

@@ -1,0 +1,54 @@
+## Unified analysis config. Stage-specific sections
+## (error_analysis, attribution, lds)
+## are only consulted when their name appears in `stages`.
+experiment_name: digits_analysis
+seed: 42
+results_output_dir: experiments/data/results/analysis/digits
+
+dataset:
+  name: should_be_overriden
+  path: path_should_be_overriden
+  store_on_disk: should_be_overriden
+  test_size: should_be_overriden
+
+## Iteration axis: models × epochs
+models: [] # should be overriden
+epochs: null   ## null → final checkpoint only, should be usually overriden
+
+## Stages to run. Execution order is fixed
+## (error_analysis → attribution → lds) regardless of listing order here.
+## Valid entries: error_analysis, attribution, lds.
+stages: [] # should be overridden
+
+## Approximation error comparison (only used when `error_analysis` is in
+## stages).
+error_analysis:
+  vector_config:
+    num_samples: 500
+  matrix_config: {}
+  computation_config:
+    computation_types: [matrix, hvp, ihvp]
+    comparison_references: [exact, gnh]
+    estimators_config:
+      approximators: [gnh, fim, block_fim, kfac, ekfac]
+      regularization_value: 1e-4
+      regularization_strategy: pseudo_inverse
+      pseudo_target_generation_strategy: all_classes
+  results_output_dir: experiments/data/results/analysis/digits
+
+## Attribution-score generation (only used when `attribution` is in stages).
+## Writes to {model}/attribution_scores/{epoch_label}/{method}.npy (as long as attribution_dir is not specified).
+attribution:
+  approximators: [exact, gnh, fim, block_fim, kfac, ekfac]
+  regularization_value: 1e-4
+  regularization_strategy: pseudo_inverse
+  pseudo_target_generation_strategy: all_classes
+
+## LDS / ELSO parameters (only used when `lds` is in stages).
+## Reads from {model}/attribution_scores/{epoch_label}/{method}.npy (as long as attribution_dir or lds.override_attribution_dirs is not specified).
+lds:
+  num_subsets: 100
+  num_test_examples: 179 # full digits test set (assuming test_size=0.1)
+  reps_per_model: 3
+  subset_fraction: 0.5
+  cache_elso: true

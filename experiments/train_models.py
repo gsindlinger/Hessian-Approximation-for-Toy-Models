@@ -74,7 +74,7 @@ from experiments.config_builder import (
     normalize_for_yaml,
     register_enum_representers,
 )
-from experiments.utils import cleanup_memory, to_dataclass
+from experiments.utils import to_dataclass
 from src.config import LossType, ModelConfig, TrainingExperimentConfig
 from src.utils.data.data import Dataset, DownloadableDataset
 from src.utils.loss import get_loss
@@ -88,7 +88,7 @@ from src.utils.train import (
     save_model_checkpoint,
     train_model,
 )
-from src.utils.utils import hash_data
+from src.utils.utils import cleanup_memory, hash_data
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-"""Hessian analysis pipeline (stepwise rewrite of experiments/hessian_analysis.py).
+"""Approximation error analysis pipeline.
 
 Step 1: load models from a models YAML.
 Step 2: load dataset + collect activations/gradients (plus a second
@@ -13,10 +13,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-import jax.numpy as jnp
 import yaml
 from jax.random import PRNGKey
-
 from tqdm.auto import tqdm
 
 from experiments.utils import block_tree, json_safe, to_dataclass
@@ -31,6 +29,7 @@ from src.config import (
 )
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator
+from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import sample_vectors
@@ -92,8 +91,8 @@ def collect_activations_gradients(
     seed: int,
 ):
     """Run the primary collector; also run `_corr` when strategy is MCMC."""
-    strategy = analysis_cfg.computation_config.pseudo_target_generation_strategy
-    reps = analysis_cfg.computation_config.pseudo_target_generation_repetitions
+    strategy = analysis_cfg.computation_config.estimators_config.pseudo_target_generation_strategy
+    reps = analysis_cfg.computation_config.estimators_config.pseudo_target_generation_repetitions
 
     def _make():
         return CollectorActivationsGradients(
@@ -117,8 +116,11 @@ def collect_activations_gradients(
         corr = _collect(f"{collector_dir}_corr", PRNGKey(seed + 1))
     else:
         corr = primary
-    logger.info("collected acts/grads → %s%s", collector_dir,
-                " (+ _corr)" if strategy == PseudoTargetGenerationStrategy.MCMC else "")
+    logger.info(
+        "collected acts/grads → %s%s",
+        collector_dir,
+        " (+ _corr)" if strategy == PseudoTargetGenerationStrategy.MCMC else "",
+    )
 
     return primary, corr
 
@@ -153,17 +155,22 @@ def resolve_damping(
 ) -> Tuple[Optional[float], Optional[float]]:
     """Return (damping, pseudo_inverse_factor)."""
     comp = analysis_cfg.computation_config
-    strat = comp.regularization_strategy
+    strat = comp.estimators_config.regularization_strategy
     if strat in (
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
     ):
         ekfac = ctx.get(HessianApproximationMethod.EKFAC)
-        return ekfac.get_damping(damping_strategy=strat, factor=comp.regularization_value), None
+        assert isinstance(ekfac, EKFACComputer), (
+            "Expected EKFACComputer for auto damping resolution."
+        )
+        return ekfac.get_damping(
+            damping_strategy=strat, factor=comp.estimators_config.regularization_value
+        ), None
     if strat == RegularizationStrategy.FIXED:
-        return comp.regularization_value, None
+        return comp.estimators_config.regularization_value, None
     if strat == RegularizationStrategy.PSEUDO_INVERSE:
-        return None, comp.regularization_value
+        return None, comp.estimators_config.regularization_value
     return None, None
 
 
@@ -173,7 +180,9 @@ def compare_matrices(
     approximators: List[HessianApproximationMethod],
     metrics: List[FullMatrixMetric],
 ) -> Dict[str, Dict[str, float]]:
-    ref_H = block_tree(ctx.get(reference).estimate_hessian(), f"{reference.value}_matrix")
+    ref_H = block_tree(
+        ctx.get(reference).estimate_hessian(), f"{reference.value}_matrix"
+    )
     out: Dict[str, Dict[str, float]] = {m.value: {} for m in metrics}
     others = [a for a in approximators if a != reference]
     pbar = tqdm(others, desc=f"matrix vs {reference.value}")
@@ -181,7 +190,9 @@ def compare_matrices(
         pbar.set_postfix_str(approx.value[:5].ljust(5))
         comp = ctx.get(approx)
         for metric in metrics:
-            score = comp.compare_full_hessian_estimates(comparison_matrix=ref_H, metric=metric)
+            score = comp.compare_full_hessian_estimates(
+                comparison_matrix=ref_H, metric=metric
+            )
             out[metric.value][approx.value] = float(score)
     return out
 
@@ -194,15 +205,21 @@ def compare_hvps(
     grads_1,
     grads_2,
 ) -> Dict[str, Dict[str, float]]:
-    ref_hvp = block_tree(ctx.get(reference).estimate_hvp(grads_1), f"{reference.value}_hvp")
+    ref_hvp = block_tree(
+        ctx.get(reference).estimate_hvp(grads_1), f"{reference.value}_hvp"
+    )
     out: Dict[str, Dict[str, float]] = {m.name: {} for m in metrics}
     others = [a for a in approximators if a != reference]
     pbar = tqdm(others, desc=f"hvp vs {reference.value}")
     for approx in pbar:
         pbar.set_postfix_str(approx.value[:5].ljust(5))
-        approx_hvp = block_tree(ctx.get(approx).estimate_hvp(grads_1), f"{approx.value}_hvp")
+        approx_hvp = block_tree(
+            ctx.get(approx).estimate_hvp(grads_1), f"{approx.value}_hvp"
+        )
         for metric in metrics:
-            out[metric.name][approx.value] = float(metric.compute(ref_hvp, approx_hvp, grads_2))
+            out[metric.name][approx.value] = float(
+                metric.compute(ref_hvp, approx_hvp, grads_2)
+            )
     return out
 
 
@@ -219,7 +236,9 @@ def compare_ihvps(
 ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, float]]:
     ref = ctx.get(reference)
     ref_ihvp = block_tree(
-        ref.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
+        ref.estimate_ihvp(
+            grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor
+        ),
         f"{reference.value}_ihvp",
     )
     out: Dict[str, Dict[str, float]] = {m.name: {} for m in metrics}
@@ -229,11 +248,15 @@ def compare_ihvps(
     for approx in pbar:
         pbar.set_postfix_str(approx.value[:5].ljust(5))
         approx_ihvp = block_tree(
-            ctx.get(approx).estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
+            ctx.get(approx).estimate_ihvp(
+                grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor
+            ),
             f"{approx.value}_ihvp",
         )
         for metric in metrics:
-            out[metric.name][approx.value] = float(metric.compute(ref_ihvp, approx_ihvp, grads_2))
+            out[metric.name][approx.value] = float(
+                metric.compute(ref_ihvp, approx_ihvp, grads_2)
+            )
         if compute_approximation_error:
             round_trip[approx.value] = float(
                 VectorMetric.RELATIVE_ERROR.compute(
@@ -256,17 +279,22 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
 
     seed: int = models_cfg["seed"]
     models: List[str] = models_cfg["models"]
-    epochs: Optional[List[int]] = (
-        models_cfg.get("intermediate_epochs") or models_cfg.get("epochs")
-    )
+    epochs: Optional[List[int]] = models_cfg.get(
+        "intermediate_epochs"
+    ) or models_cfg.get("epochs")
 
     dataset_cfg: DatasetConfig = to_dataclass(DatasetConfig, models_cfg["dataset"])  # type: ignore
+    analysis_section = analysis_raw.get("error_analysis")
+    if analysis_section is None:
+        analysis_section = analysis_raw["hessian_analysis"]
     analysis_cfg: HessianAnalysisConfig = to_dataclass(
-        HessianAnalysisConfig, analysis_raw["hessian_analysis"]
+        HessianAnalysisConfig, analysis_section
     )  # type: ignore
 
     base_dataset = load_dataset(dataset_cfg, seed)
-    logger.info("dataset %s: N=%d", dataset_cfg.name.value, base_dataset.inputs.shape[0])
+    logger.info(
+        "dataset %s: N=%d", dataset_cfg.name.value, base_dataset.inputs.shape[0]
+    )
 
     all_results: List[Dict] = []
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -319,7 +347,7 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             loss_fn=loss_fn,
         )
 
-        build_base_dir = os.path.join(model_config.directory, "collector")
+        build_base_dir = os.path.join(model_config.directory, "collector")  # type: ignore
         if epoch is not None:
             build_base_dir = os.path.join(build_base_dir, f"epoch_{epoch}")
 
@@ -346,44 +374,57 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             logger.info("--- reference: %s ---", reference.value)
             if ComputationType.MATRIX in comp_cfg.computation_types:
                 res = compare_matrices(
-                    ctx, reference, comp_cfg.approximators,
+                    ctx,
+                    reference,
+                    comp_cfg.estimators_config.approximators,
                     analysis_cfg.matrix_config.metrics,
                 )
                 for metric, scores in res.items():
                     matrix_comparisons.setdefault(metric, {})[reference.value] = scores
             if ComputationType.HVP in comp_cfg.computation_types:
                 res = compare_hvps(
-                    ctx, reference, comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
+                    ctx,
+                    reference,
+                    comp_cfg.estimators_config.approximators,
+                    analysis_cfg.vector_config.metrics,
+                    grads_1,
+                    grads_2,
                 )
                 for metric, scores in res.items():
                     hvp_comparisons.setdefault(metric, {})[reference.value] = scores
             if ComputationType.IHVP in comp_cfg.computation_types:
                 res, rt = compare_ihvps(
-                    ctx, reference, comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
-                    damping, pif,
+                    ctx,
+                    reference,
+                    comp_cfg.estimators_config.approximators,
+                    analysis_cfg.vector_config.metrics,
+                    grads_1,
+                    grads_2,
+                    damping,
+                    pif,
                 )
                 for metric, scores in res.items():
                     ihvp_comparisons.setdefault(metric, {})[reference.value] = scores
                 round_trip_errors[reference.value] = rt
 
-        all_results.append({
-            "model_name": model_config.get_model_display_name(),
-            "model_directory": model_dir,
-            "epoch": epoch,
-            "model_config": asdict(model_config),
-            "num_parameters": model.num_params,
-            "metadata": metadata or {},
-            "damping": damping,
-            "pseudo_inverse_factor": pif,
-            "hessian_analysis": {
-                "matrix_comparisons": matrix_comparisons,
-                "hvp_comparisons": hvp_comparisons,
-                "ihvp_comparisons": ihvp_comparisons,
-                "ihvp_round_trip_approximation_errors": round_trip_errors,
-            },
-        })
+        all_results.append(
+            {
+                "model_name": model_config.get_model_display_name(),
+                "model_directory": model_dir,
+                "epoch": epoch,
+                "model_config": asdict(model_config),
+                "num_parameters": model.num_params,
+                "metadata": metadata or {},
+                "damping": damping,
+                "pseudo_inverse_factor": pif,
+                "error_analysis": {
+                    "matrix_comparisons": matrix_comparisons,
+                    "hvp_comparisons": hvp_comparisons,
+                    "ihvp_comparisons": ihvp_comparisons,
+                    "ihvp_round_trip_approximation_errors": round_trip_errors,
+                },
+            }
+        )
 
     results_dir = analysis_cfg.results_output_dir
     os.makedirs(results_dir, exist_ok=True)
@@ -414,7 +455,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--analysis-config",
-        default="experiments/configs/hessian_analysis.yaml",
+        default="experiments/configs/default_analysis.yaml",
         help="Analysis YAML (HessianAnalysisConfig).",
     )
     args = parser.parse_args()

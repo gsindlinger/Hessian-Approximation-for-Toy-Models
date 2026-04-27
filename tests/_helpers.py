@@ -1,5 +1,6 @@
 from dataclasses import asdict, replace
 from hashlib import sha256
+from math import ceil
 from typing import Any, Callable, Dict, List, MutableMapping, Tuple
 
 import jax
@@ -83,6 +84,9 @@ def train_model_for_dataset(
         optimizer=optimizer(
             model_config.training.optimizer,
             lr=model_config.training.learning_rate,
+            lr_schedule=model_config.training.lr_schedule,
+            total_steps=ceil(len(dataset.inputs) / model_config.training.batch_size)
+            * model_config.training.epochs,
         ),
         epochs=model_config.training.epochs,
     )

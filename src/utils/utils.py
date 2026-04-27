@@ -1,13 +1,19 @@
+import gc
 import hashlib
 import json
+import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import jax
 import matplotlib.pyplot as plt
 import numpy as np
+
+from src.config import RegularizationStrategy
+
+logger = logging.getLogger(__name__)
 
 
 def hash_data(data: Dict[str, Any], length: int = 10) -> str:
@@ -19,6 +25,87 @@ def hash_data(data: Dict[str, Any], length: int = 10) -> str:
     )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return digest[:length]
+
+
+def cleanup_memory(stage: str | None = None):
+    """Force garbage collection and clear JAX caches."""
+    gc.collect()
+    jax.clear_caches()
+    msg = f"[MEMORY] peak_bytes={get_peak_bytes_in_use():.2f} GB"
+    if stage:
+        msg = f"[MEMORY] after {stage}: {msg}"
+    logger.info(msg)
+
+
+def resolve_regularization(
+    strategy: RegularizationStrategy,
+    factor: float,
+    built_computer=None,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Resolve a regularization strategy into ``(damping, pseudo_inverse_factor)``.
+
+    Exactly one of the two returned values is non-None:
+
+    * ``damping`` — additive scalar used in ``(H + λI)^{-1}``.
+    * ``pseudo_inverse_factor`` — threshold used for truncated pseudo-inverse.
+
+    ``built_computer`` is required for AUTO strategies: a built
+    ``HessianEstimator`` (typically EKFAC) whose layer-matrix provides the
+    eigenvalue statistics used to derive the damping.
+    """
+    if strategy == RegularizationStrategy.PSEUDO_INVERSE:
+        return None, factor
+
+    if strategy == RegularizationStrategy.FIXED:
+        return factor, None
+
+    if built_computer is None:
+        raise ValueError(
+            f"built_computer is required for regularization strategy '{strategy}'"
+        )
+    damping = built_computer.get_damping(
+        damping_strategy=strategy,
+        factor=factor,
+    )
+    return damping, None
+
+
+def elso_cache_dir(
+    model_directory: str,
+    cache_key: Dict[str, Any],
+) -> str:
+    """Return a content-addressed cache directory for ELSO retraining outputs.
+
+    ELSO ground-truth Δm depends on the retraining recipe, the subset sampling,
+    the epoch checkpoints, and the query selection — but **not** on the
+    attribution-method choice. Caching keyed by those variables lets downstream
+    runs with different attribution-score files reuse the expensive retraining.
+
+    Structure: {model_directory}/elso_cache/{config_hash}/
+    """
+    cfg_hash = hash_data(cache_key)
+    return os.path.join(model_directory, "elso_cache", cfg_hash)
+
+
+def collector_cache_dir(
+    model_directory: str,
+    pseudo_target_strategy: str,
+    pseudo_target_repetitions: int,
+    epoch: Optional[int] = None,
+) -> str:
+    """Return a content-addressed collector cache directory.
+
+    The path encodes both the epoch checkpoint (so different parameter
+    snapshots never share data) and a hash of the pseudo-target config (so
+    runs with different strategies/repetitions also get separate directories).
+
+    Structure: {model_directory}/collector/{epoch_str}/{config_hash}/
+    """
+    epoch_str = f"epoch_{epoch}" if epoch is not None else "final"
+    cfg_hash = hash_data(
+        {"strategy": pseudo_target_strategy, "reps": pseudo_target_repetitions}
+    )
+    return os.path.join(model_directory, "collector", epoch_str, cfg_hash)
 
 
 def plot_training_curve(train_losses, val_losses, title="Training Curve"):

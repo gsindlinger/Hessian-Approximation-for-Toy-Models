@@ -1,0 +1,56 @@
+dataset:
+  name: should_be_overriden
+  path: path_should_be_overriden
+  store_on_disk: should_be_overriden
+  test_size: should_be_overriden
+experiment_name: ""
+error_analysis:
+  computation_config:
+    comparison_references:
+      - exact
+      - gnh
+    computation_types:
+      - matrix
+      - hvp
+      - ihvp
+    estimators_config:
+      approximators:
+        - exact
+        - kfac
+        - ekfac
+        - gnh
+        - fim
+        - block_fim
+        - block_hessian
+        - shampoo
+        - eshampoo
+        - identity
+      regularization_value: 0.1
+      regularization_strategy: auto_mean_eigenvalue_correction
+      pseudo_target_generation_strategy: all_classes
+      pseudo_target_generation_repetitions: 1
+  matrix_config:
+    metrics:
+      - frobenius
+      - relative_frobenius
+      - spectral
+      - spectral_relative
+      - cosine_similarity
+      - trace_distance
+  results_output_dir: experiments/data/results/error_analysis/digits
+  vector_config:
+    metrics:
+      - absolute_l2_diff
+      - relative_error
+      - cosine_similarity
+      - inner_product_diff
+      - relative_inner_product_diff
+      - relative_energy_diff
+      - inner_product_ratio
+    num_samples: 500
+    sampling_method: gradients
+models: []
+epochs:
+  - 10
+  - 100
+seed: should_be_overriden
