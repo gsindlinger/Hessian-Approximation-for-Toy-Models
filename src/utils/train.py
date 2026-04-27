@@ -56,8 +56,35 @@ def train_model(
     epochs: int,
     seed: int = 42,
     save_epochs: Optional[List[int]] = None,
+    save_checkpoints: bool = True,
+    verbose: bool = True,
 ) -> Tuple[ApproximationModel, Dict, List]:
-    """Train the model."""
+    """Train the model.
+
+    Args:
+        model_config: model architecture + training hyperparameters. The
+            ``directory`` field determines where checkpoints are written.
+        dataloader: yields ``(batch_inputs, batch_targets)`` tuples for one
+            epoch per full iteration.
+        loss_fn: scalar loss ``(logits, targets) -> loss``.
+        optimizer: optax gradient transformation applied at every step.
+        epochs: total number of epochs to train.
+        seed: RNG seed for model parameter initialisation.
+        save_epochs: epochs at which to additionally checkpoint to disk.
+            The final epoch is always saved on top of these. Ignored entirely
+            when ``save_checkpoints=False``.
+        save_checkpoints: master switch for disk I/O. When ``False``, nothing
+            is written — neither ``save_epochs`` nor the final-epoch save.
+            Set to ``False`` for throwaway models (e.g. ELSO retraining) to
+            avoid polluting the checkpoint directory.
+        verbose: when ``False``, suppresses the tqdm progress bar and the
+            per-epoch loss/grad-norm log lines. Set to ``False`` in inner
+            retraining loops to avoid noisy output.
+
+    Returns:
+        ``(model, final_params, loss_history)`` where ``loss_history`` is a
+        list of mean per-example losses, one entry per epoch.
+    """
 
     model = ModelRegistry.get_model(model_config=model_config, seed=seed)
 
@@ -69,7 +96,8 @@ def train_model(
 
     loss_history = []
 
-    for epoch in tqdm(range(1, epochs + 1)):
+    epoch_iter = tqdm(range(1, epochs + 1)) if verbose else range(1, epochs + 1)
+    for epoch in epoch_iter:
         running_loss = 0.0
         total_samples = 0
 
@@ -86,12 +114,15 @@ def train_model(
 
         epoch_loss = running_loss / total_samples
         loss_history.append(epoch_loss)
-        if epoch % 50 == 0 or epoch == epochs:
+        if verbose and (epoch % 50 == 0 or epoch == epochs):
             logger.info(
                 f"Epoch {epoch}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"
             )
-        # Save checkpoint if required
-        if (save_epochs is not None and epoch in save_epochs) or (epoch == epochs):
+        # ``save_checkpoints`` is the master switch: when False, ``save_epochs``
+        # is ignored and nothing is written to disk (including the final epoch).
+        if save_checkpoints and (
+            (save_epochs is not None and epoch in save_epochs) or (epoch == epochs)
+        ):
             assert isinstance(state.params, Dict)
             save_model_checkpoint(
                 model_config=model_config,
@@ -135,6 +166,31 @@ def evaluate_loss(
     """Evaluate model."""
     loss_value = _evaluate(model.apply, params, inputs, targets, loss_fn)
     return float(loss_value)
+
+
+@partial(jax.jit, static_argnames=("loss_fn", "apply_fn"))
+def _evaluate_per_example(
+    apply_fn: Callable,
+    params: Dict,
+    inputs: jnp.ndarray,
+    targets: jnp.ndarray,
+    loss_fn: Callable,
+) -> jnp.ndarray:
+    def single(x, y):
+        return loss_fn(apply_fn(params, x[None]), jnp.atleast_1d(y))
+
+    return jax.vmap(single)(inputs, targets)
+
+
+def evaluate_per_example_losses(
+    model: ApproximationModel,
+    params: Dict,
+    inputs: jnp.ndarray,
+    targets: jnp.ndarray,
+    loss_fn: Callable,
+) -> jnp.ndarray:
+    """Return per-example scalar losses, shape (n,)."""
+    return _evaluate_per_example(model.apply, params, inputs, targets, loss_fn)
 
 
 def evaluate_loss_and_classification_accuracy(

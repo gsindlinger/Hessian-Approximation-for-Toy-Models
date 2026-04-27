@@ -1,18 +1,16 @@
-import gc
 import logging
 from dataclasses import asdict, fields, is_dataclass
 from enum import Enum
 from typing import List, Optional, Tuple, get_args, get_type_hints
 
 import jax
+import numpy as np
 import yaml
 from jax.tree_util import tree_map
 from omegaconf import DictConfig, OmegaConf
 from typing_extensions import get_origin
 
 from src.config import DatasetConfig
-from src.utils.utils import get_peak_bytes_in_use
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +119,7 @@ def load_experiment_override_from_yaml(
 
     if "dataset" in data:
         dataset = to_dataclass(DatasetConfig, data["dataset"])
-        
+
     # if any of the keys of data contain epochs or epochs as substring of the key, set epochs
     epochs = None
     for key in data.keys():
@@ -131,16 +129,7 @@ def load_experiment_override_from_yaml(
 
     seed = data.get("seed", None)
 
-    return models, dataset, seed, epochs # type: ignore
-
-def cleanup_memory(stage: str | None = None):
-    """Force garbage collection and clear JAX caches."""
-    gc.collect()
-    jax.clear_caches()
-    msg = f"[MEMORY] peak_bytes={get_peak_bytes_in_use():.2f} GB"
-    if stage:
-        msg = f"[MEMORY] after {stage}: {msg}"
-    logger.info(msg)
+    return models, dataset, seed, epochs  # type: ignore
 
 
 def block_tree(x, name: str):
@@ -151,6 +140,7 @@ def block_tree(x, name: str):
         logger.exception(f"[SYNC] Failure while blocking on {name}")
         raise
     return x
+
 
 def json_safe(obj):
     # JAX arrays
@@ -169,11 +159,18 @@ def json_safe(obj):
 
     # Dataclasses
     if is_dataclass(obj):
-        return asdict(obj) # type: ignore
+        return json_safe(asdict(obj))  # type: ignore[arg-type]
 
-    # Sets / tuples
-    if isinstance(obj, (set, tuple)):
-        return list(obj)
+    # Dicts — recurse into values
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
 
-    # Fallback
+    # Lists / sets / tuples — recurse into elements
+    if isinstance(obj, (list, set, tuple)):
+        return [json_safe(item) for item in obj]
+
+    # Native JSON-serializable scalars
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")

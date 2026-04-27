@@ -47,7 +47,13 @@ class OptimizerType(str, Enum):
     SGD = "sgd"
     ADAM = "adam"
     ADAMW = "adamw"
-    SGD_SCHEDULE_COSINE = "sgd_schedule_cosine"
+
+
+class LRSchedule(str, Enum):
+    """Learning-rate schedule to apply on top of the base optimizer."""
+
+    NONE = "none"
+    COSINE = "cosine"
 
 
 class HessianApproximationMethod(str, Enum):
@@ -76,6 +82,25 @@ class HessianApproximationMethod(str, Enum):
             for approximator in HessianApproximationMethod
             if approximator not in exclude_list
         ]
+
+    @staticmethod
+    def num_collector_runs(approximator: HessianApproximationMethod) -> int:
+        """Get the number of collector runs required for a given approximator."""
+        if approximator in {
+            HessianApproximationMethod.KFAC,
+            HessianApproximationMethod.EKFAC,
+            HessianApproximationMethod.SHAMPOO,
+            HessianApproximationMethod.ESHAMPOO,
+        }:
+            return 2
+        elif approximator in {
+            HessianApproximationMethod.FIM,
+            HessianApproximationMethod.BLOCK_FIM,
+            HessianApproximationMethod.BLOCK_HESSIAN,
+        }:
+            return 1
+        else:
+            return 0
 
 
 class ComputationType(str, Enum):
@@ -150,6 +175,7 @@ class TrainingConfig:
     optimizer: OptimizerType = OptimizerType.ADAMW
     epochs: int = 500
     batch_size: int = 128
+    lr_schedule: LRSchedule = LRSchedule.NONE
 
     def __post_init__(self):
         if self.epochs <= 0:
@@ -234,26 +260,15 @@ class MatrixAnalysisConfig:
 
 
 @dataclass
-class HessianComputationConfig:
-    """Configuration specifying which Hessian computations to perform."""
+class HessianEstimatorsConfig:
+    """Shared hessian estimators settings combining
+    multiple settings for a single experiment (approximation or lds):
+    which approximators to use, pseudo-target strategy, and regularization."""
 
     approximators: List[HessianApproximationMethod] = field(
         default_factory=lambda: (
             HessianApproximationMethod.get_approximator_list_except_exact()
         )
-    )
-    comparison_references: List[HessianApproximationMethod] = field(
-        default_factory=lambda: [
-            HessianApproximationMethod.EXACT,
-            HessianApproximationMethod.GNH,
-        ]
-    )
-    computation_types: List[ComputationType] = field(
-        default_factory=lambda: [
-            ComputationType.MATRIX,
-            ComputationType.HVP,
-            ComputationType.IHVP,
-        ]
     )
     pseudo_target_generation_strategy: PseudoTargetGenerationStrategy = (
         PseudoTargetGenerationStrategy.MCMC
@@ -285,6 +300,28 @@ class HessianComputationConfig:
                     "since we use true labels as targets."
                 )
                 self.pseudo_target_generation_repetitions = 1
+
+
+@dataclass
+class HessianComputationConfig:
+    """Configuration specifying which Hessian computations to perform."""
+
+    estimators_config: HessianEstimatorsConfig = field(
+        default_factory=HessianEstimatorsConfig
+    )
+    comparison_references: List[HessianApproximationMethod] = field(
+        default_factory=lambda: [
+            HessianApproximationMethod.EXACT,
+            HessianApproximationMethod.GNH,
+        ]
+    )
+    computation_types: List[ComputationType] = field(
+        default_factory=lambda: [
+            ComputationType.MATRIX,
+            ComputationType.HVP,
+            ComputationType.IHVP,
+        ]
+    )
 
 
 @dataclass
@@ -348,12 +385,72 @@ class TrainingExperimentConfig:
         return os.path.join(self.base_output_dir, self.experiment_name, "datasets")
 
 
+class AnalysisStage(str, Enum):
+    """Which analysis stages to run per ``(model, epoch)`` pair.
+
+    Stages execute in a fixed order (``ERROR_ANALYSIS`` → ``ATTRIBUTION`` →
+    ``LDS``)
+    regardless of how they are listed in the config.
+    """
+
+    ERROR_ANALYSIS = "error_analysis"
+    ATTRIBUTION = "attribution"
+    LDS = "lds"
+
+    @classmethod
+    def _missing_(cls, value):
+        if value == "hessian":
+            return cls.ERROR_ANALYSIS
+        return None
+
+
 @dataclass
-class ExperimentConfig:
-    """Top-level experiment configuration."""
+class LDSConfig:
+    """ELSO-specific parameters for the ``LDS`` analysis stage.
+
+    Shared-run fields (``dataset``, ``seed``, ``models``, ``epochs``,
+    ``results_output_dir``) live on the top-level :class:`AnalysisConfig` and
+    are not duplicated here. Attribution-score files are located via either the
+    default per-model path ``{model_dir}/attribution_scores/{epoch_label}/``,
+    the top-level ``AnalysisConfig.attribution_dir``, or this stage's
+    ``override_attribution_dirs`` — run the ``ATTRIBUTION`` stage first, or
+    drop per-method ``.npy`` files into the expected directory by hand.
+    """
+
+    num_subsets: int = 100
+    reps_per_model: int = 1
+    subset_fraction: float = 0.5
+    num_test_examples: int = 50
+    # Cache rep-averaged per-query losses alongside the model directory so
+    # subsequent runs with different attribution files can reuse them.
+    cache_elso: bool = True
+    # Override list of base directories to read attribution files from. Each
+    # entry resolves to ``{dir}/{model_basename}/{epoch_label}/`` (a directory
+    # of per-method ``.npy`` files). When None, falls back to
+    # ``AnalysisConfig.attribution_dir`` (if set) or the default
+    # per-model path.
+    override_attribution_dirs: Optional[List[str]] = None
+
+    def __post_init__(self):
+        if self.num_subsets <= 0:
+            raise ValueError("num_subsets must be positive")
+        if not 0.0 < self.subset_fraction < 1.0:
+            raise ValueError("subset_fraction must be in (0, 1)")
+        if self.num_test_examples <= 0:
+            raise ValueError("num_test_examples must be positive")
+
+
+@dataclass
+class AnalysisConfig:
+    """Unified top-level config for ``experiments.analysis``.
+
+    Iterates ``models × epochs`` once and dispatches to the requested
+    ``stages`` per pair. Stage-specific configs are only consulted when the
+    corresponding stage is listed in ``stages``.
+    """
 
     # Experiment identification
-    experiment_name: str = "experiment"
+    experiment_name: str = "analysis"
     seed: int = 42
 
     # Dataset
@@ -363,13 +460,30 @@ class ExperimentConfig:
         )
     )
 
-    # List of model_directories with model checkpoints and model definition
+    # Iteration axis — shared across stages
     models: List[str] = field(default_factory=list)
+    epochs: Optional[List[int]] = None  # None → final checkpoint only
 
-    # Which different approaches to compare and analyze
-    hessian_analysis: HessianAnalysisConfig = field(
-        default_factory=HessianAnalysisConfig
+    # Which stages to run, and their per-stage configs
+    stages: List[AnalysisStage] = field(default_factory=list)
+    error_analysis: HessianAnalysisConfig = field(default_factory=HessianAnalysisConfig)
+    hessian: Optional[HessianAnalysisConfig] = None
+    attribution: HessianEstimatorsConfig = field(
+        default_factory=HessianEstimatorsConfig
     )
+    lds: LDSConfig = field(default_factory=LDSConfig)
 
-    # If specified, allow for analyzing the different checkpoints saved during training
-    epochs: Optional[List[int]] = None
+    # Base directory to write attribution files to. When set, the ATTRIBUTION
+    # stage writes per-method ``.npy`` files into
+    # ``{attribution_dir}/{model_basename}/{epoch_label}/`` instead of the
+    # default ``{model_dir}/attribution_scores/{epoch_label}/``.
+    # Also used as the default LDS read dir when
+    # ``lds.override_attribution_dirs`` is None.
+    attribution_dir: Optional[str] = None
+
+    # Storage — one combined JSON per invocation, only stage keys that ran
+    results_output_dir: str = "experiments/results/analysis"
+
+    def __post_init__(self):
+        if self.hessian is not None:
+            self.error_analysis = self.hessian
