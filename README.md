@@ -27,7 +27,7 @@ uv sync
 ### Run
 
 ```bash
-uv run python main.py
+python main.py
 ```
 
 ## Development
@@ -45,19 +45,19 @@ uv add --dev pytest
 ### Running Tests
 
 ```bash
-uv run pytest
+pytest
 ```
 
 ### Code Formatting
 
 ```bash
-uv run black .
+black .
 ```
 
 ### Linting
 
 ```bash
-uv run ruff check .
+ruff check .
 ```
 
 ## Project Structure
@@ -78,7 +78,6 @@ my-project/
 | `uv sync` | Install/update all dependencies |
 | `uv add <package>` | Add a new dependency |
 | `uv remove <package>` | Remove a dependency |
-| `uv run <command>` | Run a command in the virtual environment |
 | `uv python list` | List available Python versions |
 
 ## Troubleshooting
