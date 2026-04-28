@@ -63,7 +63,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import asdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import hydra
 import yaml
@@ -76,7 +76,7 @@ from experiments.config_builder import (
 )
 from experiments.utils import cleanup_memory, to_dataclass
 from src.config import LossType, ModelConfig, TrainingExperimentConfig
-from src.utils.data.data import Dataset, DownloadableDataset
+from src.utils.data.data import Dataset, ResolvedSplit, normalize_for_loss, resolve_split
 from src.utils.loss import get_loss
 from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
@@ -124,6 +124,7 @@ def train_single_model(
     val_dataset: Dataset,
     seed: int,
     save_epochs: List[int],
+    dataset_info: Optional[Dict] = None,
 ) -> Dict:
     """Train a single model and return its results."""
 
@@ -174,7 +175,10 @@ def train_single_model(
         metadata = {
             "val_loss": float(val_loss),
             "val_accuracy": float(val_acc),
+            "seed": int(seed),
         }
+        if dataset_info is not None:
+            metadata["dataset"] = dataset_info
     else:
         val_loss = evaluate_loss(
             model,
@@ -199,7 +203,10 @@ def train_single_model(
         )
         metadata = {
             "val_loss": float(val_loss),
+            "seed": int(seed),
         }
+        if dataset_info is not None:
+            metadata["dataset"] = dataset_info
     metadata.update({"num_parameters": model.num_params})
 
     save_model_checkpoint(
@@ -308,31 +315,25 @@ def main(cfg: DictConfig):
                 model_config, models_base_dir, seed=config.seed
             )
 
-    # Load dataset
-    dataset = DownloadableDataset.load(
-        dataset=config.dataset.name,
-        directory=config.dataset.path,
-        store_on_disk=config.dataset.store_on_disk,
+    # Resolve (or build + cache) the train/test split on disk.
+    split: ResolvedSplit = resolve_split(config.dataset, seed=config.seed)
+    logger.info(
+        f"Dataset {config.dataset.name.value}: split_id={split.split_id}, "
+        f"n_train={len(split.train)}, n_test={len(split.test)}"
     )
-    dataset_cls = type(dataset)
-    train_ds, val_ds = dataset.train_test_split(
-        test_size=config.dataset.test_size, seed=config.seed
-    )
-    train_inputs, train_targets = train_ds.inputs, train_ds.targets
-    val_inputs, val_targets = val_ds.inputs, val_ds.targets
 
-    # Normalize data for regression tasks
-    if model_config.loss == LossType.MSE:
-        train_inputs, val_inputs = Dataset.normalize_data(train_inputs, val_inputs)
-        train_targets, val_targets = Dataset.normalize_data(train_targets, val_targets)
+    # Per-loss normalization (fit on train, apply to test).
+    loss = config.models[0].loss if config.models else LossType.CROSS_ENTROPY
+    train_ds, val_ds = normalize_for_loss(split.train, split.test, loss)
 
-    assert val_targets is not None, "Validation targets cannot be None"
-    assert train_targets is not None, "Training targets cannot be None"
-    assert val_inputs is not None, "Validation inputs cannot be None"
-    assert train_inputs is not None, "Training inputs cannot be None"
-    train_ds = dataset_cls(train_inputs, train_targets)
-    val_ds = dataset_cls(val_inputs, val_targets)
-    logger.info(f"Loaded dataset: {config.dataset.name.value}")
+    dataset_info = {
+        "name": config.dataset.name.value,
+        "path": config.dataset.path,
+        "split_id": split.split_id,
+        "split_dir": str(split.split_dir),
+        "train_dir": str(split.train_dir),
+        "test_dir": str(split.test_dir),
+    }
 
     # Train all models
     logger.info(f"{'#' * 70}")
@@ -357,6 +358,7 @@ def main(cfg: DictConfig):
             val_dataset=val_ds,
             seed=config.seed,
             save_epochs=config.save_epochs,
+            dataset_info=dataset_info,
         )
         training_results.append(result)
 

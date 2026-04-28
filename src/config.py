@@ -50,6 +50,13 @@ class OptimizerType(str, Enum):
     SGD_SCHEDULE_COSINE = "sgd_schedule_cosine"
 
 
+class LRSchedule(str, Enum):
+    """Learning-rate schedule to apply on top of the base optimizer."""
+
+    NONE = "none"
+    COSINE = "cosine"
+
+
 class HessianApproximationMethod(str, Enum):
     """Available Hessian approximation methods."""
 
@@ -150,6 +157,7 @@ class TrainingConfig:
     optimizer: OptimizerType = OptimizerType.ADAMW
     epochs: int = 500
     batch_size: int = 128
+    lr_schedule: LRSchedule = LRSchedule.NONE
 
     def __post_init__(self):
         if self.epochs <= 0:
