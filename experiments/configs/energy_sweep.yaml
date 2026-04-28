@@ -1,4 +1,3 @@
-base_output_dir: experiments/data/
 dataset:
   name: energy
   path: experiments/datasets/energy

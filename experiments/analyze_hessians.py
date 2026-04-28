@@ -20,6 +20,7 @@ from jax.random import PRNGKey
 
 from tqdm.auto import tqdm
 
+from experiments import paths, provenance
 from experiments.utils import block_tree, json_safe, to_dataclass
 from src.config import (
     ComputationType,
@@ -98,6 +99,7 @@ def collect_activations_gradients(
     loss_fn,
     analysis_cfg: HessianAnalysisConfig,
     collector_dir: str,
+    collector_dir_corr: str,
     seed: int,
 ):
     """Run the primary collector; also run `_corr` when strategy is MCMC."""
@@ -123,7 +125,7 @@ def collect_activations_gradients(
 
     primary = _collect(collector_dir, PRNGKey(seed))
     if strategy == PseudoTargetGenerationStrategy.MCMC:
-        corr = _collect(f"{collector_dir}_corr", PRNGKey(seed + 1))
+        corr = _collect(collector_dir_corr, PRNGKey(seed + 1))
     else:
         corr = primary
     logger.info("collected acts/grads → %s%s", collector_dir,
@@ -252,13 +254,6 @@ def compare_ihvps(
     return out, round_trip
 
 
-def resolve_collector_dir(model_dir: str, epoch: Optional[int]) -> str:
-    d = os.path.join(model_dir, "collector")
-    if epoch is not None:
-        d = os.path.join(d, f"epoch_{epoch}")
-    return d
-
-
 def compute_influence_scores(
     ctx: HessianCtx,
     methods: List[HessianApproximationMethod],
@@ -266,14 +261,14 @@ def compute_influence_scores(
     test_flat_grads,
     damping: Optional[float],
     pseudo_inverse_factor: Optional[float],
-    output_dir: str,
+    run_id: str,
     model_tag: str,
 ) -> Dict[str, str]:
     """Per-method `(n_train,)` influence score (mean over query dim), saved
-    as `.npy`.
+    as `.npy` under `outputs/runs/<run_id>/influence/`.
     """
-    os.makedirs(output_dir, exist_ok=True)
-    paths: Dict[str, str] = {}
+    paths.influence_dir(run_id).mkdir(parents=True, exist_ok=True)
+    influence_paths: Dict[str, str] = {}
     pbar = tqdm(methods, desc="influence")
     for approx in pbar:
         pbar.set_postfix_str(approx.value)
@@ -285,11 +280,11 @@ def compute_influence_scores(
             pseudo_inverse_factor=pseudo_inverse_factor,
         )  # (n_test, n_train)
         vec = np.asarray(jnp.mean(matrix, axis=0))  # (n_train,)
-        path = os.path.join(output_dir, f"{model_tag}_{approx.value}.npy")
-        np.save(path, vec)
-        paths[approx.value] = path
+        path = paths.influence_path(run_id, model_tag, approx.value)
+        np.save(str(path), vec)
+        influence_paths[approx.value] = str(path)
 
-    return paths
+    return influence_paths
 
 
 def main(models_config_path: str, analysis_config_path: str) -> None:
@@ -297,7 +292,7 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
     analysis_raw = load_yaml(analysis_config_path)
 
     seed: int = models_cfg["seed"]
-    models: List[str] = models_cfg["models"]
+    model_ids: List[str] = models_cfg["models"]
     epochs: Optional[List[int]] = (
         models_cfg.get("intermediate_epochs") or models_cfg.get("epochs")
     )
@@ -306,23 +301,41 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
     analysis_cfg: HessianAnalysisConfig = to_dataclass(
         HessianAnalysisConfig, analysis_raw["hessian_analysis"]
     )  # type: ignore
+    dataset_name = dataset_cfg.name.value
 
     base_train, base_test = load_train_test(dataset_cfg, seed)
     logger.info(
         "dataset %s: N_train=%d, N_test=%d",
-        dataset_cfg.name.value,
+        dataset_name,
         base_train.inputs.shape[0],
         base_test.inputs.shape[0],
     )
 
     all_results: List[Dict] = []
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    run_id = time.strftime("%Y%m%d-%H%M%S")
+    run_dir = paths.run_dir(run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    code_info = provenance.git_info()
 
-    for model_dir, epoch in model_epoch_pairs(models, epochs):
+    comp_cfg = analysis_cfg.computation_config
+    strategy_str = comp_cfg.pseudo_target_generation_strategy.value
+    reps = comp_cfg.pseudo_target_generation_repetitions
+
+    for model_id, epoch in model_epoch_pairs(model_ids, epochs):
+        model_dir = str(paths.model_dir(dataset_name, model_id))
         params, model, model_config, metadata = load_model_checkpoint(
             model_dir, epoch=epoch
         )
         tag = f"epoch_{epoch}" if epoch is not None else "final"
+        ckpt_path = (
+            paths.epoch_dir(dataset_name, model_id, epoch) / "checkpoint.msgpack"
+            if epoch is not None
+            else paths.model_dir(dataset_name, model_id) / "checkpoint.msgpack"
+        )
+        result_model_hash = provenance.model_hash(ckpt_path)
+        result_config_hash = provenance.config_hash(
+            dataset_cfg, analysis_cfg, seed, model_id, epoch
+        )
         logger.info("")
         logger.info("=" * 70)
         logger.info(
@@ -337,7 +350,14 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             base_train, base_test, model_config.loss
         )
         loss_fn = get_loss(model_config.loss)
-        collector_dir = resolve_collector_dir(model_dir, epoch)
+        collector_dir = str(
+            paths.collector_dir(dataset_name, model_id, epoch, strategy_str, reps)
+        )
+        collector_dir_corr = str(
+            paths.collector_dir(
+                dataset_name, model_id, epoch, strategy_str, reps, corr=True
+            )
+        )
 
         collector_data, collector_data_corr = collect_activations_gradients(
             model=model,
@@ -346,6 +366,7 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             loss_fn=loss_fn,
             analysis_cfg=analysis_cfg,
             collector_dir=collector_dir,
+            collector_dir_corr=collector_dir_corr,
             seed=seed,
         )
 
@@ -368,18 +389,16 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             loss_fn=loss_fn,
         )
 
-        build_base_dir = os.path.join(model_config.directory, "collector")
-        if epoch is not None:
-            build_base_dir = os.path.join(build_base_dir, f"epoch_{epoch}")
-
+        # Hessian computer factors (kfac, ekfac, ...) cache one level inside
+        # the collector dir, so the raw collector data and the derived
+        # per-method factors don't share a namespace.
         ctx = HessianCtx(
             collector_data=collector_data,
             collector_data_corr=collector_data_corr,
             model_ctx=model_ctx,
-            build_base_dir=build_base_dir,
+            build_base_dir=os.path.join(collector_dir, "factors"),
         )
 
-        comp_cfg = analysis_cfg.computation_config
         damping, pif = resolve_damping(ctx, analysis_cfg)
         if damping is not None:
             logger.info("damping=%.6f", damping)
@@ -428,24 +447,26 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             all_methods = list(dict.fromkeys(
                 list(comp_cfg.approximators) + list(comp_cfg.comparison_references)
             ))
-            model_tag = f"{model_config.get_model_display_name()}_{tag}"
-            influence_dir = os.path.join(analysis_cfg.results_output_dir, "influence")
-            paths = compute_influence_scores(
+            model_tag = f"{model_id}_{tag}"
+            influence_paths = compute_influence_scores(
                 ctx=ctx,
                 methods=all_methods,
                 train_flat_grads=train_flat_grads,
                 test_flat_grads=test_flat_grads,
                 damping=damping,
                 pseudo_inverse_factor=pif,
-                output_dir=influence_dir,
+                run_id=run_id,
                 model_tag=model_tag,
             )
-            influence_section = {"paths": paths}
+            influence_section = {"paths": influence_paths}
 
         all_results.append({
+            "model_id": model_id,
             "model_name": model_config.get_model_display_name(),
             "model_directory": model_dir,
             "epoch": epoch,
+            "config_hash": result_config_hash,
+            "model_hash": result_model_hash,
             "model_config": asdict(model_config),
             "num_parameters": model.num_params,
             "metadata": metadata or {},
@@ -460,13 +481,12 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             },
         })
 
-    results_dir = analysis_cfg.results_output_dir
-    os.makedirs(results_dir, exist_ok=True)
-    output_file = os.path.join(results_dir, f"{timestamp}.json")
+    output_file = run_dir / "results.json"
     with open(output_file, "w") as f:
         json.dump(
             {
-                "timestamp": timestamp,
+                "run_id": run_id,
+                "code": code_info,
                 "models_config": models_config_path,
                 "analysis_config": analysis_config_path,
                 "hessian_config": asdict(analysis_cfg),

@@ -1,0 +1,11 @@
+dataset:
+  name: sklearn_digits
+  path: experiments/datasets/sklearn_digits
+  test_size: 0.1
+  store_on_disk: true
+seed: 42
+# Model IDs (no path); resolved via paths.model_dir(dataset.name, model_id).
+models:
+  - mlp_fec568fb74dc
+intermediate_epochs:
+  - 1000

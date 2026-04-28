@@ -87,12 +87,16 @@ def _format_metric_name(metric: str) -> str:
 
 
 def _build_epoch_data(data: dict, reference: str):
-    epoch_data = defaultdict(lambda: defaultdict(lambda: {
-        "matrix": defaultdict(dict),
-        "hvp": defaultdict(dict),
-        "ihvp": defaultdict(dict),
-        "roundtrip": {},
-    }))
+    epoch_data = defaultdict(
+        lambda: defaultdict(
+            lambda: {
+                "matrix": defaultdict(dict),
+                "hvp": defaultdict(dict),
+                "ihvp": defaultdict(dict),
+                "roundtrip": {},
+            }
+        )
+    )
     model_params = {}
 
     for r in data["results"]:
@@ -124,8 +128,16 @@ def _build_epoch_data(data: dict, reference: str):
 # ── Figure builder ───────────────────────────────────────────────────────────
 
 
-def _build_model_figure(model_name, num_params, epoch, model_data, approxs,
-                        matrix_metrics, vector_metrics, ref_label):
+def _build_model_figure(
+    model_name,
+    num_params,
+    epoch,
+    model_data,
+    approxs,
+    matrix_metrics,
+    vector_metrics,
+    ref_label,
+):
     rows = []
     for m in matrix_metrics:
         rows.append(("matrix", m))
@@ -144,7 +156,8 @@ def _build_model_figure(model_name, num_params, epoch, model_data, approxs,
     total_height = row_height * n_rows + 1.2
 
     fig, axes = plt.subplots(
-        n_rows, 1,
+        n_rows,
+        1,
         figsize=(fig_width, total_height),
         constrained_layout=True,
     )
@@ -159,19 +172,20 @@ def _build_model_figure(model_name, num_params, epoch, model_data, approxs,
             raw = {a: metric_dict.get(a) for a in approxs}
 
         plot_vals = [
-            raw[a] if raw[a] is not None and raw[a] > 0 else np.nan
-            for a in approxs
+            raw[a] if raw[a] is not None and raw[a] > 0 else np.nan for a in approxs
         ]
 
         ax.bar(
-            x, plot_vals,
+            x,
+            plot_vals,
             color=[COLORS.get(a, f"C{i}") for i, a in enumerate(approxs)],
             alpha=0.85,
         )
         ax.set_xticks(x)
         ax.set_xticklabels(
             [LABELS.get(a, a) for a in approxs],
-            rotation=35, ha="right",
+            rotation=35,
+            ha="right",
         )
 
         if any(np.isfinite(v) for v in plot_vals):
@@ -186,7 +200,8 @@ def _build_model_figure(model_name, num_params, epoch, model_data, approxs,
 
     fig.suptitle(
         f"{model_name}  ({num_params} params)  \u2014  Epoch {epoch}  (vs {ref_label})",
-        fontsize=12, fontweight="bold",
+        fontsize=12,
+        fontweight="bold",
     )
     return fig
 
@@ -198,17 +213,20 @@ def main():
     parser = argparse.ArgumentParser(description="Plot Hessian analysis results.")
     parser.add_argument("results_json", help="Path to the results JSON file.")
     parser.add_argument(
-        "--output-dir", default=None,
+        "--output-dir",
+        default=None,
         help="Directory to save plots (default: same directory as input JSON).",
     )
     parser.add_argument(
-        "--reference", default="exact",
+        "--reference",
+        default="exact",
         help="Reference method for comparisons (default: exact).",
     )
     parser.add_argument(
-        "--approxs", default=None,
+        "--approxs",
+        default=None,
         help="Comma-separated approximators to include, in plot order "
-             "(default: all found, ordered by APPROX_ORDER).",
+        "(default: all found, ordered by APPROX_ORDER).",
     )
     args = parser.parse_args()
 
@@ -223,10 +241,12 @@ def main():
     epoch_data, model_params = _build_epoch_data(data, args.reference)
 
     matrix_metrics = data["hessian_config"]["matrix_config"]["metrics"]
-    vector_metrics = [m.lower() for m in data["hessian_config"]["vector_config"]["metrics"]]
+    vector_metrics = [
+        m.lower() for m in data["hessian_config"]["vector_config"]["metrics"]
+    ]
 
     ref_label = args.reference.replace("_", " ").title()
-    ts = data["timestamp"]
+    ts = "s"
 
     all_approxs = set()
     for epoch_models in epoch_data.values():
@@ -248,9 +268,14 @@ def main():
         models = sorted(epoch_data[epoch].keys(), key=lambda m: model_params[m])
         for model in models:
             fig = _build_model_figure(
-                model, model_params[model], epoch,
-                epoch_data[epoch][model], approxs,
-                matrix_metrics, vector_metrics, ref_label,
+                model,
+                model_params[model],
+                epoch,
+                epoch_data[epoch][model],
+                approxs,
+                matrix_metrics,
+                vector_metrics,
+                ref_label,
             )
             safe_name = model.replace(" ", "_").replace("/", "_")
             out_path = os.path.join(output_dir, f"{safe_name}_epoch{epoch}_{ts}.png")

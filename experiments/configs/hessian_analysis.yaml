@@ -28,6 +28,7 @@ hessian_analysis:
     regularization_strategy: auto_mean_eigenvalue_correction
     pseudo_target_generation_strategy: mcmc
     pseudo_target_generation_repetitions: 1
+    compute_influence: true
   matrix_config:
     metrics:
     - frobenius
@@ -36,7 +37,6 @@ hessian_analysis:
     - spectral_relative
     - cosine_similarity
     - trace_distance
-  results_output_dir: experiments/data/results/hessian_analysis/digits
   vector_config:
     metrics:
     - absolute_l2_diff

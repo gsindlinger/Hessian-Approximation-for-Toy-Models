@@ -70,6 +70,7 @@ import yaml
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 
+from experiments import paths
 from experiments.config_builder import (
     normalize_for_yaml,
     register_enum_representers,
@@ -301,7 +302,7 @@ def main(cfg: DictConfig):
     logger.info(f"{'=' * 70}")
 
     # Set model directories
-    models_base_dir = config.get_models_base_dir()
+    models_base_dir = str(paths.models_base_dir(config.dataset.name.value))
     for model_config in config.models:
         if model_config.directory is None:
             model_config.directory = generate_model_directory(
@@ -391,13 +392,13 @@ def main(cfg: DictConfig):
         f"Selected {len(best_models)} best models from {len(training_results)} total"
     )
 
-    # Save results
-    results_dir = config.get_results_dir()
+    # Save results — one dir per training invocation (full_results.json +
+    # best_models.yaml side by side).
+    results_dir = str(paths.training_run_dir(config.experiment_name, timestamp))
     os.makedirs(results_dir, exist_ok=True)
 
     # Save full training results
-    full_results_file = os.path.join(results_dir, "training", f"{timestamp}.json")
-    os.makedirs(os.path.dirname(full_results_file), exist_ok=True)
+    full_results_file = os.path.join(results_dir, "full_results.json")
     with open(full_results_file, "w") as f:
         json.dump(
             {
@@ -459,15 +460,12 @@ def main(cfg: DictConfig):
             )
 
     # Save best models as YAML for direct use in ExperimentConfig
-    best_models_yaml = os.path.join(results_dir, "best_models", f"{timestamp}.yaml")
+    best_models_yaml = os.path.join(results_dir, "best_models.yaml")
 
-    # Prepare model configs for YAML (just the model_config part)
-    models_for_yaml = []
-    for r in best_models:
-        model_directory = r["model_directory"]
-        models_for_yaml.append(model_directory)
+    # Emit model_ids (basenames) — analyze_hessians resolves them via
+    # paths.model_dir(dataset, model_id), so the YAML stays portable.
+    models_for_yaml = [os.path.basename(r["model_directory"]) for r in best_models]
 
-    os.makedirs(os.path.dirname(best_models_yaml), exist_ok=True)
     register_enum_representers()
     with open(best_models_yaml, "w") as f:
         yaml.dump(

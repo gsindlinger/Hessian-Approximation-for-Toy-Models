@@ -299,23 +299,22 @@ class HessianAnalysisConfig:
         default_factory=HessianComputationConfig
     )
 
-    # Storage
-    results_output_dir: str = "experiments/results"
-
 
 @dataclass
 class TrainingExperimentConfig:
-    """Top-level training experiment configuration (no Hessian analysis)."""
+    """Top-level training experiment configuration (no Hessian analysis).
+
+    Filesystem paths are resolved by `experiments.paths`, not by fields here.
+    """
 
     # Experiment identification
     experiment_name: str = "training_experiment"
-    base_output_dir: str = "experiments"
     seed: int = 42
 
     # Dataset
     dataset: DatasetConfig = field(
         default_factory=lambda: DatasetConfig(
-            name=DatasetEnum.DIGITS, path="experiments/data/datasets/digits"
+            name=DatasetEnum.DIGITS, path="experiments/datasets/digits"
         )
     )
 
@@ -329,25 +328,6 @@ class TrainingExperimentConfig:
     selection_metric: str = "val_accuracy"  # or "val_loss"
     selection_minimize: bool = False  # False for accuracy, True for loss
 
-    def get_results_dir(self) -> str:
-        return os.path.join(
-            self.base_output_dir,
-            "results",
-            self.experiment_name,
-            self.dataset.name.value,
-        )
-
-    def get_models_base_dir(self) -> str:
-        return os.path.join(
-            self.base_output_dir,
-            "models",
-            self.experiment_name,
-            self.dataset.name.value,
-        )
-
-    def get_dataset_dir(self) -> str:
-        return os.path.join(self.base_output_dir, self.experiment_name, "datasets")
-
 
 @dataclass
 class ExperimentConfig:
@@ -360,7 +340,7 @@ class ExperimentConfig:
     # Dataset
     dataset: DatasetConfig = field(
         default_factory=lambda: DatasetConfig(
-            name=DatasetEnum.DIGITS, path="experiments/data/datasets/digits"
+            name=DatasetEnum.DIGITS, path="experiments/datasets/digits"
         )
     )
 

@@ -14,7 +14,7 @@ done
 echo "Starting training sweep with config: $TRAINING_CONFIG_NAME"
 echo "Using config path: $TRAINING_CONFIG_PATH"
 
-BEST_MODELS_PATH=$(uv run python -m experiments.train_models \
+BEST_MODELS_PATH=$(python -m experiments.train_models \
     --config-name="$TRAINING_CONFIG_NAME" \
     --config-path="$TRAINING_CONFIG_PATH" \
     hydra.run.dir=experiments/logs/training/$TRAINING_CONFIG_NAME/$(date +%Y%m%d-%H%M%S) | \

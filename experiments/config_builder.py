@@ -193,7 +193,6 @@ def digits_sweep_all():
     config = TrainingExperimentConfig(
         experiment_name="digits_extensive_sweep_swiglu",
         seed=42,
-        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.SKLEARN_DIGITS,
             path="experiments/datasets/sklearn_digits",
@@ -237,7 +236,6 @@ def digits_sweep_better_hessian():
     config = TrainingExperimentConfig(
         experiment_name="digits_better_hessian_sweep",
         seed=12,
-        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.SKLEARN_DIGITS,
             path="experiments/datasets/sklearn_digits",
@@ -301,7 +299,6 @@ def digits_sweep_simple():
     config = TrainingExperimentConfig(
         experiment_name="debug_sweep",
         seed=42,
-        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.DIGITS,
             path="experiments/datasets/digits",
@@ -380,7 +377,6 @@ def digits_sweep():
     config = TrainingExperimentConfig(
         experiment_name="",
         seed=42,
-        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.DIGITS,
             path="experiments/datasets/digits",
@@ -469,7 +465,6 @@ def concrete_sweep():
     config = TrainingExperimentConfig(
         experiment_name="",
         seed=42,
-        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.CONCRETE,
             path="experiments/datasets/concrete",
@@ -594,8 +589,6 @@ def sweep_energy_single_model():
     config = sweep_concrete_single_model()
     config.experiment_name = "energy_single_model"
 
-    config.base_output_dir
-
     for model in config.models:
         model.input_dim = 8
         model.output_dim = 2
@@ -719,7 +712,6 @@ def hessian_analysis_sweep():
                     HessianApproximationMethod.GNH,
                 ],
             ),
-            results_output_dir="experiments/data/results/hessian_analysis",
         ),
     )
     return config
