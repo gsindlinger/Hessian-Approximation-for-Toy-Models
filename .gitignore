@@ -56,10 +56,9 @@ share/python-wheels/
 .installed.cfg
 *.egg
 
-# uv-related
+# uv-related (uv.lock is tracked — commit it to make rebuilds reproducible)
 .uv/
 .uv.lock
-uv.lock
 .uv-cache/
 uv_cache/
 .uv_venv/
