@@ -77,7 +77,12 @@ from experiments.config_builder import (
 )
 from experiments.utils import cleanup_memory, to_dataclass
 from src.config import LossType, ModelConfig, TrainingExperimentConfig
-from src.utils.data.data import Dataset, ResolvedSplit, normalize_for_loss, resolve_split
+from src.utils.data.data import (
+    Dataset,
+    ResolvedSplit,
+    normalize_for_loss,
+    resolve_split,
+)
 from src.utils.loss import get_loss
 from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
@@ -151,6 +156,9 @@ def train_single_model(
         logger.info(f"[LOAD] {model_config.get_model_display_name()} from {model_dir}")
     else:
         logger.info(f"[TRAIN] {model_config.get_model_display_name()}")
+        batch_size = model_config.training.batch_size
+        batches_per_epoch = (len(train_dataset) + batch_size - 1) // batch_size
+        total_steps = batches_per_epoch * model_config.training.epochs
         model, params, _ = train_model(
             model_config=model_config,
             dataloader=train_dataset.get_dataloader(
@@ -161,6 +169,8 @@ def train_single_model(
                 optimizer_enum=model_config.training.optimizer,
                 lr=model_config.training.learning_rate,
                 weight_decay=model_config.training.weight_decay,
+                lr_schedule=model_config.training.lr_schedule,
+                total_steps=total_steps,
             ),
             epochs=model_config.training.epochs,
             seed=model_seed,
