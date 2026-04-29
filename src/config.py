@@ -47,7 +47,6 @@ class OptimizerType(str, Enum):
     SGD = "sgd"
     ADAM = "adam"
     ADAMW = "adamw"
-    SGD_SCHEDULE_COSINE = "sgd_schedule_cosine"
 
 
 class LRSchedule(str, Enum):

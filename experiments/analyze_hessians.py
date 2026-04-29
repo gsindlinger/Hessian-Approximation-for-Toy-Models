@@ -113,6 +113,12 @@ def _read_model_dataset_info(model_dir: str) -> Optional[Dict]:
 def resolve_shared_dataset(model_dirs: List[str]) -> Dict:
     """Read each model's saved dataset block; warn if any disagree, return the
     first one."""
+    if not model_dirs:
+        raise ValueError(
+            "No model directories were provided for Hessian analysis. "
+            "Check that the models YAML contains a non-empty 'models' list."
+        )
+
     infos: List[Tuple[str, Optional[Dict]]] = [
         (m, _read_model_dataset_info(m)) for m in model_dirs
     ]

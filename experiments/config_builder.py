@@ -14,8 +14,6 @@ from simple_parsing import ArgumentParser
 from src.config import (
     ActivationFunction,
     ComputationType,
-    PseudoTargetGenerationStrategy,
-    RegularizationStrategy,
     DatasetConfig,
     DatasetEnum,
     ExperimentConfig,
@@ -27,6 +25,8 @@ from src.config import (
     ModelArchitecture,
     ModelConfig,
     OptimizerType,
+    PseudoTargetGenerationStrategy,
+    RegularizationStrategy,
     TrainingConfig,
     TrainingExperimentConfig,
     VectorAnalysisConfig,
@@ -236,7 +236,7 @@ def digits_sweep_better_hessian():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="digits_better_hessian_sweep",
-        model_seed=12,
+        model_model_seed=12,
         base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.SKLEARN_DIGITS,
@@ -695,6 +695,7 @@ def hessian_analysis_sweep():
         model_seed=42,
         models=[],
         hessian_analysis=HessianAnalysisConfig(
+            analysis_seed=42,
             vector_config=VectorAnalysisConfig(
                 num_samples=500,
                 sampling_method=VectorSamplingMethod.GRADIENTS,
