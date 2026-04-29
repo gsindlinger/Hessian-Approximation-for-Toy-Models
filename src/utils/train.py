@@ -63,8 +63,13 @@ def train_model(
     epochs: int,
     seed: int = 42,
     save_epochs: Optional[List[int]] = None,
+    save_checkpoints: bool = True,
 ) -> Tuple[ApproximationModel, Dict, List]:
-    """Train the model."""
+    """Train the model.
+
+    Set ``save_checkpoints=False`` for temporary fits that should not write to
+    ``model_config.directory``.
+    """
 
     model = ModelRegistry.get_model(model_config=model_config, seed=seed)
 
@@ -98,7 +103,9 @@ def train_model(
                 f"Epoch {epoch}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"
             )
         # Save checkpoint if required
-        if (save_epochs is not None and epoch in save_epochs) or (epoch == epochs):
+        if save_checkpoints and (
+            (save_epochs is not None and epoch in save_epochs) or (epoch == epochs)
+        ):
             assert isinstance(state.params, Dict)
             save_model_checkpoint(
                 model_config=model_config,

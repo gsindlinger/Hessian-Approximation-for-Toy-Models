@@ -26,7 +26,8 @@ import yaml
 from jax.random import PRNGKey, permutation
 from tqdm.auto import tqdm
 
-from experiments import paths, provenance, results as results_db
+from experiments import paths, provenance
+from experiments import results as results_db
 from experiments.utils import block_tree, json_safe, to_dataclass
 from src.config import (
     ComputationType,
@@ -61,6 +62,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Model + dataset metadata helpers
 # ---------------------------------------------------------------------------
+
 
 def _find_model_dir(model_id: str) -> str:
     """Resolve a bare `model_id` to its on-disk directory by globbing
@@ -157,7 +159,9 @@ def model_epoch_pairs(
             else:
                 logger.warning(
                     "model %s has no checkpoint at epoch=%d (saved=%s); skipping",
-                    m, e, saved,
+                    m,
+                    e,
+                    saved,
                 )
     return pairs
 
@@ -165,6 +169,7 @@ def model_epoch_pairs(
 # ---------------------------------------------------------------------------
 # Collector + Hessian context
 # ---------------------------------------------------------------------------
+
 
 def _has_cached_collection(save_dir: str) -> bool:
     return os.path.exists(
@@ -223,9 +228,7 @@ def collect_activations_gradients(
             "analysis_rng_seed": int(analysis_seed + 1),
             "role": "corr",
         }
-        corr = _collect(
-            collector_dir_corr, PRNGKey(analysis_seed + 1), corr_inputs
-        )
+        corr = _collect(collector_dir_corr, PRNGKey(analysis_seed + 1), corr_inputs)
     else:
         corr = primary
     logger.info(
@@ -292,6 +295,7 @@ def resolve_damping(
 # ---------------------------------------------------------------------------
 # Comparison + influence
 # ---------------------------------------------------------------------------
+
 
 def compare_matrices(
     ctx: HessianCtx,
@@ -420,6 +424,7 @@ def compute_influence_scores(
 # YAML / overrides
 # ---------------------------------------------------------------------------
 
+
 def load_yaml(path: str) -> dict:
     with open(path, "r") as f:
         return yaml.safe_load(f)
@@ -462,6 +467,7 @@ def _apply_overrides(
 # main
 # ---------------------------------------------------------------------------
 
+
 def main(
     models_config_path: str,
     analysis_config_path: str,
@@ -486,7 +492,9 @@ def main(
     dataset_name: str = dataset_info["name"]
     logger.info(
         "dataset %s (split_id=%s, train_dir=%s)",
-        dataset_name, dataset_info["split_id"], dataset_info["train_dir"],
+        dataset_name,
+        dataset_info["split_id"],
+        dataset_info["train_dir"],
     )
 
     run_id = time.strftime("%Y%m%d-%H%M%S")
@@ -538,7 +546,9 @@ def main(
         logger.info("=" * 70)
         logger.info(
             "  %s  (%s)  num_params=%d",
-            model_config.get_model_display_name(), tag, model.num_params,
+            model_config.get_model_display_name(),
+            tag,
+            model.num_params,
         )
         logger.info("=" * 70)
 
@@ -546,12 +556,15 @@ def main(
             skip_if_exists
             and code_info.get("sha")
             and results_db.result_exists(
-                db, config_hash=result_config_hash, code_sha=code_info["sha"],
+                db,
+                config_hash=result_config_hash,
+                code_sha=code_info["sha"],
             )
         ):
             logger.info(
                 "  SKIP — config_hash=%s already computed on code_sha=%s",
-                result_config_hash, code_info["sha"],
+                result_config_hash,
+                code_info["sha"],
             )
             continue
 
@@ -582,18 +595,32 @@ def main(
             )
             logger.info(
                 "  collector subset: %d / %d (analysis_seed=%d)",
-                subset_size, n_full, analysis_seed,
+                subset_size,
+                n_full,
+                analysis_seed,
             )
         else:
             dataset_for_collector = train_ds
 
         loss_fn = get_loss(model_config.loss)
+
+        # Collector runs over the training set (Hessian/Fisher are estimated on
+        # train data).
+        analysis_seed = analysis_cfg.analysis_seed
         collector_dir = str(
-            paths.collector_dir(dataset_name, model_id, epoch, strategy_str, reps)
+            paths.collector_dir(
+                dataset_name, model_id, epoch, strategy_str, reps, seed=analysis_seed
+            )
         )
         collector_dir_corr = str(
             paths.collector_dir(
-                dataset_name, model_id, epoch, strategy_str, reps, corr=True
+                dataset_name,
+                model_id,
+                epoch,
+                strategy_str,
+                reps,
+                seed=analysis_seed,
+                corr=True,
             )
         )
         cache_inputs_base = {
@@ -603,9 +630,9 @@ def main(
             "model_id": model_id,
             "epoch": epoch,
             "strategy": strategy_str,
+            "analysis_seed": analysis_seed,
             "repetitions": int(reps),
         }
-
         collector_data, collector_data_corr = collect_activations_gradients(
             model=model,
             params=params,
@@ -634,7 +661,10 @@ def main(
             logger.warning(
                 "vector_config.num_samples=%d exceeds available data "
                 "(min(train=%d, comparison=%d)); clamping to %d",
-                requested, len(train_ds), len(comparison_ds), max_n,
+                requested,
+                len(train_ds),
+                len(comparison_ds),
+                max_n,
             )
         clamped_vec_cfg = replace(analysis_cfg.vector_config, num_samples=n_samples)
 
@@ -660,7 +690,10 @@ def main(
         )
 
         model_ctx = ModelContext.create(
-            model=model, params=params, dataset=train_ds, loss_fn=loss_fn,
+            model=model,
+            params=params,
+            dataset=train_ds,
+            loss_fn=loss_fn,
         )
 
         ctx = HessianCtx(
@@ -685,23 +718,34 @@ def main(
             logger.info("--- reference: %s ---", reference.value)
             if ComputationType.MATRIX in comp_cfg.computation_types:
                 res = compare_matrices(
-                    ctx, reference, comp_cfg.approximators,
+                    ctx,
+                    reference,
+                    comp_cfg.approximators,
                     analysis_cfg.matrix_config.metrics,
                 )
                 for metric, scores in res.items():
                     matrix_comparisons.setdefault(metric, {})[reference.value] = scores
             if ComputationType.HVP in comp_cfg.computation_types:
                 res = compare_hvps(
-                    ctx, reference, comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
+                    ctx,
+                    reference,
+                    comp_cfg.approximators,
+                    analysis_cfg.vector_config.metrics,
+                    grads_1,
+                    grads_2,
                 )
                 for metric, scores in res.items():
                     hvp_comparisons.setdefault(metric, {})[reference.value] = scores
             if ComputationType.IHVP in comp_cfg.computation_types:
                 res, rt = compare_ihvps(
-                    ctx, reference, comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
-                    damping, pif,
+                    ctx,
+                    reference,
+                    comp_cfg.approximators,
+                    analysis_cfg.vector_config.metrics,
+                    grads_1,
+                    grads_2,
+                    damping,
+                    pif,
                 )
                 for metric, scores in res.items():
                     ihvp_comparisons.setdefault(metric, {})[reference.value] = scores
@@ -710,14 +754,24 @@ def main(
         influence_section: Optional[Dict] = None
         if comp_cfg.compute_influence:
             train_flat_grads = compute_per_example_flat_grads(
-                model, params, train_ds.inputs, train_ds.targets, loss_fn,
+                model,
+                params,
+                train_ds.inputs,
+                train_ds.targets,
+                loss_fn,
             )
             test_flat_grads = compute_per_example_flat_grads(
-                model, params, test_ds.inputs, test_ds.targets, loss_fn,
+                model,
+                params,
+                test_ds.inputs,
+                test_ds.targets,
+                loss_fn,
             )
-            all_methods = list(dict.fromkeys(
-                list(comp_cfg.approximators) + list(comp_cfg.comparison_references)
-            ))
+            all_methods = list(
+                dict.fromkeys(
+                    list(comp_cfg.approximators) + list(comp_cfg.comparison_references)
+                )
+            )
             model_tag = f"{model_id}_{tag}"
             influence_paths = compute_influence_scores(
                 ctx=ctx,
@@ -731,26 +785,28 @@ def main(
             )
             influence_section = {"paths": influence_paths}
 
-        all_results.append({
-            "model_id": model_id,
-            "model_name": model_config.get_model_display_name(),
-            "model_directory": model_dir,
-            "epoch": epoch,
-            "config_hash": result_config_hash,
-            "model_hash": result_model_hash,
-            "model_config": asdict(model_config),
-            "num_parameters": model.num_params,
-            "metadata": metadata or {},
-            "damping": damping,
-            "pseudo_inverse_factor": pif,
-            "hessian_analysis": {
-                "matrix_comparisons": matrix_comparisons,
-                "hvp_comparisons": hvp_comparisons,
-                "ihvp_comparisons": ihvp_comparisons,
-                "ihvp_round_trip_approximation_errors": round_trip_errors,
-                "influence": influence_section,
-            },
-        })
+        all_results.append(
+            {
+                "model_id": model_id,
+                "model_name": model_config.get_model_display_name(),
+                "model_directory": model_dir,
+                "epoch": epoch,
+                "config_hash": result_config_hash,
+                "model_hash": result_model_hash,
+                "model_config": asdict(model_config),
+                "num_parameters": model.num_params,
+                "metadata": metadata or {},
+                "damping": damping,
+                "pseudo_inverse_factor": pif,
+                "hessian_analysis": {
+                    "matrix_comparisons": matrix_comparisons,
+                    "hvp_comparisons": hvp_comparisons,
+                    "ihvp_comparisons": ihvp_comparisons,
+                    "ihvp_round_trip_approximation_errors": round_trip_errors,
+                    "influence": influence_section,
+                },
+            }
+        )
 
         # Persist this result incrementally — ctrl-C mid-sweep keeps what's done.
         # Same (config_hash, code_sha) on rerun overwrites this row.
@@ -766,7 +822,8 @@ def main(
             dataset_name=dataset_name,
             dataset_test_size=(
                 float(dataset_info["test_size"])
-                if dataset_info.get("test_size") is not None else None
+                if dataset_info.get("test_size") is not None
+                else None
             ),
             collector_subset_size=int(comp_cfg.collector_subset_size),
             regularization_value=float(comp_cfg.regularization_value),
@@ -781,11 +838,13 @@ def main(
             num_parameters=int(model.num_params),
             val_loss=(
                 float((metadata or {}).get("val_loss"))
-                if metadata and metadata.get("val_loss") is not None else None
+                if metadata and metadata.get("val_loss") is not None
+                else None
             ),
             val_accuracy=(
                 float((metadata or {}).get("val_accuracy"))
-                if metadata and metadata.get("val_accuracy") is not None else None
+                if metadata and metadata.get("val_accuracy") is not None
+                else None
             ),
             params={
                 "model_config": asdict(model_config),
@@ -805,7 +864,9 @@ def main(
         )
         if influence_section is not None:
             results_db.append_influence(
-                db, result_id=result_id, method_to_path=influence_section["paths"],
+                db,
+                result_id=result_id,
+                method_to_path=influence_section["paths"],
             )
 
     output_file = run_dir / "results.json"
@@ -819,7 +880,9 @@ def main(
                 "hessian_config": asdict(analysis_cfg),
                 "results": all_results,
             },
-            f, indent=2, default=json_safe,
+            f,
+            indent=2,
+            default=json_safe,
         )
     logger.info("wrote results → %s", output_file)
     db.close()
@@ -829,25 +892,32 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--config", default="experiments/shared_models.yaml",
+        "--config",
+        default="experiments/shared_models.yaml",
         help="Models YAML (`models` field with list of model_ids).",
     )
     parser.add_argument(
-        "--analysis-config", default="experiments/configs/hessian_analysis.yaml",
+        "--analysis-config",
+        default="experiments/configs/hessian_analysis.yaml",
         help="Analysis YAML (HessianAnalysisConfig).",
     )
     parser.add_argument(
-        "--skip-if-exists", action="store_true",
+        "--skip-if-exists",
+        action="store_true",
         help="Skip (model_id, epoch) pairs whose config_hash already exists "
-             "in runs.db on the current code_sha.",
+        "in runs.db on the current code_sha.",
     )
     parser.add_argument(
-        "--override", action="append", default=[],
+        "--override",
+        action="append",
+        default=[],
         help="Repeatable. Override a YAML field, e.g. "
-             "--override analysis.computation_config.regularization_value=0.05.",
+        "--override analysis.computation_config.regularization_value=0.05.",
     )
     args = parser.parse_args()
     main(
-        args.config, args.analysis_config,
-        skip_if_exists=args.skip_if_exists, overrides=args.override,
+        args.config,
+        args.analysis_config,
+        skip_if_exists=args.skip_if_exists,
+        overrides=args.override,
     )

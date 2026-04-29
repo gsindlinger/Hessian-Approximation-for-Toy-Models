@@ -24,12 +24,16 @@ import pytest
 from jax.random import PRNGKey
 
 from src.config import (
+    LossType,
+    ModelArchitecture,
     ModelConfig,
+    OptimizerType,
     PseudoTargetGenerationStrategy,
+    TrainingConfig,
 )
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.ekfac import EKFACComputer
-from src.utils.data.data import Dataset
+from src.utils.data.data import Dataset, RandomRegressionDataset
 from src.utils.influence import compute_influence_matrix, compute_per_example_flat_grads
 from src.utils.lds import (
     aggregate_lds_scores,
@@ -96,7 +100,9 @@ def ekfac_computer(
         try_load=True,
         rng_key=PRNGKey(42),
     )
-    return EKFACComputer(compute_context=collector_data).build()
+    return EKFACComputer(
+        compute_context=collector_data, corr_context=collector_data
+    ).build()
 
 
 # ===========================================================================
@@ -487,6 +493,117 @@ class TestComputeInfluenceMatrix:
 class TestComputeElsoGroundTruth:
     """Lightweight integration test — trains tiny models on subset complements."""
 
+    @pytest.mark.parametrize("n_targets", [1, 3])
+    def test_vmap_regression_preserves_target_shape(self, monkeypatch, n_targets: int):
+        dataset = RandomRegressionDataset(
+            n_samples=12,
+            n_features=3,
+            n_targets=n_targets,
+            noise=0.1,
+            seed=11,
+        )
+        config = ModelConfig(
+            architecture=ModelArchitecture.LINEAR,
+            input_dim=dataset.input_dim(),
+            hidden_dim=None,
+            output_dim=dataset.output_dim(),
+            loss=LossType.MSE,
+            training=TrainingConfig(
+                learning_rate=1e-6,
+                optimizer=OptimizerType.SGD,
+                epochs=1,
+                batch_size=4,
+            ),
+        )
+
+        def strict_mse_loss(pred, target, reduction="mean"):
+            if pred.shape != target.shape:
+                raise ValueError(
+                    f"pred/target shape mismatch: {pred.shape} != {target.shape}"
+                )
+            per_sample = jnp.mean((pred - target) ** 2, axis=-1)
+            if reduction == "sum":
+                return jnp.sum(per_sample)
+            return jnp.mean(per_sample)
+
+        monkeypatch.setattr("src.utils.lds.get_loss", lambda _: strict_mse_loss)
+
+        n_query, K = 2, 2
+        subsets = generate_random_subsets(
+            dataset_size=len(dataset.inputs),
+            num_subsets=K,
+            subset_fraction=0.25,
+            seed=3,
+        )
+        delta_m = compute_elso_ground_truth(
+            model_config=config,
+            full_train_inputs=dataset.inputs,
+            full_train_targets=dataset.targets,
+            query_inputs=dataset.inputs[:n_query],
+            query_targets=dataset.targets[:n_query],
+            subsets=subsets,
+            reps_per_subset=1,
+            baseline_losses=np.zeros(n_query),
+            base_seed=4,
+            epochs=config.training.epochs,
+            use_vmap=True,
+        )
+
+        assert delta_m.shape == (n_query, K)
+        assert np.isfinite(delta_m).all()
+
+    def test_non_vmap_does_not_write_checkpoints(self, tmp_path):
+        dataset = RandomRegressionDataset(
+            n_samples=12,
+            n_features=3,
+            n_targets=1,
+            noise=0.1,
+            seed=13,
+        )
+        model_dir = tmp_path / "baseline_model"
+        model_dir.mkdir()
+        sentinel = model_dir / "baseline.txt"
+        sentinel.write_text("do not touch")
+        config = ModelConfig(
+            architecture=ModelArchitecture.LINEAR,
+            input_dim=dataset.input_dim(),
+            hidden_dim=None,
+            output_dim=dataset.output_dim(),
+            loss=LossType.MSE,
+            training=TrainingConfig(
+                learning_rate=1e-6,
+                optimizer=OptimizerType.SGD,
+                epochs=1,
+                batch_size=4,
+            ),
+            directory=str(model_dir),
+        )
+
+        n_query, K = 2, 2
+        subsets = generate_random_subsets(
+            dataset_size=len(dataset.inputs),
+            num_subsets=K,
+            subset_fraction=0.25,
+            seed=3,
+        )
+        delta_m = compute_elso_ground_truth(
+            model_config=config,
+            full_train_inputs=dataset.inputs,
+            full_train_targets=dataset.targets,
+            query_inputs=dataset.inputs[:n_query],
+            query_targets=dataset.targets[:n_query],
+            subsets=subsets,
+            reps_per_subset=1,
+            baseline_losses=np.zeros(n_query),
+            base_seed=4,
+            epochs=config.training.epochs,
+            use_vmap=False,
+        )
+
+        assert delta_m.shape == (n_query, K)
+        assert sentinel.read_text() == "do not touch"
+        assert not (model_dir / "epoch_1").exists()
+
     def test_output_shape(
         self,
         dataset: Dataset,
@@ -519,6 +636,7 @@ class TestComputeElsoGroundTruth:
             reps_per_subset=1,  # R=1 to keep the test fast
             baseline_losses=baseline,  # type: ignore
             base_seed=0,
+            epochs=config.training.epochs,
         )
         assert delta_m.shape == (n_query, K)  # type: ignore
 
@@ -549,6 +667,7 @@ class TestComputeElsoGroundTruth:
             reps_per_subset=1,
             baseline_losses=baseline,  # type: ignore
             base_seed=1,
+            epochs=config.training.epochs,
         )
         assert np.isfinite(delta_m).all()  # type: ignore
 
@@ -581,6 +700,7 @@ class TestComputeElsoGroundTruth:
             reps_per_subset=1,
             baseline_losses=baseline,  # type: ignore
             base_seed=2,
+            epochs=config.training.epochs,
         )
         # Δm values across subsets should vary (not all identical)
         for i in range(n_query):

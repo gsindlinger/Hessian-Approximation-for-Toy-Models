@@ -103,7 +103,7 @@ def _build_vmapped_elso_fn(
 
     def _eval_queries(p, query_x, query_y):
         def single(x, y):
-            return loss_fn(model.apply(p, x[None]), jnp.atleast_1d(y))
+            return loss_fn(model.apply(p, x[None]), y[None, ...])
 
         return jax.vmap(single)(query_x, query_y)
 
@@ -133,7 +133,9 @@ def _build_vmapped_elso_fn(
             )
 
             x_s = comp_x[perm_padded].reshape(n_batches, batch_size, -1)
-            y_s = comp_y[perm_padded].reshape(n_batches, batch_size)
+            y_s = comp_y[perm_padded].reshape(
+                (n_batches, batch_size) + comp_y.shape[1:]
+            )
             m_s = valid.reshape(n_batches, batch_size)
 
             def batch_step(carry, batch):
@@ -141,7 +143,16 @@ def _build_vmapped_elso_fn(
                 x, y, m = batch
 
                 def _loss(p):
-                    per_ex = loss_fn(model.apply(p, x), y, reduction="none")
+                    preds = model.apply(p, x)
+
+                    def _single_example_loss(pred_i, y_i):
+                        return loss_fn(
+                            pred_i[None, ...],
+                            y_i[None, ...],
+                            reduction="mean",
+                        )
+
+                    per_ex = jax.vmap(_single_example_loss)(preds, y)
                     return jnp.sum(per_ex * m) / jnp.maximum(jnp.sum(m), 1.0)
 
                 grads = jax.grad(_loss)(params)
@@ -167,6 +178,7 @@ def _build_elso_cache_key(
     reps_per_subset: int,
     seed: int,
     n_queries: int,
+    epochs: int,
 ) -> Dict:
     """Cache key capturing everything that influences ELSO rep_mean."""
     tr = model_config.training
@@ -177,7 +189,7 @@ def _build_elso_cache_key(
             "seed": seed,
         },
         "reps_per_subset": reps_per_subset,
-        "epochs": tr.epochs,
+        "epochs": epochs,
         "num_queries": n_queries,
         "training": {
             "optimizer": str(getattr(tr.optimizer, "value", tr.optimizer)),
@@ -203,17 +215,29 @@ def compute_elso_ground_truth(
     reps_per_subset: int,
     baseline_losses: np.ndarray,
     base_seed: int,
+    epochs: int,
     use_vmap: bool = True,
     cache_directory: Optional[str] = None,
 ) -> np.ndarray:
     """Compute Δm_j(z_q) = E_ξ[loss(z_q, θ(D\\S_j))] - loss(z_q, θ(D)).
 
-    Returns an array of shape (n_queries, K).
+    Complements are trained for ``epochs`` epochs so the complement model
+    matches the training duration of the baseline checkpoint loaded by the
+    caller. Returns an array of shape (n_queries, K).
     """
     n_queries = len(query_inputs)
     K = len(subsets)
-    epochs = model_config.training.epochs
     batch_size = model_config.training.batch_size
+
+    if K == 0:
+        raise ValueError("compute_elso_ground_truth requires at least one subset (K>0).")
+    subset_size = int(subsets[0].sum())
+    complement_size = len(full_train_inputs) - subset_size
+    if complement_size <= 0:
+        raise ValueError(
+            f"Complement is empty (|S_j|={subset_size}, N={len(full_train_inputs)}); "
+            "subset_fraction must be < 1.0 so each retraining set is non-empty."
+        )
 
     cache_path = (
         os.path.join(cache_directory, "rep_mean.npz")
@@ -240,7 +264,6 @@ def compute_elso_ground_truth(
             )
 
     loss_fn = get_loss(model_config.loss)
-    complement_size = len(full_train_inputs) - int(subsets[0].sum())
     # Both paths see every example each epoch (vmap pads + masks the partial
     # batch; the dataloader yields a partial last batch). Step counts match.
     total_steps = epochs * ceil(complement_size / batch_size)
@@ -315,6 +338,7 @@ def compute_elso_ground_truth(
                     ),
                     epochs=epochs,
                     seed=seed,
+                    save_checkpoints=False,
                 )
                 ckpt_rep_losses[r] = np.array(
                     evaluate_per_example_losses(
@@ -493,6 +517,12 @@ def compute_lds(config: LDSConfig) -> Dict:
     loss_fn = get_loss(model_config.loss)
     train_dataset, test_dataset = load_train_test_for_model(config.model)
 
+    # Complements must be trained to the same epoch as the baseline checkpoint;
+    # otherwise Δm conflates "removed S_j" with "trained for more epochs".
+    target_epochs = (
+        config.epoch if config.epoch is not None else model_config.training.epochs
+    )
+
     n_train = len(train_dataset.inputs)
     n_query = min(config.num_test_examples, len(test_dataset.inputs))
 
@@ -546,6 +576,7 @@ def compute_lds(config: LDSConfig) -> Dict:
                 reps_per_subset=config.reps_per_model,
                 seed=config.lds_seed,
                 n_queries=n_query,
+                epochs=target_epochs,
             ),
         )
         if config.cache_elso
@@ -562,6 +593,7 @@ def compute_lds(config: LDSConfig) -> Dict:
         reps_per_subset=config.reps_per_model,
         baseline_losses=baseline_losses,
         base_seed=config.lds_seed,
+        epochs=target_epochs,
         cache_directory=cache_directory,
     )
 

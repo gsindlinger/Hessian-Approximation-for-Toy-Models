@@ -111,9 +111,10 @@ def attribute(
     # same on-disk activations/gradients.
     collector_dir = collector_cache_dir(
         model_directory=model_directory,
-        pseudo_target_strategy=pseudo_target_strategy.value,
+        pseudo_target_strategy=pseudo_target_strategy,
         pseudo_target_repetitions=pseudo_target_repetitions,
         epoch=epoch,
+        seed=seed,
     )
     collector = CollectorActivationsGradients(
         model=model,
