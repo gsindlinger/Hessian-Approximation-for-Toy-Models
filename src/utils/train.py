@@ -5,6 +5,7 @@ import logging
 import os
 import pickle
 from functools import partial
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import jax
@@ -13,8 +14,6 @@ import optax
 from flax import serialization
 from flax.training import train_state
 from tqdm import tqdm
-
-from pathlib import Path
 
 from src.config import DatasetEnum, LossType, ModelConfig, RegularizationStrategy
 from src.utils.data.data import (
@@ -160,7 +159,7 @@ def _evaluate_per_example(
     loss_fn: Callable,
 ) -> jnp.ndarray:
     def single(x, y):
-        return loss_fn(apply_fn(params, x[None]), jnp.atleast_1d(y))
+        return loss_fn(apply_fn(params, x[None]), y[None, ...])
 
     return jax.vmap(single)(inputs, targets)
 

@@ -44,6 +44,18 @@ from src.utils.utils import elso_cache_dir
 logger = logging.getLogger(__name__)
 
 
+def _spearman_or_nan(actual: np.ndarray, predicted: np.ndarray) -> float:
+    """Return Spearman correlation, or NaN when it is mathematically undefined."""
+    actual = np.asarray(actual)
+    predicted = np.asarray(predicted)
+    if actual.size < 2 or predicted.size < 2:
+        return float("nan")
+    if np.all(actual == actual[0]) or np.all(predicted == predicted[0]):
+        return float("nan")
+    r, _ = spearmanr(actual, predicted)
+    return float(r) if not np.isnan(r) else float("nan")
+
+
 # ---------------------------------------------------------------------------
 # Subset generation
 # ---------------------------------------------------------------------------
@@ -228,17 +240,40 @@ def compute_elso_ground_truth(
     n_queries = len(query_inputs)
     K = len(subsets)
     batch_size = model_config.training.batch_size
+    n_train = len(full_train_inputs)
 
     if K == 0:
         raise ValueError("compute_elso_ground_truth requires at least one subset (K>0).")
-    subset_size = int(subsets[0].sum())
-    complement_size = len(full_train_inputs) - subset_size
-    if complement_size <= 0:
-        raise ValueError(
-            f"Complement is empty (|S_j|={subset_size}, N={len(full_train_inputs)}); "
-            "subset_fraction must be < 1.0 so each retraining set is non-empty."
-        )
 
+    for subset_idx, subset_mask in enumerate(subsets):
+        if not isinstance(subset_mask, np.ndarray):
+            raise TypeError(
+                f"Subset mask at index {subset_idx} must be a numpy.ndarray, "
+                f"got {type(subset_mask).__name__}."
+            )
+        if subset_mask.dtype != np.bool_:
+            raise ValueError(
+                f"Subset mask at index {subset_idx} must have boolean dtype, "
+                f"got {subset_mask.dtype}."
+            )
+        if subset_mask.ndim != 1:
+            raise ValueError(
+                f"Subset mask at index {subset_idx} must be 1D, got shape {subset_mask.shape}."
+            )
+        if len(subset_mask) != n_train:
+            raise ValueError(
+                f"Subset mask at index {subset_idx} has length {len(subset_mask)}, "
+                f"expected {n_train}."
+            )
+
+        subset_size = int(subset_mask.sum())
+        complement_size = n_train - subset_size
+        if complement_size <= 0:
+            raise ValueError(
+                f"Complement is empty for subset index {subset_idx} "
+                f"(|S_j|={subset_size}, N={n_train}); "
+                "subset_fraction must be < 1.0 so each retraining set is non-empty."
+            )
     cache_path = (
         os.path.join(cache_directory, "rep_mean.npz")
         if cache_directory is not None
@@ -298,8 +333,10 @@ def compute_elso_ground_truth(
             comp_x = jnp.asarray(full_train_inputs[~mask])
             comp_y = jnp.asarray(full_train_targets[~mask])
             if len(comp_x) == 0:
-                logger.warning("Subset %d: complement is empty — skipping.", j)
-                continue
+                raise ValueError(
+                    f"Subset {j}: complement is empty (|S_j|={int(mask.sum())}, "
+                    f"N={len(full_train_inputs)}); cannot compute ELSO ground truth."
+                )
             keys = jax.random.split(
                 PRNGKey(base_seed + j * reps_per_subset), reps_per_subset
             )
@@ -313,8 +350,10 @@ def compute_elso_ground_truth(
             comp_inputs = full_train_inputs[~mask]
             comp_targets = full_train_targets[~mask]
             if len(comp_inputs) == 0:
-                logger.warning("Subset %d: complement is empty — skipping.", j)
-                continue
+                raise ValueError(
+                    f"Subset {j}: complement is empty (|S_j|={int(mask.sum())}, "
+                    f"N={len(full_train_inputs)}); cannot compute ELSO ground truth."
+                )
             ckpt_rep_losses = np.zeros((reps_per_subset, n_queries))
             for r in range(reps_per_subset):
                 seed = base_seed + j * reps_per_subset + r
@@ -447,9 +486,9 @@ def aggregate_lds_scores(
     def _mean_lds_over_subsets(j_idx: np.ndarray) -> float:
         rs = []
         for i in range(n_queries):
-            r, _ = spearmanr(delta_m[i, j_idx], predicted[i, j_idx])
-            if not np.isnan(r):  # type: ignore
-                rs.append(float(r))  # type: ignore
+            r = _spearman_or_nan(delta_m[i, j_idx], predicted[i, j_idx])
+            if not np.isnan(r):
+                rs.append(r)
         return float(np.mean(rs)) if rs else float("nan")
 
     all_j = np.arange(K)
@@ -458,12 +497,12 @@ def aggregate_lds_scores(
     per_query_lds: List[float] = []
     num_undefined = 0
     for i in range(n_queries):
-        r, _ = spearmanr(delta_m[i], predicted[i])
-        if np.isnan(r):  # type: ignore
+        r = _spearman_or_nan(delta_m[i], predicted[i])
+        if np.isnan(r):
             num_undefined += 1
             per_query_lds.append(float("nan"))
         else:
-            per_query_lds.append(float(r))  # type: ignore
+            per_query_lds.append(r)
 
     bootstrap_means = [
         _mean_lds_over_subsets(rng.choice(K, size=K, replace=True))

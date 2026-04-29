@@ -15,6 +15,7 @@ Tests are split into two tiers:
     - compute_elso_ground_truth       (shape, Δm sign for removed vs kept)
 """
 
+import warnings
 from typing import Any, Callable, Dict, Tuple
 
 import jax
@@ -22,6 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.random import PRNGKey
+from scipy.stats import ConstantInputWarning
 
 from src.config import (
     LossType,
@@ -302,6 +304,20 @@ class TestAggregateLDSScores:
         dm = np.tile(np.arange(10, dtype=float), (3, 1))  # (3, 10)
         out = aggregate_lds_scores(dm, dm, n_bootstrap=100)
         assert out["mean_lds"] == pytest.approx(1.0, abs=1e-10)
+
+    def test_constant_rows_are_undefined_without_warning(self):
+        dm = np.ones((2, 3))
+        pred = np.array([[0.0, 1.0, 2.0], [5.0, 5.0, 5.0]])
+
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            out = aggregate_lds_scores(dm, pred, n_bootstrap=10)
+
+        assert out["num_undefined_queries"] == 2
+        assert out["num_valid_queries"] == 0
+        assert not any(
+            issubclass(w.category, ConstantInputWarning) for w in seen
+        )
 
 
 # ===========================================================================

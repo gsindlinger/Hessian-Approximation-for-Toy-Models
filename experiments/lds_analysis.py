@@ -130,15 +130,37 @@ def attribute(
         rng_key=PRNGKey(seed),
     )
 
+    # For MCMC, fit Λ on an independent collector run (different rng key) so
+    # the eigenvalue correction isn't overfit on the samples used for Q_A/Q_G.
+    # Deterministic strategies (EMPIRICAL_FISHER, ALL_CLASSES) reuse the same
+    # data — there is no sampling noise to decorrelate.
+    if pseudo_target_strategy == PseudoTargetGenerationStrategy.MCMC:
+        collector_dir_corr = collector_cache_dir(
+            model_directory=model_directory,
+            pseudo_target_strategy=pseudo_target_strategy,
+            pseudo_target_repetitions=pseudo_target_repetitions,
+            epoch=epoch,
+            seed=seed + 1,
+        )
+        collector_data_corr = collector.collect(
+            dataset=train_dataset,
+            save_directory=collector_dir_corr,
+            try_load=True,
+            rng_key=PRNGKey(seed + 1),
+        )
+    else:
+        collector_data_corr = collector_data
+
     # Damping: derived from EKFAC for AUTO_* strategies, identity for FIXED /
     # PSEUDO_INVERSE.
     if regularization_strategy in (
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
     ):
-        ekfac = EKFACComputer(compute_context=collector_data).build(
-            base_directory=collector_dir
-        )
+        ekfac = EKFACComputer(
+            compute_context=collector_data,
+            corr_context=collector_data_corr,
+        ).build(base_directory=collector_dir)
         damping, pseudo_inverse_factor = resolve_regularization(
             strategy=regularization_strategy,
             factor=regularization_value,
@@ -164,7 +186,9 @@ def attribute(
         collector_data=collector_data,
         model_ctx=model_ctx,
     )
-    computer = HessianComputerRegistry.get_computer(method, compute_ctx)
+    computer = HessianComputerRegistry.get_computer(
+        method, compute_ctx, corr_context=collector_data_corr
+    )
     if not isinstance(computer, (HessianEstimator, HessianComputer)):
         raise ValueError(f"Method {method.value} has no IHVP support.")
     if isinstance(computer, HessianEstimator):
