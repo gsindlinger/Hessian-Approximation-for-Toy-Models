@@ -1,32 +1,39 @@
-"""Hessian analysis pipeline (stepwise rewrite of experiments/hessian_analysis.py).
+"""Self-contained replacement for the broken `analyze_hessians.main()`.
 
-Step 1: load models from a models YAML.
-Step 2: load the on-disk train/test split that training cached, and collect
-        activations/gradients (plus a second independent `_corr` run for MCMC
-        eigenvalue correction).
+Run via `experiments/new_run.sh` or directly:
+    python -m experiments.analyze_hessians_v2 \\
+        --config experiments/shared_models.yaml \\
+        --analysis-config experiments/configs/hessian_analysis.yaml
+
+Once verified, this file's contents can supersede `analyze_hessians.py`
+entirely — no imports from the legacy module anywhere.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import logging
 import os
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import jax.numpy as jnp
+import numpy as np
 import yaml
 from jax.random import PRNGKey, permutation
-
 from tqdm.auto import tqdm
 
 from experiments import paths, provenance, results as results_db
 from experiments.utils import block_tree, json_safe, to_dataclass
 from src.config import (
     ComputationType,
-    DatasetEnum,
     HessianAnalysisConfig,
     HessianApproximationMethod,
     LossType,
+    ProbeSource,
     PseudoTargetGenerationStrategy,
     RegularizationStrategy,
 )
@@ -38,6 +45,7 @@ from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import sample_vectors
 from src.utils.data.data import (
     Dataset,
+    DatasetEnum,
     load_split_from_disk,
     normalize_for_loss,
 )
@@ -48,89 +56,61 @@ from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.train import load_model_checkpoint
 
 logger = logging.getLogger(__name__)
-logging.getLogger("src.hessians.collector").setLevel(logging.WARNING)
 
 
-def load_yaml(path: str) -> dict:
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
+# ---------------------------------------------------------------------------
+# Model + dataset metadata helpers
+# ---------------------------------------------------------------------------
+
+def _find_model_dir(model_id: str) -> str:
+    """Resolve a bare `model_id` to its on-disk directory by globbing
+    `outputs/models/*/<model_id>/`. Errors if missing or ambiguous."""
+    matches = list(paths.MODELS_DIR.glob(f"*/{model_id}"))
+    if not matches:
+        raise FileNotFoundError(
+            f"model_id {model_id!r} not found under {paths.MODELS_DIR}"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"ambiguous model_id {model_id!r}: matches in datasets "
+            f"{[m.parent.name for m in matches]}"
+        )
+    return str(matches[0])
 
 
-def _read_saved_epochs(model_dir: str) -> Optional[List[int]]:
-    """Read the `saved_epochs` list from model.json metadata.
-
-    Returns None if the field is absent (e.g., model trained before this field
-    was added) — callers should treat that as "trust the request, don't filter."
-    """
-    model_json = os.path.join(model_dir, "model.json")
-    if not os.path.exists(model_json):
-        return None
-    with open(model_json, "r") as f:
-        data = json.load(f)
-    metadata = data.get("metadata") or {}
-    saved = metadata.get("saved_epochs")
-    return None if saved is None else [int(e) for e in saved]
-
-
-def model_epoch_pairs(
-    models: List[str], requested_epochs: Optional[List[int]]
-) -> List[Tuple[str, Optional[int]]]:
-    """Build (model_dir, epoch) pairs to analyze.
-
-    `requested_epochs` is the analysis YAML's `epochs:` list. If empty/None,
-    each model is analyzed at its final checkpoint only. Otherwise, requested
-    epochs are intersected with each model's `saved_epochs` from model.json
-    metadata; any miss is logged and skipped. Models without `saved_epochs`
-    metadata fall back to honoring the request as-is.
-    """
-    if not requested_epochs:
-        return [(m, None) for m in models]
-    pairs: List[Tuple[str, Optional[int]]] = []
-    for m in models:
-        saved = _read_saved_epochs(m)
-        for e in requested_epochs:
-            if saved is None or e in saved:
-                pairs.append((m, e))
-            else:
-                logger.warning(
-                    "epoch %d not in saved_epochs=%s for model %s; skipping",
-                    e,
-                    saved,
-                    m,
-                )
-    return pairs
+def _read_model_json(model_dir: str) -> Dict:
+    with open(os.path.join(model_dir, "model.json"), "r") as f:
+        return json.load(f)
 
 
 def _read_model_dataset_info(model_dir: str) -> Optional[Dict]:
-    """Read the dataset block written into model.json's metadata at training time."""
-    model_json = os.path.join(model_dir, "model.json")
-    if not os.path.exists(model_json):
-        return None
-    with open(model_json, "r") as f:
-        data = json.load(f)
-    metadata = data.get("metadata") or {}
-    return metadata.get("dataset")
+    """Read the dataset block written into `model.json["metadata"]["dataset"]`
+    at training time. None if the field is absent."""
+    return (_read_model_json(model_dir).get("metadata") or {}).get("dataset")
+
+
+def _read_saved_epochs(model_dir: str) -> Optional[List[int]]:
+    """Read `metadata.saved_epochs` from `model.json`. None if absent (e.g.,
+    model trained before this field existed) — callers should treat None as
+    'trust the request, don't filter'."""
+    saved = (_read_model_json(model_dir).get("metadata") or {}).get("saved_epochs")
+    return None if saved is None else [int(e) for e in saved]
 
 
 def resolve_shared_dataset(model_dirs: List[str]) -> Dict:
-    """Read each model's saved dataset block; warn if any disagree, return the
-    first one."""
+    """Read each model's saved dataset block; require agreement across all
+    listed models on (name, split_id, train_dir). Returns the first model's
+    block."""
     if not model_dirs:
-        raise ValueError(
-            "No model directories were provided for Hessian analysis. "
-            "Check that the models YAML contains a non-empty 'models' list."
-        )
-
+        raise ValueError("no model directories provided")
     infos: List[Tuple[str, Optional[Dict]]] = [
         (m, _read_model_dataset_info(m)) for m in model_dirs
     ]
     missing = [m for m, info in infos if info is None]
     if missing:
         raise FileNotFoundError(
-            "Models missing dataset metadata in model.json (was the model trained "
-            f"with the updated train_models.py?): {missing}"
+            f"missing metadata.dataset in model.json for: {missing}"
         )
-
     reference = infos[0][1]
     assert reference is not None
     ref_key = (reference["name"], reference["split_id"], reference["train_dir"])
@@ -138,12 +118,9 @@ def resolve_shared_dataset(model_dirs: List[str]) -> Dict:
         assert info is not None
         key = (info["name"], info["split_id"], info["train_dir"])
         if key != ref_key:
-            logger.error(
-                "model %s was trained on a different dataset/split (%s) than the "
-                "first model (%s); analysis will use the first model's split.",
-                model_dir,
-                key,
-                ref_key,
+            raise ValueError(
+                f"model {model_dir} trained on {key} disagrees with "
+                f"first model's {ref_key}"
             )
     return reference
 
@@ -159,6 +136,36 @@ def load_train_test_for_loss(
     return normalize_for_loss(train, test, loss)
 
 
+def model_epoch_pairs(
+    model_dirs: List[str], requested_epochs: Optional[List[int]]
+) -> List[Tuple[str, Optional[int]]]:
+    """Build (model_dir, epoch) pairs to analyze.
+
+    If `requested_epochs` is empty/None, each model is analyzed at its final
+    checkpoint only. Otherwise, requested epochs are intersected with each
+    model's saved_epochs metadata; misses are logged and skipped. Models
+    without saved_epochs metadata fall back to honoring the request as-is.
+    """
+    if not requested_epochs:
+        return [(m, None) for m in model_dirs]
+    pairs: List[Tuple[str, Optional[int]]] = []
+    for m in model_dirs:
+        saved = _read_saved_epochs(m)
+        for e in requested_epochs:
+            if saved is None or e in saved:
+                pairs.append((m, e))
+            else:
+                logger.warning(
+                    "model %s has no checkpoint at epoch=%d (saved=%s); skipping",
+                    m, e, saved,
+                )
+    return pairs
+
+
+# ---------------------------------------------------------------------------
+# Collector + Hessian context
+# ---------------------------------------------------------------------------
+
 def _has_cached_collection(save_dir: str) -> bool:
     return os.path.exists(
         os.path.join(save_dir, CollectorActivationsGradients.MANIFEST_FILENAME)
@@ -173,20 +180,20 @@ def collect_activations_gradients(
     analysis_cfg: HessianAnalysisConfig,
     collector_dir: str,
     collector_dir_corr: str,
-    seed: int,
+    analysis_seed: int,
     cache_inputs_base: Dict[str, Any],
 ):
     """Run the primary collector; also run `_corr` when strategy is MCMC.
 
-    `cache_inputs_base` is the dataset/seed-level provenance the collector
-    stamps into its manifest and validates on reload. The `_corr` pass uses
-    `seed + 1` and `role="corr"`, so primary and corr each pin their own
-    inputs.
+    `cache_inputs_base` is the per-run provenance the collector stamps into
+    its manifest and validates on reload. The `_corr` pass uses
+    `analysis_seed + 1` and `role="corr"`, so primary and corr each pin
+    their own inputs.
     """
     strategy = analysis_cfg.computation_config.pseudo_target_generation_strategy
     reps = analysis_cfg.computation_config.pseudo_target_generation_repetitions
 
-    def _make():
+    def _make() -> CollectorActivationsGradients:
         return CollectorActivationsGradients(
             model=model,
             params=params,
@@ -204,25 +211,34 @@ def collect_activations_gradients(
             cache_inputs=cache_inputs,
         )
 
-    primary_inputs = {**cache_inputs_base, "rng_seed": int(seed), "role": "primary"}
-    primary = _collect(collector_dir, PRNGKey(seed), primary_inputs)
+    primary_inputs = {
+        **cache_inputs_base,
+        "analysis_rng_seed": int(analysis_seed),
+        "role": "primary",
+    }
+    primary = _collect(collector_dir, PRNGKey(analysis_seed), primary_inputs)
     if strategy == PseudoTargetGenerationStrategy.MCMC:
-        corr_inputs = {**cache_inputs_base, "rng_seed": int(seed + 1), "role": "corr"}
-        corr = _collect(collector_dir_corr, PRNGKey(seed + 1), corr_inputs)
+        corr_inputs = {
+            **cache_inputs_base,
+            "analysis_rng_seed": int(analysis_seed + 1),
+            "role": "corr",
+        }
+        corr = _collect(
+            collector_dir_corr, PRNGKey(analysis_seed + 1), corr_inputs
+        )
     else:
         corr = primary
     logger.info(
-        "collected acts/grads → %s%s",
+        "  collected acts/grads → %s%s",
         collector_dir,
         " (+ _corr)" if strategy == PseudoTargetGenerationStrategy.MCMC else "",
     )
-
     return primary, corr
 
 
 @dataclass
 class HessianCtx:
-    """Per-model state: collector data + model ctx + build dir + computer cache."""
+    """Per-(model, epoch) state: collector data + model ctx + cached computers."""
 
     collector_data: DataActivationsGradients
     collector_data_corr: DataActivationsGradients
@@ -248,7 +264,13 @@ class HessianCtx:
 def resolve_damping(
     ctx: HessianCtx, analysis_cfg: HessianAnalysisConfig
 ) -> Tuple[Optional[float], Optional[float]]:
-    """Return (damping, pseudo_inverse_factor)."""
+    """Return (damping, pseudo_inverse_factor).
+
+    Note: AUTO_MEAN_EIGENVALUE* strategies derive the damping from EKFAC's
+    spectrum and apply it to *every* approximator. See BUGS.md ("Damping is
+    shared across approximators…") for context — that coupling is a known
+    issue but out of scope for the merge-fix work.
+    """
     comp = analysis_cfg.computation_config
     strat = comp.regularization_strategy
     if strat in (
@@ -266,6 +288,10 @@ def resolve_damping(
         return None, comp.regularization_value
     return None, None
 
+
+# ---------------------------------------------------------------------------
+# Comparison + influence
+# ---------------------------------------------------------------------------
 
 def compare_matrices(
     ctx: HessianCtx,
@@ -370,8 +396,7 @@ def compute_influence_scores(
     model_tag: str,
 ) -> Dict[str, str]:
     """Per-method `(n_train,)` influence score (mean over query dim), saved
-    as `.npy` under `outputs/runs/<run_id>/influence/`.
-    """
+    as `.npy` under `outputs/runs/<run_id>/influence/`."""
     paths.influence_dir(run_id).mkdir(parents=True, exist_ok=True)
     influence_paths: Dict[str, str] = {}
     pbar = tqdm(methods, desc="influence")
@@ -388,8 +413,16 @@ def compute_influence_scores(
         path = paths.influence_path(run_id, model_tag, approx.value)
         np.save(str(path), vec)
         influence_paths[approx.value] = str(path)
-
     return influence_paths
+
+
+# ---------------------------------------------------------------------------
+# YAML / overrides
+# ---------------------------------------------------------------------------
+
+def load_yaml(path: str) -> dict:
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
 
 
 def _apply_overrides(
@@ -397,18 +430,15 @@ def _apply_overrides(
     models_cfg: Dict[str, Any],
     analysis_raw: Dict[str, Any],
 ) -> None:
-    """Apply `path=value` overrides in-place to the loaded YAML dicts.
+    """Apply `path=value` overrides in-place.
 
     Path conventions:
       `analysis.X.Y` → analysis_raw["hessian_analysis"]["X"]["Y"]
       `models.X.Y`   → models_cfg["X"]["Y"]
-
-    Value is yaml.safe_load'd, so `0.05`, `null`, `[a,b,c]`, `true` parse as
-    expected.
     """
     for ov in overrides:
         if "=" not in ov:
-            raise ValueError(f"Override must be 'path=value', got {ov!r}")
+            raise ValueError(f"override must be 'path=value', got {ov!r}")
         key, raw_value = ov.split("=", 1)
         value = yaml.safe_load(raw_value)
         parts = key.split(".")
@@ -420,13 +450,17 @@ def _apply_overrides(
             tail = parts[1:]
         else:
             raise ValueError(
-                f"Override path must start with 'analysis.' or 'models.', got {ov!r}"
+                f"override path must start with 'analysis.' or 'models.', got {ov!r}"
             )
         for p in tail[:-1]:
             target = target[p]
         target[tail[-1]] = value
         logger.info("override: %s = %r", key, value)
 
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
 
 def main(
     models_config_path: str,
@@ -439,34 +473,22 @@ def main(
     if overrides:
         _apply_overrides(overrides, models_cfg, analysis_raw)
 
-    seed: int = models_cfg["seed"]
-    model_ids: List[str] = models_cfg["models"]
-    epochs: Optional[List[int]] = (
-        models_cfg.get("intermediate_epochs") or models_cfg.get("epochs")
-    )
+    model_ids: List[str] = list(models_cfg["models"])
+    model_dirs: List[str] = [_find_model_dir(m) for m in model_ids]
 
-    dataset_cfg: DatasetConfig = to_dataclass(DatasetConfig, models_cfg["dataset"])  # type: ignore
     analysis_cfg: HessianAnalysisConfig = to_dataclass(
         HessianAnalysisConfig, analysis_raw["hessian_analysis"]
     )  # type: ignore
-    dataset_name = dataset_cfg.name.value
+    analysis_seed: int = analysis_cfg.analysis_seed
+    epochs: Optional[List[int]] = analysis_raw.get("epochs")
 
-    base_train, base_test = load_train_test(dataset_cfg, seed)
+    dataset_info = resolve_shared_dataset(model_dirs)
+    dataset_name: str = dataset_info["name"]
     logger.info(
-        "dataset %s: N_train=%d, N_test=%d",
-        dataset_name,
-        base_train.inputs.shape[0],
-        base_test.inputs.shape[0],
+        "dataset %s (split_id=%s, train_dir=%s)",
+        dataset_name, dataset_info["split_id"], dataset_info["train_dir"],
     )
 
-    # Resolve `collector_subset_size: null` to the actual train size *now*, so
-    # config_hash / cache_inputs / db rows always carry the concrete int.
-    if analysis_cfg.computation_config.collector_subset_size is None:
-        analysis_cfg.computation_config.collector_subset_size = int(
-            base_train.inputs.shape[0]
-        )
-
-    all_results: List[Dict] = []
     run_id = time.strftime("%Y%m%d-%H%M%S")
     run_dir = paths.run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -480,8 +502,8 @@ def main(
         models_config_path=models_config_path,
         analysis_config_path=analysis_config_path,
         params={
-            "dataset": asdict(dataset_cfg),
-            "seed": seed,
+            "dataset": dataset_info,
+            "analysis_seed": analysis_seed,
             "model_ids": list(model_ids),
             "epochs": epochs,
             "hessian_config": asdict(analysis_cfg),
@@ -492,12 +514,16 @@ def main(
     strategy_str = comp_cfg.pseudo_target_generation_strategy.value
     reps = comp_cfg.pseudo_target_generation_repetitions
 
-    for model_id, epoch in model_epoch_pairs(model_ids, epochs):
-        model_dir = str(paths.model_dir(dataset_name, model_id))
+    cached_splits: Dict[LossType, Tuple[Dataset, Dataset]] = {}
+    all_results: List[Dict] = []
+
+    for model_dir, epoch in model_epoch_pairs(model_dirs, epochs):
+        model_id = os.path.basename(model_dir)
         params, model, model_config, metadata = load_model_checkpoint(
             model_dir, epoch=epoch
         )
         tag = f"epoch_{epoch}" if epoch is not None else "final"
+
         ckpt_path = (
             paths.epoch_dir(dataset_name, model_id, epoch) / "checkpoint.msgpack"
             if epoch is not None
@@ -505,15 +531,14 @@ def main(
         )
         result_model_hash = provenance.model_hash(ckpt_path)
         result_config_hash = provenance.config_hash(
-            dataset_cfg, analysis_cfg, seed, model_id, epoch
+            dataset_info, analysis_cfg, analysis_seed, model_id, epoch
         )
+
         logger.info("")
         logger.info("=" * 70)
         logger.info(
             "  %s  (%s)  num_params=%d",
-            model_config.get_model_display_name(),
-            tag,
-            model.num_params,
+            model_config.get_model_display_name(), tag, model.num_params,
         )
         logger.info("=" * 70)
 
@@ -521,9 +546,7 @@ def main(
             skip_if_exists
             and code_info.get("sha")
             and results_db.result_exists(
-                db,
-                config_hash=result_config_hash,
-                code_sha=code_info["sha"],
+                db, config_hash=result_config_hash, code_sha=code_info["sha"],
             )
         ):
             logger.info(
@@ -532,30 +555,37 @@ def main(
             )
             continue
 
-        dataset, test_dataset = prepare_datasets_for_model(
-            base_train, base_test, model_config.loss
-        )
+        if model_config.loss not in cached_splits:
+            cached_splits[model_config.loss] = load_train_test_for_loss(
+                dataset_info, model_config.loss
+            )
+        train_ds, test_ds = cached_splits[model_config.loss]
+        logger.info("  N_train=%d, N_test=%d", len(train_ds), len(test_ds))
+
+        # Resolve `collector_subset_size: null` to actual train size *now*, so
+        # config_hash / cache_inputs / db rows always carry the concrete int.
+        if comp_cfg.collector_subset_size is None:
+            comp_cfg.collector_subset_size = int(len(train_ds))
 
         # Subset is collector-only — probes, model_ctx, and influence still use
-        # the full train. Deterministic permutation seeded by `seed` so identical
-        # (size, seed) → identical subset. When subset == full size, skip the
-        # permutation and use the dataset as-is.
-        subset_size = comp_cfg.collector_subset_size  # already resolved to int
-        n_full = int(dataset.inputs.shape[0])
+        # the full train. Deterministic permutation seeded by analysis_seed.
+        subset_size = comp_cfg.collector_subset_size
+        n_full = len(train_ds)
         if subset_size > n_full:
             raise ValueError(
                 f"collector_subset_size={subset_size} exceeds train size {n_full}"
             )
         if subset_size < n_full:
-            perm = permutation(PRNGKey(seed), n_full)[:subset_size]
-            dataset_for_collector = type(dataset)(
-                dataset.inputs[perm], dataset.targets[perm]
+            perm = permutation(PRNGKey(analysis_seed), n_full)[:subset_size]
+            dataset_for_collector = type(train_ds)(
+                train_ds.inputs[perm], train_ds.targets[perm]
             )
             logger.info(
-                "collector subset: %d / %d (seed=%d)", subset_size, n_full, seed
+                "  collector subset: %d / %d (analysis_seed=%d)",
+                subset_size, n_full, analysis_seed,
             )
         else:
-            dataset_for_collector = dataset
+            dataset_for_collector = train_ds
 
         loss_fn = get_loss(model_config.loss)
         collector_dir = str(
@@ -568,8 +598,7 @@ def main(
         )
         cache_inputs_base = {
             "dataset_name": dataset_name,
-            "dataset_test_size": dataset_cfg.test_size,
-            "dataset_store_on_disk": dataset_cfg.store_on_disk,
+            "split_id": dataset_info["split_id"],
             "collector_subset_size": subset_size,
             "model_id": model_id,
             "epoch": epoch,
@@ -585,34 +614,54 @@ def main(
             analysis_cfg=analysis_cfg,
             collector_dir=collector_dir,
             collector_dir_corr=collector_dir_corr,
-            seed=seed,
+            analysis_seed=analysis_seed,
             cache_inputs_base=cache_inputs_base,
         )
 
-        probes = sample_vectors(
-            vector_config=analysis_cfg.vector_config,
+        # Probes: grads_1 from train (the vector we ask the approximation to
+        # apply H / H^-1 to). grads_2 source is config-driven via
+        # `vector_config.comparison_probe_source` (default test). Cap
+        # num_samples at min(train, comparison) so both sides match.
+        comparison_ds = (
+            train_ds
+            if analysis_cfg.vector_config.comparison_probe_source == ProbeSource.TRAIN
+            else test_ds
+        )
+        requested = analysis_cfg.vector_config.num_samples
+        max_n = min(len(train_ds), len(comparison_ds))
+        n_samples = min(requested, max_n)
+        if requested > max_n:
+            logger.warning(
+                "vector_config.num_samples=%d exceeds available data "
+                "(min(train=%d, comparison=%d)); clamping to %d",
+                requested, len(train_ds), len(comparison_ds), max_n,
+            )
+        clamped_vec_cfg = replace(analysis_cfg.vector_config, num_samples=n_samples)
+
+        grads_1 = sample_vectors(
+            vector_config=clamped_vec_cfg,
             model=model,
             params=params,
-            inputs=test_ds.inputs,
-            targets=test_ds.targets,
+            inputs=train_ds.inputs,
+            targets=train_ds.targets,
             loss_fn=loss_fn,
-            seed=analysis_seed + 1,
+            analysis_seed=analysis_seed,
+            repetitions=1,
+        )
+        grads_2 = sample_vectors(
+            vector_config=clamped_vec_cfg,
+            model=model,
+            params=params,
+            inputs=comparison_ds.inputs,
+            targets=comparison_ds.targets,
+            loss_fn=loss_fn,
+            analysis_seed=analysis_seed + 1,
             repetitions=1,
         )
 
-        # Use train_ds as the canonical "dataset" for the rest of the pipeline.
-        dataset = train_ds
-
         model_ctx = ModelContext.create(
-            model=model,
-            params=params,
-            dataset=dataset,
-            loss_fn=loss_fn,
+            model=model, params=params, dataset=train_ds, loss_fn=loss_fn,
         )
-
-        build_base_dir = os.path.join(model_config.directory, "collector")  # type: ignore
-        if epoch is not None:
-            build_base_dir = os.path.join(build_base_dir, f"epoch_{epoch}")
 
         ctx = HessianCtx(
             collector_data=collector_data,
@@ -623,9 +672,9 @@ def main(
 
         damping, pif = resolve_damping(ctx, analysis_cfg)
         if damping is not None:
-            logger.info("damping=%.6f", damping)
+            logger.info("  damping=%.6f", damping)
         elif pif is not None:
-            logger.info("pseudo_inverse_factor=%.6f", pif)
+            logger.info("  pseudo_inverse_factor=%.6f", pif)
 
         matrix_comparisons: Dict[str, Dict[str, Dict[str, float]]] = {}
         hvp_comparisons: Dict[str, Dict[str, Dict[str, float]]] = {}
@@ -636,34 +685,23 @@ def main(
             logger.info("--- reference: %s ---", reference.value)
             if ComputationType.MATRIX in comp_cfg.computation_types:
                 res = compare_matrices(
-                    ctx,
-                    reference,
-                    comp_cfg.approximators,
+                    ctx, reference, comp_cfg.approximators,
                     analysis_cfg.matrix_config.metrics,
                 )
                 for metric, scores in res.items():
                     matrix_comparisons.setdefault(metric, {})[reference.value] = scores
             if ComputationType.HVP in comp_cfg.computation_types:
                 res = compare_hvps(
-                    ctx,
-                    reference,
-                    comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics,
-                    grads_1,
-                    grads_2,
+                    ctx, reference, comp_cfg.approximators,
+                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
                 )
                 for metric, scores in res.items():
                     hvp_comparisons.setdefault(metric, {})[reference.value] = scores
             if ComputationType.IHVP in comp_cfg.computation_types:
                 res, rt = compare_ihvps(
-                    ctx,
-                    reference,
-                    comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics,
-                    grads_1,
-                    grads_2,
-                    damping,
-                    pif,
+                    ctx, reference, comp_cfg.approximators,
+                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
+                    damping, pif,
                 )
                 for metric, scores in res.items():
                     ihvp_comparisons.setdefault(metric, {})[reference.value] = scores
@@ -672,10 +710,10 @@ def main(
         influence_section: Optional[Dict] = None
         if comp_cfg.compute_influence:
             train_flat_grads = compute_per_example_flat_grads(
-                model, params, dataset.inputs, dataset.targets, loss_fn
+                model, params, train_ds.inputs, train_ds.targets, loss_fn,
             )
             test_flat_grads = compute_per_example_flat_grads(
-                model, params, test_dataset.inputs, test_dataset.targets, loss_fn
+                model, params, test_ds.inputs, test_ds.targets, loss_fn,
             )
             all_methods = list(dict.fromkeys(
                 list(comp_cfg.approximators) + list(comp_cfg.comparison_references)
@@ -715,8 +753,7 @@ def main(
         })
 
         # Persist this result incrementally — ctrl-C mid-sweep keeps what's done.
-        # Same (config_hash, code_sha) on rerun overwrites this row via
-        # INSERT OR REPLACE (cascades to metrics/influence).
+        # Same (config_hash, code_sha) on rerun overwrites this row.
         result_id = results_db.append_result(
             db,
             run_id=run_id,
@@ -725,9 +762,12 @@ def main(
             config_hash=result_config_hash,
             model_hash=result_model_hash,
             code_sha=code_info.get("sha"),
-            seed=int(seed),
+            analysis_seed=analysis_seed,
             dataset_name=dataset_name,
-            dataset_test_size=float(dataset_cfg.test_size),
+            dataset_test_size=(
+                float(dataset_info["test_size"])
+                if dataset_info.get("test_size") is not None else None
+            ),
             collector_subset_size=int(comp_cfg.collector_subset_size),
             regularization_value=float(comp_cfg.regularization_value),
             regularization_strategy=comp_cfg.regularization_strategy.value,
@@ -735,11 +775,18 @@ def main(
             pseudo_target_repetitions=int(reps),
             vector_num_samples=int(analysis_cfg.vector_config.num_samples),
             sampling_method=analysis_cfg.vector_config.sampling_method.value,
+            comparison_probe_source=analysis_cfg.vector_config.comparison_probe_source.value,
             damping=damping,
             pseudo_inverse_factor=pif,
             num_parameters=int(model.num_params),
-            val_loss=float((metadata or {}).get("val_loss")) if metadata and metadata.get("val_loss") is not None else None,
-            val_accuracy=float((metadata or {}).get("val_accuracy")) if metadata and metadata.get("val_accuracy") is not None else None,
+            val_loss=(
+                float((metadata or {}).get("val_loss"))
+                if metadata and metadata.get("val_loss") is not None else None
+            ),
+            val_accuracy=(
+                float((metadata or {}).get("val_accuracy"))
+                if metadata and metadata.get("val_accuracy") is not None else None
+            ),
             params={
                 "model_config": asdict(model_config),
                 "model_directory": model_dir,
@@ -772,9 +819,7 @@ def main(
                 "hessian_config": asdict(analysis_cfg),
                 "results": all_results,
             },
-            f,
-            indent=2,
-            default=json_safe,
+            f, indent=2, default=json_safe,
         )
     logger.info("wrote results → %s", output_file)
     db.close()
@@ -784,34 +829,25 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--config",
-        default="experiments/shared_models.yaml",
-        help="Models YAML (`models` field with list of model directories).",
+        "--config", default="experiments/shared_models.yaml",
+        help="Models YAML (`models` field with list of model_ids).",
     )
     parser.add_argument(
-        "--analysis-config",
-        default="experiments/configs/hessian_analysis.yaml",
+        "--analysis-config", default="experiments/configs/hessian_analysis.yaml",
         help="Analysis YAML (HessianAnalysisConfig).",
     )
     parser.add_argument(
-        "--skip-if-exists",
-        action="store_true",
+        "--skip-if-exists", action="store_true",
         help="Skip (model_id, epoch) pairs whose config_hash already exists "
-             "in runs.db on the current code_sha (and code is clean).",
+             "in runs.db on the current code_sha.",
     )
     parser.add_argument(
-        "--override",
-        action="append",
-        default=[],
+        "--override", action="append", default=[],
         help="Repeatable. Override a YAML field, e.g. "
-             "--override analysis.computation_config.regularization_value=0.05 "
-             "or --override models.seed=43. Value is YAML-parsed, so lists "
-             "(e.g. [kfac,ekfac]) and null work.",
+             "--override analysis.computation_config.regularization_value=0.05.",
     )
     args = parser.parse_args()
     main(
-        args.config,
-        args.analysis_config,
-        skip_if_exists=args.skip_if_exists,
-        overrides=args.override,
+        args.config, args.analysis_config,
+        skip_if_exists=args.skip_if_exists, overrides=args.override,
     )

@@ -99,7 +99,7 @@ def sample_vectors(
     inputs: Float[Array, "N features"],
     targets: Float[Array, "N n_targets"],
     loss_fn: Callable,
-    seed: int = 42,
+    analysis_seed: int = 42,
     repetitions: int = 1,
 ) -> Float[Array, "repetitions n_vectors num_params"]:
     n_vectors = vector_config.num_samples * repetitions
@@ -113,7 +113,7 @@ def sample_vectors(
             targets=targets,
             loss_fn=loss_fn,
             n_vectors=n_vectors,
-            rng_key=jax.random.PRNGKey(seed),
+            rng_key=jax.random.PRNGKey(analysis_seed),
         )
 
     else:

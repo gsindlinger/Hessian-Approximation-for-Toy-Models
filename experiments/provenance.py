@@ -77,7 +77,7 @@ def _canonicalize(value: Any) -> Any:
 
 
 def config_hash(
-    dataset_cfg,
+    dataset_info: Dict[str, Any],
     analysis_cfg,
     seed: int,
     model_id: str,
@@ -85,14 +85,19 @@ def config_hash(
 ) -> str:
     """Hash of the inputs that determine numerical output for one result.
 
+    `dataset_info` is the dict written into `model.json["metadata"]["dataset"]`
+    at training time (see `train_models.py`). `(name, split_id)` is the
+    canonical identifier of the data used — `split_id` already encodes
+    `test_size` and `split_seed` for seeded splits, or is `"default"` for
+    canonical splits.
+
     Excluded by design: anything cosmetic, anything that doesn't affect the
     numbers (output dirs, experiment_name, etc.).
     """
     inputs = {
         "dataset": {
-            "name": dataset_cfg.name.value,
-            "test_size": dataset_cfg.test_size,
-            "store_on_disk": dataset_cfg.store_on_disk,
+            "name": dataset_info["name"],
+            "split_id": dataset_info["split_id"],
         },
         "seed": seed,
         "model_id": model_id,
@@ -105,6 +110,9 @@ def config_hash(
             "metrics": _canonicalize(analysis_cfg.vector_config.metrics),
             "num_samples": analysis_cfg.vector_config.num_samples,
             "sampling_method": _canonicalize(analysis_cfg.vector_config.sampling_method),
+            "comparison_probe_source": _canonicalize(
+                analysis_cfg.vector_config.comparison_probe_source
+            ),
         },
     }
     blob = json.dumps(inputs, sort_keys=True, default=str).encode()

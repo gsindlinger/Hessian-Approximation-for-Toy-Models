@@ -121,6 +121,20 @@ class VectorSamplingMethod(str, Enum):
     RANDOM = "random"
 
 
+class ProbeSource(str, Enum):
+    """Where the second probe set (`grads_2`) for HVP/IHVP comparison comes from.
+
+    `grads_1` (the input to estimate_hvp/ihvp) is always sampled from train.
+    `grads_2` is the comparison vector handed to `metric.compute(...)`. Drawing
+    it from the test set matches influence-score semantics (comparing on the
+    distribution we actually care about); train is provided for parity with
+    pre-merge behavior.
+    """
+
+    TRAIN = "train"
+    TEST = "test"
+
+
 class PseudoTargetGenerationStrategy(str, Enum):
     """Strategies for generating pseudo-targets for IHVP computation."""
 
@@ -227,6 +241,7 @@ class VectorAnalysisConfig:
 
     num_samples: int = 1000
     sampling_method: VectorSamplingMethod = VectorSamplingMethod.GRADIENTS
+    comparison_probe_source: ProbeSource = ProbeSource.TEST
     metrics: List[VectorMetric] = field(
         default_factory=lambda: VectorMetric.all_metrics()
     )

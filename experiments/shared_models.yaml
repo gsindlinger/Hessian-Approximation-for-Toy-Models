@@ -1,11 +1,4 @@
-dataset:
-  name: sklearn_digits
-  path: experiments/datasets/sklearn_digits
-  test_size: 0.1
-  store_on_disk: true
-seed: 42
-# Model IDs (no path); resolved via paths.model_dir(dataset.name, model_id).
+# Model IDs (no path); resolved via paths.model_dir(<model.json metadata.dataset.name>, model_id).
+# Dataset, seeds, and saved checkpoints are read from each model's model.json.
 models:
-  - mlp_fec568fb74dc
-intermediate_epochs:
-  - 1000
+  - mlp_f3d39df867d1

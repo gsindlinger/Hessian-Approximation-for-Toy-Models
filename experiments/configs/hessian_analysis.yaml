@@ -25,7 +25,7 @@ hessian_analysis:
     pseudo_target_generation_repetitions: 1
     compute_influence: true
     # Subsample the collector input. null/omit = full train.
-    collector_subset_size: 500
+    collector_subset_size: null
   matrix_config:
     metrics:
     - frobenius
@@ -45,6 +45,10 @@ hessian_analysis:
     - inner_product_ratio
     num_samples: 500
     sampling_method: gradients
+    # Source for the second probe set used in HVP/IHVP comparison metrics
+    # (`grads_2`). `grads_1` is always sampled from train. `test` matches
+    # influence-score semantics; `train` reproduces pre-merge behavior.
+    comparison_probe_source: test
   analysis_seed: 42
 models: []
 epochs:

@@ -355,6 +355,7 @@ def main(cfg: DictConfig):
     dataset_info = {
         "name": config.dataset.name.value,
         "path": config.dataset.path,
+        "test_size": float(config.dataset.test_size),
         "split_id": split.split_id,
         "split_dir": str(split.split_dir),
         "train_dir": str(split.train_dir),
