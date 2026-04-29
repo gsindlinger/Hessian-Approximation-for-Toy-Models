@@ -31,6 +31,7 @@ from src.config import (
 )
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator
+from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import sample_vectors
@@ -53,12 +54,49 @@ def load_yaml(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def _read_saved_epochs(model_dir: str) -> Optional[List[int]]:
+    """Read the `saved_epochs` list from model.json metadata.
+
+    Returns None if the field is absent (e.g., model trained before this field
+    was added) — callers should treat that as "trust the request, don't filter."
+    """
+    model_json = os.path.join(model_dir, "model.json")
+    if not os.path.exists(model_json):
+        return None
+    with open(model_json, "r") as f:
+        data = json.load(f)
+    metadata = data.get("metadata") or {}
+    saved = metadata.get("saved_epochs")
+    return None if saved is None else [int(e) for e in saved]
+
+
 def model_epoch_pairs(
-    models: List[str], epochs: Optional[List[int]]
+    models: List[str], requested_epochs: Optional[List[int]]
 ) -> List[Tuple[str, Optional[int]]]:
-    if not epochs:
+    """Build (model_dir, epoch) pairs to analyze.
+
+    `requested_epochs` is the analysis YAML's `epochs:` list. If empty/None,
+    each model is analyzed at its final checkpoint only. Otherwise, requested
+    epochs are intersected with each model's `saved_epochs` from model.json
+    metadata; any miss is logged and skipped. Models without `saved_epochs`
+    metadata fall back to honoring the request as-is.
+    """
+    if not requested_epochs:
         return [(m, None) for m in models]
-    return [(m, e) for m in models for e in epochs]
+    pairs: List[Tuple[str, Optional[int]]] = []
+    for m in models:
+        saved = _read_saved_epochs(m)
+        for e in requested_epochs:
+            if saved is None or e in saved:
+                pairs.append((m, e))
+            else:
+                logger.warning(
+                    "epoch %d not in saved_epochs=%s for model %s; skipping",
+                    e,
+                    saved,
+                    m,
+                )
+    return pairs
 
 
 def _read_model_dataset_info(model_dir: str) -> Optional[Dict]:
@@ -199,6 +237,7 @@ def resolve_damping(
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
     ):
         ekfac = ctx.get(HessianApproximationMethod.EKFAC)
+        assert isinstance(ekfac, EKFACComputer)
         return ekfac.get_damping(
             damping_strategy=strat, factor=comp.regularization_value
         ), None
@@ -313,9 +352,8 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
     analysis_raw = load_yaml(analysis_config_path)
 
     models: List[str] = models_cfg["models"]
-    epochs: Optional[List[int]] = models_cfg.get(
-        "intermediate_epochs"
-    ) or models_cfg.get("epochs")
+    # Epoch filter comes from the analysis YAML; final-only if absent.
+    epochs: Optional[List[int]] = analysis_raw.get("epochs")
 
     analysis_cfg: HessianAnalysisConfig = to_dataclass(
         HessianAnalysisConfig, analysis_raw["hessian_analysis"]
@@ -362,7 +400,7 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
 
         # Collector runs over the training set (Hessian/Fisher are estimated on
         # train data).
-        seed = int(metadata.get("seed", 0)) if metadata else 0
+        analysis_seed = analysis_cfg.analysis_seed
         collector_data, collector_data_corr = collect_activations_gradients(
             model=model,
             params=params,
@@ -370,7 +408,7 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             loss_fn=loss_fn,
             analysis_cfg=analysis_cfg,
             collector_dir=collector_dir,
-            seed=seed,
+            seed=analysis_seed,
         )
 
         # Probes: grads_1 from train, grads_2 from test. Cap num_samples at the
@@ -396,7 +434,7 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             inputs=train_ds.inputs,
             targets=train_ds.targets,
             loss_fn=loss_fn,
-            seed=seed,
+            seed=analysis_seed,
             repetitions=1,
         )
         grads_2 = sample_vectors(
@@ -406,7 +444,7 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             inputs=test_ds.inputs,
             targets=test_ds.targets,
             loss_fn=loss_fn,
-            seed=seed + 1,
+            seed=analysis_seed + 1,
             repetitions=1,
         )
 
@@ -420,7 +458,7 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             loss_fn=loss_fn,
         )
 
-        build_base_dir = os.path.join(model_config.directory, "collector")
+        build_base_dir = os.path.join(model_config.directory, "collector")  # type: ignore
         if epoch is not None:
             build_base_dir = os.path.join(build_base_dir, f"epoch_{epoch}")
 
@@ -524,7 +562,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         default="experiments/shared_models.yaml",
-        help="Models YAML (models list, dataset, seed, epochs).",
+        help="Models YAML (`models` field with list of model directories).",
     )
     parser.add_argument(
         "--analysis-config",

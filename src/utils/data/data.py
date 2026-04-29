@@ -771,11 +771,11 @@ class ResolvedSplit:
         return self.split_dir / SPLIT_MANIFEST_FILENAME
 
 
-def _seeded_split_id(test_size: float, seed: int) -> str:
-    return f"seed{seed}_test{test_size:.2f}"
+def _seeded_split_id(test_size: float, split_seed: int) -> str:
+    return f"seed{split_seed}_test{test_size:.2f}"
 
 
-def resolve_split(dataset_cfg: DatasetConfig, seed: int) -> ResolvedSplit:
+def resolve_split(dataset_cfg: DatasetConfig) -> ResolvedSplit:
     """Load a cached split from disk, or build one (default if available, else
     seed-based) and write it to disk.
 
@@ -785,12 +785,15 @@ def resolve_split(dataset_cfg: DatasetConfig, seed: int) -> ResolvedSplit:
         - split.json (manifest)
 
     `split_id` is `"default"` for canonical splits or `seed{S}_test{T:.2f}` for
-    seed-based random splits.
+    seed-based random splits, where S is `dataset_cfg.split_seed`.
     """
     dataset_cls = DatasetRegistry.get_dataset_class(dataset_cfg.name)
     has_default = dataset_cls.has_default_split()
+    split_seed = dataset_cfg.split_seed
     split_id = (
-        "default" if has_default else _seeded_split_id(dataset_cfg.test_size, seed)
+        "default"
+        if has_default
+        else _seeded_split_id(dataset_cfg.test_size, split_seed)
     )
 
     dataset_root = Path(dataset_cfg.path)
@@ -829,7 +832,7 @@ def resolve_split(dataset_cfg: DatasetConfig, seed: int) -> ResolvedSplit:
         train, test = full.default_split()
     else:
         train, test = full.train_test_split(
-            test_size=dataset_cfg.test_size, seed=seed
+            test_size=dataset_cfg.test_size, seed=split_seed
         )
 
     split_dir.mkdir(parents=True, exist_ok=True)
@@ -841,7 +844,7 @@ def resolve_split(dataset_cfg: DatasetConfig, seed: int) -> ResolvedSplit:
                 "dataset": dataset_cfg.name.value,
                 "strategy": "default" if has_default else "random",
                 "test_size": dataset_cfg.test_size,
-                "seed": None if has_default else seed,
+                "split_seed": None if has_default else split_seed,
                 "split_id": split_id,
                 "n_train": int(len(train)),
                 "n_test": int(len(test)),
