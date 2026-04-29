@@ -386,3 +386,29 @@ class ExperimentConfig:
     # If specified, allow for analyzing the different checkpoints saved during training
     # The subsequent code assumes that the epochs are actually stored within the models directory, otherwise their analysis will be skipped
     epochs: Optional[List[int]] = None
+
+
+@dataclass
+class LDSConfig:
+    # Model directory containing the trained checkpoint(s).
+    model: str
+
+    # Filepath of attribution scores (must be an .npy file of shape
+    # (n_query, n_train) where n_query >= num_test_examples).
+    attribution_scores: str
+
+    # Epoch; if None, use the final checkpoint.
+    epoch: Optional[int] = None
+
+    # ELSO sampling parameters.
+    num_subsets: int = 100
+    reps_per_model: int = 1
+    subset_fraction: float = 0.5
+    num_test_examples: int = 50
+
+    # Seed for subset sampling and ELSO retraining.
+    lds_seed: int = 42
+
+    # Cache rep-averaged per-query losses alongside the model directory so
+    # subsequent runs with different attribution files can reuse them.
+    cache_elso: bool = True
