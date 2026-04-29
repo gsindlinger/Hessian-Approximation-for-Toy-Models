@@ -192,7 +192,7 @@ def digits_sweep_all():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="digits_extensive_sweep_swiglu",
-        seed=42,
+        model_seed=42,
         base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.SKLEARN_DIGITS,
@@ -236,7 +236,7 @@ def digits_sweep_better_hessian():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="digits_better_hessian_sweep",
-        seed=12,
+        model_seed=12,
         base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.SKLEARN_DIGITS,
@@ -300,7 +300,7 @@ def digits_sweep_simple():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="debug_sweep",
-        seed=42,
+        model_seed=42,
         base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.DIGITS,
@@ -379,7 +379,7 @@ def digits_sweep():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="",
-        seed=42,
+        model_seed=42,
         base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.DIGITS,
@@ -468,7 +468,7 @@ def concrete_sweep():
 
     config = TrainingExperimentConfig(
         experiment_name="",
-        seed=42,
+        model_seed=42,
         base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.CONCRETE,
@@ -692,7 +692,7 @@ def register_enum_representers():
 def hessian_analysis_sweep():
     config = ExperimentConfig(
         experiment_name="",
-        seed=42,
+        model_seed=42,
         models=[],
         hessian_analysis=HessianAnalysisConfig(
             vector_config=VectorAnalysisConfig(

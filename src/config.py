@@ -142,6 +142,7 @@ class DatasetConfig:
     path: str
     test_size: float = 0.1
     store_on_disk: bool = True
+    split_seed: int = 42
 
     def __post_init__(self):
         if not 0.0 < self.test_size < 1.0:
@@ -306,6 +307,11 @@ class HessianAnalysisConfig:
         default_factory=HessianComputationConfig
     )
 
+    # Seed for randomized analysis steps (collector pseudo-targets, probe gradients).
+    # Independent of the model's training seed so analysis is reproducible without
+    # being tied to a specific model run.
+    analysis_seed: int = 42
+
     # Storage
     results_output_dir: str = "experiments/results"
 
@@ -317,7 +323,9 @@ class TrainingExperimentConfig:
     # Experiment identification
     experiment_name: str = "training_experiment"
     base_output_dir: str = "experiments"
-    seed: int = 42
+    # Seed for model parameter init, training, and dataloader shuffling.
+    # The dataset split is seeded independently via `dataset.split_seed`.
+    model_seed: int = 42
 
     # Dataset
     dataset: DatasetConfig = field(
@@ -362,16 +370,9 @@ class ExperimentConfig:
 
     # Experiment identification
     experiment_name: str = "experiment"
-    seed: int = 42
-
-    # Dataset
-    dataset: DatasetConfig = field(
-        default_factory=lambda: DatasetConfig(
-            name=DatasetEnum.DIGITS, path="experiments/data/datasets/digits"
-        )
-    )
 
     # List of model_directories with model checkpoints and model definition
+    # Includes specification of the dataset
     models: List[str] = field(default_factory=list)
 
     # Which different approaches to compare and analyze
@@ -380,4 +381,5 @@ class ExperimentConfig:
     )
 
     # If specified, allow for analyzing the different checkpoints saved during training
+    # The subsequent code assumes that the epochs are actually stored within the models directory, otherwise their analysis will be skipped
     epochs: Optional[List[int]] = None
