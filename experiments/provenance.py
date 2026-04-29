@@ -2,8 +2,9 @@
 
 Three identifiers, all short hex prefixes of full SHA-256:
 
-* `code_hash` — git SHA + dirty flag. Per-run; tells you which version of the
-  source code produced a result.
+* `code_hash` — git SHA + branch. Per-run; tells you which version of the
+  source code produced a result. Only committed state is pinned — uncommitted
+  edits and untracked files are invisible.
 * `config_hash` — canonicalized hash of the inputs that determine numerical
   output for one `(model_id, epoch)`. Per-result; the dedupe key.
 * `model_hash` — SHA of the checkpoint file. Per-result; pins the exact
@@ -34,24 +35,24 @@ def _short(h: str) -> str:
 # -- code provenance --------------------------------------------------------
 
 def git_info() -> Dict[str, Any]:
-    """Current commit SHA, dirty flag, branch name. Empty dict if not a git
-    checkout (so this never blocks running the pipeline)."""
+    """Current commit SHA + branch name. Empty dict if not a git checkout
+    (so this never blocks running the pipeline).
+
+    Note: only committed state is pinned. Uncommitted edits, staged changes,
+    and untracked files are invisible. If you want stronger guarantees,
+    commit before running.
+    """
     try:
         sha = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, stderr=subprocess.DEVNULL
         ).decode().strip()
-        dirty = subprocess.run(
-            ["git", "diff", "--quiet"], cwd=PROJECT_ROOT
-        ).returncode != 0 or subprocess.run(
-            ["git", "diff", "--cached", "--quiet"], cwd=PROJECT_ROOT
-        ).returncode != 0
         branch = subprocess.check_output(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=PROJECT_ROOT, stderr=subprocess.DEVNULL,
         ).decode().strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return {}
-    return {"sha": _short(sha), "dirty": dirty, "branch": branch}
+    return {"sha": _short(sha), "branch": branch}
 
 
 # -- config hash ------------------------------------------------------------

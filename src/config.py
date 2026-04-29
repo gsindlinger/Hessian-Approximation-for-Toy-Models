@@ -272,6 +272,10 @@ class HessianComputationConfig:
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE
     )
     compute_influence: bool = False
+    # Subsample the train set used by the collector (activations + gradients
+    # input). None = full train. Subsample is a deterministic permutation
+    # seeded by the run seed.
+    collector_subset_size: Optional[int] = None
 
     def __post_init__(self):
         if (

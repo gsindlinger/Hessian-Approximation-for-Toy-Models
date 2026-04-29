@@ -21,6 +21,11 @@ from src.utils.models.approximation_model import ApproximationModel
 logger = logging.getLogger(__name__)
 
 
+class CacheMismatch(ValueError):
+    """Raised by `CollectorActivationsGradients.load` when a cached manifest's
+    `cache_inputs` disagree with the inputs requested for the current run."""
+
+
 @dataclass
 class CollectorActivationsGradients:
     """
@@ -95,14 +100,25 @@ class CollectorActivationsGradients:
         save_directory: Optional[str] = None,
         try_load: bool = False,
         rng_key: Optional[Array] = None,
+        cache_inputs: Optional[Dict[str, Any]] = None,
     ) -> DataActivationsGradients:
         """
         Run the model with hooks to collect activations and gradients.
+
+        `cache_inputs` is the set of upstream knobs that determine the
+        collected data (dataset name, test_size, seed, ...). Stashed in
+        the manifest at save time and validated against the manifest on
+        load time — a mismatch refuses to reuse the cache and recomputes,
+        rather than silently loading stale activations.
         """
         if try_load and save_directory is not None:
             try:
                 logger.info(f"Trying to load collected data from: {save_directory}")
-                return self.load(save_directory)
+                return self.load(save_directory, expected_inputs=cache_inputs)
+            except CacheMismatch as e:
+                logger.warning(
+                    f"Cache at {save_directory} stale — recomputing. {e}"
+                )
             except Exception as e:
                 logger.warning(
                     f"Failed to load collected data from {save_directory}: {e}. "
@@ -132,7 +148,7 @@ class CollectorActivationsGradients:
 
         if save_directory is not None:
             logger.info(f"Saving collected data to: {save_directory}")
-            self.save(save_directory, collected_data, metadata)
+            self.save(save_directory, collected_data, metadata, cache_inputs=cache_inputs)
 
         return collected_data
 
@@ -336,6 +352,7 @@ class CollectorActivationsGradients:
         directory: str,
         data: DataActivationsGradients,
         metadata: Dict[str, Any],
+        cache_inputs: Optional[Dict[str, Any]] = None,
     ) -> None:
         # Per-layer activations/gradients are already on disk as .npy
         # memmaps in `directory`; only the small sidecar metadata + probs
@@ -349,19 +366,40 @@ class CollectorActivationsGradients:
             "k": int(metadata["k"]),
             "pseudo_target_strategy": self.pseudo_target_strategy.value,
             "pseudo_target_repetitions": int(self.pseudo_target_repetitions),
+            "cache_inputs": cache_inputs or {},
         }
         with open(directory / self.MANIFEST_FILENAME, "w") as f:
             json.dump(manifest, f, indent=2)
         logger.info(f"Saved collected data manifest to: {directory}")
 
     @staticmethod
-    def load(directory: str) -> DataActivationsGradients:
+    def load(
+        directory: str,
+        expected_inputs: Optional[Dict[str, Any]] = None,
+    ) -> DataActivationsGradients:
         directory = Path(directory)
         manifest_path = directory / CollectorActivationsGradients.MANIFEST_FILENAME
         if not manifest_path.is_file():
             raise ValueError(f"File not found: {manifest_path}")
         with open(manifest_path, "r") as f:
             manifest = json.load(f)
+
+        if expected_inputs is not None:
+            cached_inputs = manifest.get("cache_inputs")
+            if cached_inputs is None:
+                raise CacheMismatch(
+                    f"Manifest at {directory} predates cache validation "
+                    f"(no cache_inputs key). Rebuild the cache."
+                )
+            if cached_inputs != expected_inputs:
+                diff_keys = sorted(
+                    k for k in set(cached_inputs) | set(expected_inputs)
+                    if cached_inputs.get(k) != expected_inputs.get(k)
+                )
+                raise CacheMismatch(
+                    f"Mismatch on {diff_keys} — cached={cached_inputs}, "
+                    f"requested={expected_inputs}."
+                )
 
         layer_names: List[str] = list(manifest["layer_names"])
         n_samples = int(manifest["n_samples"])

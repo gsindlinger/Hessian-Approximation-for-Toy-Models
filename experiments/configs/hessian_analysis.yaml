@@ -24,6 +24,8 @@ hessian_analysis:
     pseudo_target_generation_strategy: mcmc
     pseudo_target_generation_repetitions: 1
     compute_influence: true
+    # Subsample the collector input. null/omit = full train.
+    collector_subset_size: 500
   matrix_config:
     metrics:
     - frobenius
