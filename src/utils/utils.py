@@ -3,11 +3,13 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import jax
 import matplotlib.pyplot as plt
 import numpy as np
+
+from src.config import PseudoTargetGenerationStrategy
 
 
 def hash_data(data: Dict[str, Any], length: int = 10) -> str:
@@ -19,6 +21,59 @@ def hash_data(data: Dict[str, Any], length: int = 10) -> str:
     )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return digest[:length]
+
+
+def collector_cache_dir(
+    model_directory: str,
+    pseudo_target_strategy: PseudoTargetGenerationStrategy,
+    pseudo_target_repetitions: int,
+    epoch: Optional[int] = None,
+    seed: Optional[int] = None,
+) -> str:
+    """Return a content-addressed collector cache directory.
+
+    The path encodes the epoch checkpoint and a hash of the pseudo-target
+    config. For MCMC, the RNG seed is part of the hash because the sampled
+    pseudo-targets — and therefore the collected activations/gradients —
+    depend on it. EMPIRICAL_FISHER and ALL_CLASSES are deterministic given
+    (params, inputs), so their caches are shared across seeds.
+
+    Both hessian_analysis and lds_analysis resolve to the same path when they
+    use the same model checkpoint and the same pseudo-target settings (and
+    seed, for MCMC), allowing them to share cached activations/gradients.
+
+    Structure: {model_directory}/collector/{epoch_str}/{config_hash}/
+    """
+    epoch_str = f"epoch_{epoch}" if epoch is not None else "final"
+    key: Dict[str, Any] = {
+        "strategy": pseudo_target_strategy.value,
+        "reps": pseudo_target_repetitions,
+    }
+    if pseudo_target_strategy == PseudoTargetGenerationStrategy.MCMC:
+        if seed is None:
+            raise ValueError(
+                "MCMC pseudo-target collection requires a seed for cache keying."
+            )
+        key["seed"] = seed
+    cfg_hash = hash_data(key)
+    return os.path.join(model_directory, "collector", epoch_str, cfg_hash)
+
+
+def elso_cache_dir(
+    model_directory: str,
+    cache_key: Dict[str, Any],
+) -> str:
+    """Return a content-addressed cache directory for ELSO retraining outputs.
+
+    ELSO ground-truth Δm depends on the retraining recipe, the subset sampling,
+    the epoch checkpoints, and the query selection — but **not** on the Hessian
+    approximation or its regularisation. Caching keyed by those variables lets
+    downstream damping / pseudo-inverse sweeps reuse the expensive retraining.
+
+    Structure: {model_directory}/elso_cache/{config_hash}/
+    """
+    cfg_hash = hash_data(cache_key)
+    return os.path.join(model_directory, "elso_cache", cfg_hash)
 
 
 def plot_training_curve(train_losses, val_losses, title="Training Curve"):

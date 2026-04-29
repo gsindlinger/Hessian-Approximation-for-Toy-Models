@@ -5,6 +5,7 @@ import logging
 import os
 import pickle
 from functools import partial
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import jax
@@ -14,7 +15,12 @@ from flax import serialization
 from flax.training import train_state
 from tqdm import tqdm
 
-from src.config import ModelConfig
+from src.config import DatasetEnum, LossType, ModelConfig, RegularizationStrategy
+from src.utils.data.data import (
+    Dataset,
+    load_split_from_disk,
+    normalize_for_loss,
+)
 from src.utils.data.jax_dataloader import JAXDataLoader
 from src.utils.models.approximation_model import ApproximationModel
 from src.utils.models.registry import ModelRegistry
@@ -56,8 +62,13 @@ def train_model(
     epochs: int,
     seed: int = 42,
     save_epochs: Optional[List[int]] = None,
+    save_checkpoints: bool = True,
 ) -> Tuple[ApproximationModel, Dict, List]:
-    """Train the model."""
+    """Train the model.
+
+    Set ``save_checkpoints=False`` for temporary fits that should not write to
+    ``model_config.directory``.
+    """
 
     model = ModelRegistry.get_model(model_config=model_config, seed=seed)
 
@@ -91,7 +102,9 @@ def train_model(
                 f"Epoch {epoch}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"
             )
         # Save checkpoint if required
-        if (save_epochs is not None and epoch in save_epochs) or (epoch == epochs):
+        if save_checkpoints and (
+            (save_epochs is not None and epoch in save_epochs) or (epoch == epochs)
+        ):
             assert isinstance(state.params, Dict)
             save_model_checkpoint(
                 model_config=model_config,
@@ -135,6 +148,64 @@ def evaluate_loss(
     """Evaluate model."""
     loss_value = _evaluate(model.apply, params, inputs, targets, loss_fn)
     return float(loss_value)
+
+
+@partial(jax.jit, static_argnames=("loss_fn", "apply_fn"))
+def _evaluate_per_example(
+    apply_fn: Callable,
+    params: Dict,
+    inputs: jnp.ndarray,
+    targets: jnp.ndarray,
+    loss_fn: Callable,
+) -> jnp.ndarray:
+    def single(x, y):
+        return loss_fn(apply_fn(params, x[None]), y[None, ...])
+
+    return jax.vmap(single)(inputs, targets)
+
+
+def evaluate_per_example_losses(
+    model: ApproximationModel,
+    params: Dict,
+    inputs: jnp.ndarray,
+    targets: jnp.ndarray,
+    loss_fn: Callable,
+) -> jnp.ndarray:
+    """Return per-example scalar losses, shape (n,)."""
+    return _evaluate_per_example(model.apply, params, inputs, targets, loss_fn)
+
+
+def resolve_regularization(
+    strategy: RegularizationStrategy,
+    factor: float,
+    built_computer=None,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Resolve a regularization strategy into ``(damping, pseudo_inverse_factor)``.
+
+    Exactly one of the two returned values is non-None:
+
+    * ``damping`` — additive scalar used in ``(H + λI)^{-1}``.
+    * ``pseudo_inverse_factor`` — threshold used for truncated pseudo-inverse.
+
+    ``built_computer`` is required for AUTO strategies: a built
+    ``HessianEstimator`` (typically EKFAC) whose layer-matrix provides the
+    eigenvalue statistics used to derive the damping.
+    """
+    if strategy == RegularizationStrategy.PSEUDO_INVERSE:
+        return None, factor
+
+    if strategy == RegularizationStrategy.FIXED:
+        return factor, None
+
+    if built_computer is None:
+        raise ValueError(
+            f"built_computer is required for regularization strategy '{strategy}'"
+        )
+    damping = built_computer.get_damping(
+        damping_strategy=strategy,
+        factor=factor,
+    )
+    return damping, None
 
 
 def evaluate_loss_and_classification_accuracy(
@@ -340,3 +411,28 @@ def load_model_checkpoint(
         raise FileNotFoundError("No checkpoint file found.")
 
     return params, model, model_config, metadata
+
+
+def load_train_test_for_model(model_directory: str) -> Tuple[Dataset, Dataset]:
+    """Load the cached train/test split this model was trained on.
+
+    Reads ``metadata.dataset.split_dir`` from ``model.json`` (written by
+    train_models.py) and applies per-loss normalization so the data matches
+    what training and earlier analysis steps saw.
+    """
+    model_json_path = os.path.join(model_directory, "model.json")
+    if not os.path.exists(model_json_path):
+        raise FileNotFoundError(f"Missing model.json in {model_directory}")
+    with open(model_json_path) as f:
+        model_data = json.load(f)
+    info = (model_data.get(METADATA_STR) or {}).get("dataset")
+    if info is None:
+        raise ValueError(
+            f"{model_json_path} has no metadata.dataset block — was the "
+            f"model trained with the current train_models.py?"
+        )
+    train, test = load_split_from_disk(
+        DatasetEnum(info["name"]), Path(info["split_dir"])
+    )
+    loss = LossType(model_data["loss"])
+    return normalize_for_loss(train, test, loss)

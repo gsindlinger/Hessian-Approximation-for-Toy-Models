@@ -6,6 +6,7 @@ output files.
 """
 
 from pathlib import Path
+from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -17,6 +18,7 @@ RESULTS_DB = OUTPUTS_DIR / "runs.db"
 
 
 # -- model artifacts ---------------------------------------------------------
+
 
 def models_base_dir(dataset: str) -> Path:
     """outputs/models/<dataset>/  — parent dir for all models on this dataset."""
@@ -33,24 +35,36 @@ def epoch_dir(dataset: str, model_id: str, epoch: int) -> Path:
     return model_dir(dataset, model_id) / f"epoch_{epoch}"
 
 
+def checkpoint_dir(dataset: str, model_id: str, epoch: Optional[int]) -> Path:
+    """Directory containing the checkpoint for an epoch, or the final checkpoint."""
+    if epoch is None:
+        return model_dir(dataset, model_id)
+    return epoch_dir(dataset, model_id, epoch)
+
+
 def collector_dir(
     dataset: str,
     model_id: str,
-    epoch: int,
+    epoch: Optional[int],
     strategy: str,
     repetitions: int,
+    seed: int,
     corr: bool = False,
 ) -> Path:
-    """outputs/models/<dataset>/<model_id>/epoch_<e>/collector_<strategy>_r<reps>[_corr]/
+    """Checkpoint-local collector cache directory.
 
     The cache key is encoded in the dir name so different (strategy, reps)
     settings produce parallel caches instead of clobbering.
     """
     suffix = "_corr" if corr else ""
-    return epoch_dir(dataset, model_id, epoch) / f"collector_{strategy}_r{repetitions}{suffix}"
+    return (
+        checkpoint_dir(dataset, model_id, epoch)
+        / f"collector_{strategy}_s{seed}_r{repetitions}{suffix}"
+    )
 
 
 # -- training-sweep bookkeeping ---------------------------------------------
+
 
 def training_run_dir(experiment_name: str, timestamp: str) -> Path:
     """outputs/training/<experiment_name>/<timestamp>/  — one dir per training
@@ -60,6 +74,7 @@ def training_run_dir(experiment_name: str, timestamp: str) -> Path:
 
 
 # -- analysis-run artifacts -------------------------------------------------
+
 
 def run_dir(run_id: str) -> Path:
     """outputs/runs/<run_id>/"""

@@ -6,10 +6,11 @@ retraining equivalent setups. The cache is backed by ``trained_model_registry``
 and keyed by model config, dataset contents, training hyperparameters, seed,
 and shuffle flag.
 
-At the moment, a full test session trains 5 distinct models total:
+At the moment, a full test session trains 6 distinct models total:
 - shared_linear_classification_scenario
 - shared_linear_regression_scenario
 - shared_multiclass_mlp_scenario
+- lds_scenario
 - test_jax_model simple_regression
 - test_jax_model multi_feature_regression
 """
@@ -88,6 +89,36 @@ def _make_training_scenario(
         dataset=dataset,
         train_seed=train_seed,
         shuffle=shuffle,
+    )
+
+
+@pytest.fixture(scope="session")
+def lds_scenario(tmp_path_factory) -> TrainingScenario:
+    return _make_training_scenario(
+        name="lds",
+        tmp_path_factory=tmp_path_factory,
+        directory_name="lds",
+        model_config=ModelConfig(
+            architecture=ModelArchitecture.LINEAR,
+            input_dim=8,
+            hidden_dim=None,
+            output_dim=2,
+            loss=LossType.CROSS_ENTROPY,
+            training=TrainingConfig(
+                learning_rate=1e-2,
+                optimizer=OptimizerType.SGD,
+                epochs=5,
+                batch_size=16,
+            ),
+        ),
+        dataset=RandomClassificationDataset(
+            n_samples=50,
+            n_features=8,
+            n_informative=4,
+            n_classes=2,
+            seed=0,
+        ),
+        train_seed=0,
     )
 
 
