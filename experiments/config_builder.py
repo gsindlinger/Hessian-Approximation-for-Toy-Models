@@ -14,8 +14,6 @@ from simple_parsing import ArgumentParser
 from src.config import (
     ActivationFunction,
     ComputationType,
-    PseudoTargetGenerationStrategy,
-    RegularizationStrategy,
     DatasetConfig,
     DatasetEnum,
     ExperimentConfig,
@@ -27,6 +25,8 @@ from src.config import (
     ModelArchitecture,
     ModelConfig,
     OptimizerType,
+    PseudoTargetGenerationStrategy,
+    RegularizationStrategy,
     TrainingConfig,
     TrainingExperimentConfig,
     VectorAnalysisConfig,
@@ -192,7 +192,8 @@ def digits_sweep_all():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="digits_extensive_sweep_swiglu",
-        seed=42,
+        model_seed=42,
+        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.SKLEARN_DIGITS,
             path="experiments/datasets/sklearn_digits",
@@ -235,7 +236,8 @@ def digits_sweep_better_hessian():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="digits_better_hessian_sweep",
-        seed=12,
+        model_model_seed=12,
+        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.SKLEARN_DIGITS,
             path="experiments/datasets/sklearn_digits",
@@ -298,7 +300,8 @@ def digits_sweep_simple():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="debug_sweep",
-        seed=42,
+        model_seed=42,
+        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.DIGITS,
             path="experiments/datasets/digits",
@@ -376,7 +379,8 @@ def digits_sweep():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="",
-        seed=42,
+        model_seed=42,
+        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.DIGITS,
             path="experiments/datasets/digits",
@@ -464,7 +468,8 @@ def concrete_sweep():
 
     config = TrainingExperimentConfig(
         experiment_name="",
-        seed=42,
+        model_seed=42,
+        base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.CONCRETE,
             path="experiments/datasets/concrete",
@@ -685,9 +690,10 @@ def register_enum_representers():
 def hessian_analysis_sweep():
     config = ExperimentConfig(
         experiment_name="",
-        seed=42,
+        model_seed=42,
         models=[],
         hessian_analysis=HessianAnalysisConfig(
+            analysis_seed=42,
             vector_config=VectorAnalysisConfig(
                 num_samples=500,
                 sampling_method=VectorSamplingMethod.GRADIENTS,

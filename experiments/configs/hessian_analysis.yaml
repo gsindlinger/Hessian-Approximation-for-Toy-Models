@@ -1,8 +1,3 @@
-dataset:
-  name: should_be_overriden
-  path: path_should_be_overriden
-  store_on_disk: should_be_overriden
-  test_size: should_be_overriden
 experiment_name: ''
 hessian_analysis:
   computation_config:
@@ -48,8 +43,9 @@ hessian_analysis:
     - inner_product_ratio
     num_samples: 500
     sampling_method: gradients
+  analysis_seed: 42
 models: []
-epochs: 
+epochs:
   - 10
   - 100
-seed: should_be_overriden
+  - 1000

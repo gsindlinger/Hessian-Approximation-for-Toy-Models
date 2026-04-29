@@ -7345,6 +7345,6 @@ models:
     learning_rate: 0.005
     optimizer: adamw
     weight_decay: 0.001
-seed: 789
+model_seed: 789
 selection_metric: val_loss
 selection_minimize: true

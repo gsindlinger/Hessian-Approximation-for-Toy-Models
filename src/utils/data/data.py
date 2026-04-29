@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -21,10 +22,15 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from typing_extensions import override
 from ucimlrepo import fetch_ucirepo
 
-from src.config import DatasetEnum
+from src.config import DatasetConfig, DatasetEnum, LossType
 from src.utils.data.jax_dataloader import JAXDataLoader
 
+logger = logging.getLogger(__name__)
+
 T = TypeVar("T", bound="DownloadableDataset")
+
+SPLIT_DATA_FILENAME = "data.npz"
+SPLIT_MANIFEST_FILENAME = "split.json"
 
 
 @dataclass
@@ -73,6 +79,35 @@ class Dataset:
         self, test_size: float = 0.2, seed: int = 42
     ) -> tuple[Dataset, Dataset]:
         pass
+
+    @staticmethod
+    def has_default_split() -> bool:
+        """Return True if the dataset has a canonical/standard train/test split."""
+        return False
+
+    def default_split(self) -> tuple[Dataset, Dataset]:
+        """Return the canonical train/test split. Override in subclasses that have one."""
+        raise NotImplementedError(
+            f"{type(self).__name__} has no default split; use train_test_split."
+        )
+
+    def save_split(self, directory: Path) -> None:
+        """Persist this dataset's inputs/targets to a directory as data.npz."""
+        directory.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            directory / SPLIT_DATA_FILENAME,
+            inputs=np.asarray(self.inputs),
+            targets=np.asarray(self.targets),
+        )
+
+    @staticmethod
+    def load_split(directory: Path, dataset_cls: Type[Dataset]) -> Dataset:
+        """Load a previously saved split from disk into the given Dataset subclass."""
+        with np.load(directory / SPLIT_DATA_FILENAME) as data:
+            return dataset_cls(
+                inputs=jnp.asarray(data["inputs"]),
+                targets=jnp.asarray(data["targets"]),
+            )
 
     @staticmethod
     def normalize_data(
@@ -551,34 +586,113 @@ class CancerDataset(UCIClassificationDataset):
     id = 17
 
 
-class DigitsDataset(UCIClassificationDataset):
-    """Optical recognition of handwritten digits - 10-class classification.
-    8x8 images (64 features) with pixel values in range 0-16, already flattened.
+@dataclass
+class DigitsDataset(DownloadableDataset, ClassificationDataset):
+    """Optical recognition of handwritten digits (UCI id 80).
+
+    The dataset was collected from 43 writers: 30 contributed to the training
+    file and the remaining 13 to the test file.  The canonical split is
+    therefore person-disjoint (3 823 train / 1 797 test).
+
+    We download the raw ``.tra`` / ``.tes`` files directly from the UCI
+    archive because ``ucimlrepo`` merges them into a single dataframe,
+    discarding the split information.
     """
 
-    id = 80
+    _UCI_DIGITS_TRA_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/optdigits/optdigits.tra"
+    _UCI_DIGITS_TES_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/optdigits/optdigits.tes"
+
+    # Column names: 64 pixel features + class label
+    _OPTDIGITS_COLS = [f"pixel_{i}" for i in range(64)] + ["class"]
 
     @classmethod
-    def create_dataset_from_raw(cls, raw: RawDataset) -> Dataset:
-        X = raw.X.values
+    def download(cls) -> RawDataset:
+        import urllib.request
+
+        def _fetch(url: str) -> pd.DataFrame:
+            with urllib.request.urlopen(url) as resp:
+                return pd.read_csv(resp, header=None, names=cls._OPTDIGITS_COLS)
+
+        tra = _fetch(cls._UCI_DIGITS_TRA_URL)
+        tes = _fetch(cls._UCI_DIGITS_TES_URL)
+        # Store split membership so we can recover it later.
+        tra["_split"] = "train"
+        tes["_split"] = "test"
+        combined = pd.concat([tra, tes], ignore_index=True)
+
+        X = combined[cls._OPTDIGITS_COLS[:-1]]  # 64 pixel columns
+        Y = combined[["class"]]
+        metadata = {
+            "split_col": "_split",
+            "split_values": combined["_split"].tolist(),
+            "n_train": len(tra),
+            "n_test": len(tes),
+        }
+        return RawDataset(X=X, Y=Y, metadata=metadata)
+
+    @staticmethod
+    def save(directory: Path, raw: RawDataset) -> None:
+        raw.X.to_csv(directory / "X.csv", index=False)
+        raw.Y.to_csv(directory / "Y.csv", index=False)
+        with open(directory / "metadata.json", "w") as f:
+            json.dump(raw.metadata, f, indent=2)
+
+    @staticmethod
+    def load_from_disk(directory: Path) -> RawDataset:
+        X = pd.read_csv(directory / "X.csv")
+        Y = pd.read_csv(directory / "Y.csv")
+        with open(directory / "metadata.json") as f:
+            metadata = json.load(f)
+        return RawDataset(X=X, Y=Y, metadata=metadata)
+
+    @classmethod
+    def create_dataset_from_raw(cls, raw: RawDataset) -> "DigitsDataset":
+        X = raw.X.values.astype(np.float32)
         Y = raw.Y.values.ravel()
 
-        # Handle missing values
         X = np.nan_to_num(X, nan=0.0)
 
-        # Normalize pixels from [0, 16] to [0, 1] range
-        # (digits dataset uses 0-16 range, not 0-255)
+        # Normalise pixels from [0, 16] to [0, 1]
         if X.max() > 1.0:
             X = X / 16.0
 
-        # Encode labels as integers starting from 0
         label_encoder = LabelEncoder()
-        Y = label_encoder.fit_transform(Y)
+        Y = label_encoder.fit_transform(Y).astype(np.int32)
 
-        return cls(
+        # Stash split membership on the instance so default_split() can use it.
+        obj = cls(
             inputs=jnp.asarray(X, dtype=jnp.float32),
             targets=jnp.asarray(Y, dtype=jnp.int32),
         )
+        # Attach the split boundary derived from the metadata.
+        n_train = raw.metadata.get("n_train") if raw.metadata else None
+        object.__setattr__(obj, "_n_train", n_train)  # works for frozen & non-frozen
+        return obj
+
+    # ------------------------------------------------------------------
+    # Default split
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def has_default_split() -> bool:
+        return True
+
+    def default_split(self) -> tuple[Dataset, Dataset]:
+        n_train: int | None = getattr(self, "_n_train", None)
+        if n_train is None:
+            # Fallback: canonical sizes are well-known (3 823 / 1 797)
+            n_train = 3_823
+        return _slice_split(self, n_train=n_train)
+
+    # ------------------------------------------------------------------
+    # Dimensions
+    # ------------------------------------------------------------------
+
+    def input_dim(self) -> int:
+        return self.inputs.shape[1]
+
+    def output_dim(self) -> int:
+        return int(jnp.max(self.targets)) + 1
 
 
 @dataclass
@@ -644,25 +758,70 @@ class OpenMLDataset(DownloadableDataset, ClassificationDataset):
         return int(jnp.max(self.targets)) + 1
 
 
+def _slice_split(ds: Dataset, n_train: int) -> tuple[Dataset, Dataset]:
+    train = replace(ds, inputs=ds.inputs[:n_train], targets=ds.targets[:n_train])
+    test = replace(ds, inputs=ds.inputs[n_train:], targets=ds.targets[n_train:])
+    return train, test
+
+
 @dataclass
 class MNISTDataset(OpenMLDataset):
-    """MNIST handwritten digits - 28x28 grayscale images, 10 classes."""
+    """MNIST handwritten digits - 28x28 grayscale images, 10 classes.
+
+    OpenML's mnist_784 returns 70k samples in the canonical order: first 60k are
+    the standard training set, last 10k are the standard test set.
+    """
 
     name = "mnist_784"
+
+    @staticmethod
+    def has_default_split() -> bool:
+        return True
+
+    def default_split(self) -> tuple[Dataset, Dataset]:
+        return _slice_split(self, n_train=60_000)
 
 
 @dataclass
 class FashionMNISTDataset(OpenMLDataset):
-    """Fashion-MNIST - 28x28 grayscale images of clothing items, 10 classes."""
+    """Fashion-MNIST - 28x28 grayscale images of clothing items, 10 classes.
+
+    OpenML preserves the canonical split: first 60k train, last 10k test.
+    """
 
     name = "Fashion-MNIST"
+
+    @staticmethod
+    def has_default_split() -> bool:
+        return True
+
+    def default_split(self) -> tuple[Dataset, Dataset]:
+        return _slice_split(self, n_train=60_000)
 
 
 @dataclass
 class CIFAR10Dataset(OpenMLDataset):
-    """CIFAR-10 - 32x32 color images, 10 classes."""
+    """CIFAR-10 — 32x32 colour images, 10 classes.
 
-    name = "CIFAR_10_small"
+    Uses the full OpenML ``CIFAR_10`` dataset (id 40927) which preserves the
+    canonical order: first 50 000 samples are the original training set, the
+    last 10 000 are the original test set.
+
+    The previous ``CIFAR_10_small`` name pointed at a 20 000-sample stratified
+    subsample where the train/test split had been discarded — that version has
+    no recoverable canonical split and is therefore unsuitable here.
+    """
+
+    name = "CIFAR_10"  # full 60 k dataset, canonical ordering kept
+
+    @staticmethod
+    def has_default_split() -> bool:
+        return True
+
+    def default_split(self) -> tuple[Dataset, Dataset]:
+        # Original CIFAR-10: 50 000 train + 10 000 test, stored in that order
+        # by OpenML's CIFAR_10 (id 40927).
+        return _slice_split(self, n_train=50_000)
 
 
 class DatasetRegistry:
@@ -685,3 +844,151 @@ class DatasetRegistry:
         if dataset_cls is None:
             raise ValueError(f"Unknown dataset: {name}")
         return dataset_cls(*args, **kwargs)
+
+    @staticmethod
+    def get_dataset_class(name: DatasetEnum) -> Type[DownloadableDataset]:
+        dataset_cls = DatasetRegistry.REGISTRY.get(name)
+        if dataset_cls is None:
+            raise ValueError(f"Unknown dataset: {name}")
+        return dataset_cls
+
+
+@dataclass(frozen=True)
+class ResolvedSplit:
+    """Result of resolve_split: train/test datasets plus on-disk paths and id."""
+
+    train: Dataset
+    test: Dataset
+    split_id: str
+    split_dir: Path
+    train_dir: Path
+    test_dir: Path
+
+    def manifest_path(self) -> Path:
+        return self.split_dir / SPLIT_MANIFEST_FILENAME
+
+
+def _seeded_split_id(test_size: float, split_seed: int) -> str:
+    return f"seed{split_seed}_test{test_size:.2f}"
+
+
+def resolve_split(dataset_cfg: DatasetConfig) -> ResolvedSplit:
+    """Load a cached split from disk, or build one (default if available, else
+    seed-based) and write it to disk.
+
+    Layout under `<dataset_cfg.path>/splits/<split_id>/`:
+        - train/data.npz
+        - test/data.npz
+        - split.json (manifest)
+
+    `split_id` is `"default"` for canonical splits or `seed{S}_test{T:.2f}` for
+    seed-based random splits, where S is `dataset_cfg.split_seed`.
+    """
+    dataset_cls = DatasetRegistry.get_dataset_class(dataset_cfg.name)
+    has_default = dataset_cls.has_default_split()
+    split_seed = dataset_cfg.split_seed
+    split_id = (
+        "default"
+        if has_default
+        else _seeded_split_id(dataset_cfg.test_size, split_seed)
+    )
+
+    dataset_root = Path(dataset_cfg.path)
+    split_dir = dataset_root / "splits" / split_id
+    train_dir = split_dir / "train"
+    test_dir = split_dir / "test"
+
+    if (train_dir / SPLIT_DATA_FILENAME).exists() and (
+        test_dir / SPLIT_DATA_FILENAME
+    ).exists():
+        train = Dataset.load_split(train_dir, dataset_cls)
+        test = Dataset.load_split(test_dir, dataset_cls)
+        logger.info(
+            "loaded split %s from %s (n_train=%d, n_test=%d)",
+            split_id,
+            split_dir,
+            len(train),
+            len(test),
+        )
+        return ResolvedSplit(
+            train=train,
+            test=test,
+            split_id=split_id,
+            split_dir=split_dir,
+            train_dir=train_dir,
+            test_dir=test_dir,
+        )
+
+    full = DownloadableDataset.load(
+        dataset=dataset_cfg.name,
+        directory=dataset_cfg.path,
+        store_on_disk=dataset_cfg.store_on_disk,
+    )
+
+    if has_default:
+        train, test = full.default_split()
+    else:
+        train, test = full.train_test_split(
+            test_size=dataset_cfg.test_size, seed=split_seed
+        )
+
+    split_dir.mkdir(parents=True, exist_ok=True)
+    train.save_split(train_dir)
+    test.save_split(test_dir)
+    with open(split_dir / SPLIT_MANIFEST_FILENAME, "w") as f:
+        json.dump(
+            {
+                "dataset": dataset_cfg.name.value,
+                "strategy": "default" if has_default else "random",
+                "test_size": dataset_cfg.test_size,
+                "split_seed": None if has_default else split_seed,
+                "split_id": split_id,
+                "n_train": int(len(train)),
+                "n_test": int(len(test)),
+            },
+            f,
+            indent=2,
+        )
+    logger.info(
+        "wrote split %s to %s (strategy=%s, n_train=%d, n_test=%d)",
+        split_id,
+        split_dir,
+        "default" if has_default else "random",
+        len(train),
+        len(test),
+    )
+
+    return ResolvedSplit(
+        train=train,
+        test=test,
+        split_id=split_id,
+        split_dir=split_dir,
+        train_dir=train_dir,
+        test_dir=test_dir,
+    )
+
+
+def load_split_from_disk(
+    dataset_name: DatasetEnum, split_dir: Path
+) -> tuple[Dataset, Dataset]:
+    """Load a previously cached (train, test) split from disk."""
+    dataset_cls = DatasetRegistry.get_dataset_class(dataset_name)
+    train = Dataset.load_split(split_dir / "train", dataset_cls)
+    test = Dataset.load_split(split_dir / "test", dataset_cls)
+    return train, test
+
+
+def normalize_for_loss(
+    train: Dataset, test: Dataset, loss: LossType
+) -> tuple[Dataset, Dataset]:
+    """For MSE losses, fit StandardScaler on train and apply to both. No-op for
+    classification losses."""
+    if loss != LossType.MSE:
+        return train, test
+    train_inputs, test_inputs = Dataset.normalize_data(train.inputs, test.inputs)
+    train_targets, test_targets = Dataset.normalize_data(train.targets, test.targets)
+    cls = type(train)
+    return (
+        cls(inputs=train_inputs, targets=train_targets),
+        cls(inputs=test_inputs, targets=test_targets),
+    )

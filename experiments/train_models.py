@@ -17,12 +17,13 @@ Usage:
         --config-path=../configs \
         save_epochs=[10,50,100]
     
-    # Override dataset and seed
+    # Override dataset and seeds
     python -m experiments.train_models \
         --config-name=concrete_sweep \
         --config-path=../configs \
         dataset.name=CONCRETE \
-        seed=42
+        dataset.split_seed=0 \
+        model_seed=42
     
     # Capture best models YAML path for pipeline automation
     BEST_MODELS=$(python -m experiments.train_models \
@@ -63,7 +64,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import asdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import hydra
 import yaml
@@ -77,7 +78,12 @@ from experiments.config_builder import (
 )
 from experiments.utils import cleanup_memory, to_dataclass
 from src.config import LossType, ModelConfig, TrainingExperimentConfig
-from src.utils.data.data import Dataset, DownloadableDataset
+from src.utils.data.data import (
+    Dataset,
+    ResolvedSplit,
+    normalize_for_loss,
+    resolve_split,
+)
 from src.utils.loss import get_loss
 from src.utils.models.registry import ModelRegistry
 from src.utils.optimizers import optimizer
@@ -98,9 +104,13 @@ cs.store(name="training_experiment", node=TrainingExperimentConfig)
 
 
 def generate_model_directory(
-    model_config: ModelConfig, base_dir: str, seed: int
+    model_config: ModelConfig, base_dir: str, model_seed: int, split_seed: int
 ) -> str:
-    """Generate a unique directory path for a model based on its configuration."""
+    """Generate a unique directory path for a model based on its configuration.
+
+    Includes both `model_seed` (init/training) and `split_seed` (train/test split)
+    in the hash so changing either yields a distinct cache directory.
+    """
     config_hash = hash_data(
         {
             "architecture": model_config.architecture.value,
@@ -111,7 +121,8 @@ def generate_model_directory(
             "optimizer": model_config.training.optimizer.value,
             "epochs": model_config.training.epochs,
             "batch_size": model_config.training.batch_size,
-            "seed": seed,
+            "model_seed": model_seed,
+            "split_seed": split_seed,
         },
         length=12,
     )
@@ -123,8 +134,10 @@ def train_single_model(
     model_config: ModelConfig,
     train_dataset: Dataset,
     val_dataset: Dataset,
-    seed: int,
+    model_seed: int,
+    split_seed: int,
     save_epochs: List[int],
+    dataset_info: Optional[Dict] = None,
 ) -> Dict:
     """Train a single model and return its results."""
 
@@ -133,7 +146,7 @@ def train_single_model(
     if model_config.output_dim != train_dataset.output_dim():
         model_config.output_dim = train_dataset.output_dim()
 
-    model = ModelRegistry.get_model(model_config=model_config, seed=seed)
+    model = ModelRegistry.get_model(model_config=model_config, seed=model_seed)
     logger.info(f"Model has {model.num_params} parameters")
 
     model_dir = model_config.directory
@@ -144,19 +157,24 @@ def train_single_model(
         logger.info(f"[LOAD] {model_config.get_model_display_name()} from {model_dir}")
     else:
         logger.info(f"[TRAIN] {model_config.get_model_display_name()}")
+        batch_size = model_config.training.batch_size
+        batches_per_epoch = (len(train_dataset) + batch_size - 1) // batch_size
+        total_steps = batches_per_epoch * model_config.training.epochs
         model, params, _ = train_model(
             model_config=model_config,
             dataloader=train_dataset.get_dataloader(
-                batch_size=model_config.training.batch_size, seed=seed
+                batch_size=model_config.training.batch_size, seed=model_seed
             ),
             loss_fn=get_loss(model_config.loss),
             optimizer=optimizer(
                 optimizer_enum=model_config.training.optimizer,
                 lr=model_config.training.learning_rate,
                 weight_decay=model_config.training.weight_decay,
+                lr_schedule=model_config.training.lr_schedule,
+                total_steps=total_steps,
             ),
             epochs=model_config.training.epochs,
-            seed=seed,
+            seed=model_seed,
             save_epochs=save_epochs,
         )
 
@@ -175,7 +193,12 @@ def train_single_model(
         metadata = {
             "val_loss": float(val_loss),
             "val_accuracy": float(val_acc),
+            "model_seed": int(model_seed),
+            "split_seed": int(split_seed),
+            "saved_epochs": [int(e) for e in save_epochs],
         }
+        if dataset_info is not None:
+            metadata["dataset"] = dataset_info
     else:
         val_loss = evaluate_loss(
             model,
@@ -200,7 +223,12 @@ def train_single_model(
         )
         metadata = {
             "val_loss": float(val_loss),
+            "model_seed": int(model_seed),
+            "split_seed": int(split_seed),
+            "saved_epochs": [int(e) for e in save_epochs],
         }
+        if dataset_info is not None:
+            metadata["dataset"] = dataset_info
     metadata.update({"num_parameters": model.num_params})
 
     save_model_checkpoint(
@@ -294,7 +322,8 @@ def main(cfg: DictConfig):
     logger.info(f"{'=' * 70}")
     logger.info(f"Starting Training: {config.experiment_name}")
     logger.info(f"Timestamp: {timestamp}")
-    logger.info(f"Seed: {config.seed}")
+    logger.info(f"Model seed: {config.model_seed}")
+    logger.info(f"Split seed: {config.dataset.split_seed}")
     logger.info(f"Dataset: {config.dataset.name.value}")
     logger.info(f"Models to train: {len(config.models)}")
     logger.info(f"Epoch checkpoints to store: {config.save_epochs}")
@@ -306,34 +335,31 @@ def main(cfg: DictConfig):
     for model_config in config.models:
         if model_config.directory is None:
             model_config.directory = generate_model_directory(
-                model_config, models_base_dir, seed=config.seed
+                model_config,
+                models_base_dir,
+                model_seed=config.model_seed,
+                split_seed=config.dataset.split_seed,
             )
 
-    # Load dataset
-    dataset = DownloadableDataset.load(
-        dataset=config.dataset.name,
-        directory=config.dataset.path,
-        store_on_disk=config.dataset.store_on_disk,
+    # Resolve (or build + cache) the train/test split on disk.
+    split: ResolvedSplit = resolve_split(config.dataset)
+    logger.info(
+        f"Dataset {config.dataset.name.value}: split_id={split.split_id}, "
+        f"n_train={len(split.train)}, n_test={len(split.test)}"
     )
-    dataset_cls = type(dataset)
-    train_ds, val_ds = dataset.train_test_split(
-        test_size=config.dataset.test_size, seed=config.seed
-    )
-    train_inputs, train_targets = train_ds.inputs, train_ds.targets
-    val_inputs, val_targets = val_ds.inputs, val_ds.targets
 
-    # Normalize data for regression tasks
-    if model_config.loss == LossType.MSE:
-        train_inputs, val_inputs = Dataset.normalize_data(train_inputs, val_inputs)
-        train_targets, val_targets = Dataset.normalize_data(train_targets, val_targets)
+    # Per-loss normalization (fit on train, apply to test).
+    loss = config.models[0].loss if config.models else LossType.CROSS_ENTROPY
+    train_ds, val_ds = normalize_for_loss(split.train, split.test, loss)
 
-    assert val_targets is not None, "Validation targets cannot be None"
-    assert train_targets is not None, "Training targets cannot be None"
-    assert val_inputs is not None, "Validation inputs cannot be None"
-    assert train_inputs is not None, "Training inputs cannot be None"
-    train_ds = dataset_cls(train_inputs, train_targets)
-    val_ds = dataset_cls(val_inputs, val_targets)
-    logger.info(f"Loaded dataset: {config.dataset.name.value}")
+    dataset_info = {
+        "name": config.dataset.name.value,
+        "path": config.dataset.path,
+        "split_id": split.split_id,
+        "split_dir": str(split.split_dir),
+        "train_dir": str(split.train_dir),
+        "test_dir": str(split.test_dir),
+    }
 
     # Train all models
     logger.info(f"{'#' * 70}")
@@ -356,8 +382,10 @@ def main(cfg: DictConfig):
             model_config=model_config,
             train_dataset=train_ds,
             val_dataset=val_ds,
-            seed=config.seed,
+            model_seed=config.model_seed,
+            split_seed=config.dataset.split_seed,
             save_epochs=config.save_epochs,
+            dataset_info=dataset_info,
         )
         training_results.append(result)
 
@@ -470,10 +498,7 @@ def main(cfg: DictConfig):
     with open(best_models_yaml, "w") as f:
         yaml.dump(
             {
-                "dataset": asdict(config.dataset),
-                "seed": config.seed,
                 "models": normalize_for_yaml(models_for_yaml),
-                "intermediate_epochs": config.save_epochs,
             },
             f,
             default_flow_style=False,

@@ -1,8 +1,9 @@
 """Hessian analysis pipeline (stepwise rewrite of experiments/hessian_analysis.py).
 
 Step 1: load models from a models YAML.
-Step 2: load dataset + collect activations/gradients (plus a second
-        independent `_corr` run for MCMC eigenvalue correction).
+Step 2: load the on-disk train/test split that training cached, and collect
+        activations/gradients (plus a second independent `_corr` run for MCMC
+        eigenvalue correction).
 """
 
 import argparse
@@ -10,21 +11,19 @@ import json
 import logging
 import os
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import jax.numpy as jnp
-import numpy as np
 import yaml
 from jax.random import PRNGKey
-
 from tqdm.auto import tqdm
 
 from experiments import paths, provenance
 from experiments.utils import block_tree, json_safe, to_dataclass
 from src.config import (
     ComputationType,
-    DatasetConfig,
+    DatasetEnum,
     HessianAnalysisConfig,
     HessianApproximationMethod,
     LossType,
@@ -33,10 +32,15 @@ from src.config import (
 )
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator
+from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import sample_vectors
-from src.utils.data.data import Dataset, DownloadableDataset
+from src.utils.data.data import (
+    Dataset,
+    load_split_from_disk,
+    normalize_for_loss,
+)
 from src.utils.influence import compute_influence_matrix, compute_per_example_flat_grads
 from src.utils.loss import get_loss
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
@@ -52,38 +56,107 @@ def load_yaml(path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def _read_saved_epochs(model_dir: str) -> Optional[List[int]]:
+    """Read the `saved_epochs` list from model.json metadata.
+
+    Returns None if the field is absent (e.g., model trained before this field
+    was added) — callers should treat that as "trust the request, don't filter."
+    """
+    model_json = os.path.join(model_dir, "model.json")
+    if not os.path.exists(model_json):
+        return None
+    with open(model_json, "r") as f:
+        data = json.load(f)
+    metadata = data.get("metadata") or {}
+    saved = metadata.get("saved_epochs")
+    return None if saved is None else [int(e) for e in saved]
+
+
 def model_epoch_pairs(
-    models: List[str], epochs: Optional[List[int]]
+    models: List[str], requested_epochs: Optional[List[int]]
 ) -> List[Tuple[str, Optional[int]]]:
-    if not epochs:
+    """Build (model_dir, epoch) pairs to analyze.
+
+    `requested_epochs` is the analysis YAML's `epochs:` list. If empty/None,
+    each model is analyzed at its final checkpoint only. Otherwise, requested
+    epochs are intersected with each model's `saved_epochs` from model.json
+    metadata; any miss is logged and skipped. Models without `saved_epochs`
+    metadata fall back to honoring the request as-is.
+    """
+    if not requested_epochs:
         return [(m, None) for m in models]
-    return [(m, e) for m in models for e in epochs]
+    pairs: List[Tuple[str, Optional[int]]] = []
+    for m in models:
+        saved = _read_saved_epochs(m)
+        for e in requested_epochs:
+            if saved is None or e in saved:
+                pairs.append((m, e))
+            else:
+                logger.warning(
+                    "epoch %d not in saved_epochs=%s for model %s; skipping",
+                    e,
+                    saved,
+                    m,
+                )
+    return pairs
 
 
-def load_train_test(
-    dataset_cfg: DatasetConfig, seed: int
+def _read_model_dataset_info(model_dir: str) -> Optional[Dict]:
+    """Read the dataset block written into model.json's metadata at training time."""
+    model_json = os.path.join(model_dir, "model.json")
+    if not os.path.exists(model_json):
+        return None
+    with open(model_json, "r") as f:
+        data = json.load(f)
+    metadata = data.get("metadata") or {}
+    return metadata.get("dataset")
+
+
+def resolve_shared_dataset(model_dirs: List[str]) -> Dict:
+    """Read each model's saved dataset block; warn if any disagree, return the
+    first one."""
+    if not model_dirs:
+        raise ValueError(
+            "No model directories were provided for Hessian analysis. "
+            "Check that the models YAML contains a non-empty 'models' list."
+        )
+
+    infos: List[Tuple[str, Optional[Dict]]] = [
+        (m, _read_model_dataset_info(m)) for m in model_dirs
+    ]
+    missing = [m for m, info in infos if info is None]
+    if missing:
+        raise FileNotFoundError(
+            "Models missing dataset metadata in model.json (was the model trained "
+            f"with the updated train_models.py?): {missing}"
+        )
+
+    reference = infos[0][1]
+    assert reference is not None
+    ref_key = (reference["name"], reference["split_id"], reference["train_dir"])
+    for model_dir, info in infos[1:]:
+        assert info is not None
+        key = (info["name"], info["split_id"], info["train_dir"])
+        if key != ref_key:
+            logger.error(
+                "model %s was trained on a different dataset/split (%s) than the "
+                "first model (%s); analysis will use the first model's split.",
+                model_dir,
+                key,
+                ref_key,
+            )
+    return reference
+
+
+def load_train_test_for_loss(
+    dataset_info: Dict, loss: LossType
 ) -> Tuple[Dataset, Dataset]:
-    """Reproduce the model's train/test split from (seed, test_size)."""
-    full = DownloadableDataset.load(
-        dataset=dataset_cfg.name,
-        directory=dataset_cfg.path,
-        store_on_disk=dataset_cfg.store_on_disk,
+    """Load the cached split from disk and apply per-loss normalization."""
+    train, test = load_split_from_disk(
+        DatasetEnum(dataset_info["name"]),
+        Path(dataset_info["split_dir"]),
     )
-    return full.train_test_split(test_size=dataset_cfg.test_size, seed=seed)
-
-
-def prepare_datasets_for_model(
-    train: Dataset, test: Dataset, loss: LossType
-) -> Tuple[Dataset, Dataset]:
-    """Fresh (train, test) pair, MSE-normalized with a shared scaler."""
-    if loss != LossType.MSE:
-        return Dataset(train.inputs, train.targets), Dataset(test.inputs, test.targets)
-    train_inputs, test_inputs = Dataset.normalize_data(train.inputs, test.inputs)
-    train_targets, test_targets = Dataset.normalize_data(train.targets, test.targets)
-    return (
-        Dataset(train_inputs, train_targets),
-        Dataset(test_inputs, test_targets),
-    )
+    return normalize_for_loss(train, test, loss)
 
 
 def _has_cached_collection(save_dir: str) -> bool:
@@ -128,8 +201,11 @@ def collect_activations_gradients(
         corr = _collect(collector_dir_corr, PRNGKey(seed + 1))
     else:
         corr = primary
-    logger.info("collected acts/grads → %s%s", collector_dir,
-                " (+ _corr)" if strategy == PseudoTargetGenerationStrategy.MCMC else "")
+    logger.info(
+        "collected acts/grads → %s%s",
+        collector_dir,
+        " (+ _corr)" if strategy == PseudoTargetGenerationStrategy.MCMC else "",
+    )
 
     return primary, corr
 
@@ -170,7 +246,10 @@ def resolve_damping(
         RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
     ):
         ekfac = ctx.get(HessianApproximationMethod.EKFAC)
-        return ekfac.get_damping(damping_strategy=strat, factor=comp.regularization_value), None
+        assert isinstance(ekfac, EKFACComputer)
+        return ekfac.get_damping(
+            damping_strategy=strat, factor=comp.regularization_value
+        ), None
     if strat == RegularizationStrategy.FIXED:
         return comp.regularization_value, None
     if strat == RegularizationStrategy.PSEUDO_INVERSE:
@@ -184,7 +263,9 @@ def compare_matrices(
     approximators: List[HessianApproximationMethod],
     metrics: List[FullMatrixMetric],
 ) -> Dict[str, Dict[str, float]]:
-    ref_H = block_tree(ctx.get(reference).estimate_hessian(), f"{reference.value}_matrix")
+    ref_H = block_tree(
+        ctx.get(reference).estimate_hessian(), f"{reference.value}_matrix"
+    )
     out: Dict[str, Dict[str, float]] = {m.value: {} for m in metrics}
     others = [a for a in approximators if a != reference]
     pbar = tqdm(others, desc=f"matrix vs {reference.value}")
@@ -192,7 +273,9 @@ def compare_matrices(
         pbar.set_postfix_str(approx.value[:5].ljust(5))
         comp = ctx.get(approx)
         for metric in metrics:
-            score = comp.compare_full_hessian_estimates(comparison_matrix=ref_H, metric=metric)
+            score = comp.compare_full_hessian_estimates(
+                comparison_matrix=ref_H, metric=metric
+            )
             out[metric.value][approx.value] = float(score)
     return out
 
@@ -205,15 +288,21 @@ def compare_hvps(
     grads_1,
     grads_2,
 ) -> Dict[str, Dict[str, float]]:
-    ref_hvp = block_tree(ctx.get(reference).estimate_hvp(grads_1), f"{reference.value}_hvp")
+    ref_hvp = block_tree(
+        ctx.get(reference).estimate_hvp(grads_1), f"{reference.value}_hvp"
+    )
     out: Dict[str, Dict[str, float]] = {m.name: {} for m in metrics}
     others = [a for a in approximators if a != reference]
     pbar = tqdm(others, desc=f"hvp vs {reference.value}")
     for approx in pbar:
         pbar.set_postfix_str(approx.value[:5].ljust(5))
-        approx_hvp = block_tree(ctx.get(approx).estimate_hvp(grads_1), f"{approx.value}_hvp")
+        approx_hvp = block_tree(
+            ctx.get(approx).estimate_hvp(grads_1), f"{approx.value}_hvp"
+        )
         for metric in metrics:
-            out[metric.name][approx.value] = float(metric.compute(ref_hvp, approx_hvp, grads_2))
+            out[metric.name][approx.value] = float(
+                metric.compute(ref_hvp, approx_hvp, grads_2)
+            )
     return out
 
 
@@ -230,7 +319,9 @@ def compare_ihvps(
 ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, float]]:
     ref = ctx.get(reference)
     ref_ihvp = block_tree(
-        ref.estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
+        ref.estimate_ihvp(
+            grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor
+        ),
         f"{reference.value}_ihvp",
     )
     out: Dict[str, Dict[str, float]] = {m.name: {} for m in metrics}
@@ -240,11 +331,15 @@ def compare_ihvps(
     for approx in pbar:
         pbar.set_postfix_str(approx.value[:5].ljust(5))
         approx_ihvp = block_tree(
-            ctx.get(approx).estimate_ihvp(grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor),
+            ctx.get(approx).estimate_ihvp(
+                grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor
+            ),
             f"{approx.value}_ihvp",
         )
         for metric in metrics:
-            out[metric.name][approx.value] = float(metric.compute(ref_ihvp, approx_ihvp, grads_2))
+            out[metric.name][approx.value] = float(
+                metric.compute(ref_ihvp, approx_ihvp, grads_2)
+            )
         if compute_approximation_error:
             round_trip[approx.value] = float(
                 VectorMetric.RELATIVE_ERROR.compute(
@@ -291,13 +386,10 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
     models_cfg = load_yaml(models_config_path)
     analysis_raw = load_yaml(analysis_config_path)
 
-    seed: int = models_cfg["seed"]
-    model_ids: List[str] = models_cfg["models"]
-    epochs: Optional[List[int]] = (
-        models_cfg.get("intermediate_epochs") or models_cfg.get("epochs")
-    )
+    models: List[str] = models_cfg["models"]
+    # Epoch filter comes from the analysis YAML; final-only if absent.
+    epochs: Optional[List[int]] = analysis_raw.get("epochs")
 
-    dataset_cfg: DatasetConfig = to_dataclass(DatasetConfig, models_cfg["dataset"])  # type: ignore
     analysis_cfg: HessianAnalysisConfig = to_dataclass(
         HessianAnalysisConfig, analysis_raw["hessian_analysis"]
     )  # type: ignore
@@ -310,19 +402,22 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
         base_train.inputs.shape[0],
         base_test.inputs.shape[0],
     )
+    dataset_info = resolve_shared_dataset(models)
+    logger.info(
+        "dataset %s: split_id=%s, split_dir=%s",
+        dataset_info["name"],
+        dataset_info["split_id"],
+        dataset_info["split_dir"],
+    )
 
     all_results: List[Dict] = []
-    run_id = time.strftime("%Y%m%d-%H%M%S")
-    run_dir = paths.run_dir(run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    code_info = provenance.git_info()
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
 
-    comp_cfg = analysis_cfg.computation_config
-    strategy_str = comp_cfg.pseudo_target_generation_strategy.value
-    reps = comp_cfg.pseudo_target_generation_repetitions
+    # Per-loss caching of normalized train/test, since loading + normalizing only
+    # depends on the loss type.
+    cached_splits: Dict[LossType, Tuple[Dataset, Dataset]] = {}
 
-    for model_id, epoch in model_epoch_pairs(model_ids, epochs):
-        model_dir = str(paths.model_dir(dataset_name, model_id))
+    for model_dir, epoch in model_epoch_pairs(models, epochs):
         params, model, model_config, metadata = load_model_checkpoint(
             model_dir, epoch=epoch
         )
@@ -346,41 +441,67 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
         )
         logger.info("=" * 70)
 
-        dataset, test_dataset = prepare_datasets_for_model(
-            base_train, base_test, model_config.loss
-        )
-        loss_fn = get_loss(model_config.loss)
-        collector_dir = str(
-            paths.collector_dir(dataset_name, model_id, epoch, strategy_str, reps)
-        )
-        collector_dir_corr = str(
-            paths.collector_dir(
-                dataset_name, model_id, epoch, strategy_str, reps, corr=True
+        if model_config.loss not in cached_splits:
+            cached_splits[model_config.loss] = load_train_test_for_loss(
+                dataset_info, model_config.loss
             )
-        )
+        train_ds, test_ds = cached_splits[model_config.loss]
 
+        loss_fn = get_loss(model_config.loss)
+        collector_dir = resolve_collector_dir(model_dir, epoch)
+
+        # Collector runs over the training set (Hessian/Fisher are estimated on
+        # train data).
+        analysis_seed = analysis_cfg.analysis_seed
         collector_data, collector_data_corr = collect_activations_gradients(
             model=model,
             params=params,
-            dataset=dataset,
+            dataset=train_ds,
             loss_fn=loss_fn,
             analysis_cfg=analysis_cfg,
             collector_dir=collector_dir,
-            collector_dir_corr=collector_dir_corr,
-            seed=seed,
+            seed=analysis_seed,
         )
 
-        probes = sample_vectors(
-            vector_config=analysis_cfg.vector_config,
+        # Probes: grads_1 from train, grads_2 from test. Cap num_samples at the
+        # smaller of the two so both sides have matching counts.
+        requested = analysis_cfg.vector_config.num_samples
+        max_n = min(len(train_ds), len(test_ds))
+        n_samples = min(requested, max_n)
+        if requested > max_n:
+            logger.warning(
+                "vector_config.num_samples=%d exceeds available data "
+                "(min(train=%d, test=%d)); clamping to %d",
+                requested,
+                len(train_ds),
+                len(test_ds),
+                max_n,
+            )
+        clamped_vec_cfg = replace(analysis_cfg.vector_config, num_samples=n_samples)
+
+        grads_1 = sample_vectors(
+            vector_config=clamped_vec_cfg,
             model=model,
             params=params,
-            inputs=dataset.inputs,
-            targets=dataset.targets,
+            inputs=train_ds.inputs,
+            targets=train_ds.targets,
             loss_fn=loss_fn,
-            seed=seed,
-            repetitions=2,
+            seed=analysis_seed,
+            repetitions=1,
         )
-        grads_1, grads_2 = probes[0], probes[1]
+        grads_2 = sample_vectors(
+            vector_config=clamped_vec_cfg,
+            model=model,
+            params=params,
+            inputs=test_ds.inputs,
+            targets=test_ds.targets,
+            loss_fn=loss_fn,
+            seed=analysis_seed + 1,
+            repetitions=1,
+        )
+
+        # Use train_ds as the canonical "dataset" for the rest of the pipeline.
+        dataset = train_ds
 
         model_ctx = ModelContext.create(
             model=model,
@@ -389,9 +510,10 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             loss_fn=loss_fn,
         )
 
-        # Hessian computer factors (kfac, ekfac, ...) cache one level inside
-        # the collector dir, so the raw collector data and the derived
-        # per-method factors don't share a namespace.
+        build_base_dir = os.path.join(model_config.directory, "collector")  # type: ignore
+        if epoch is not None:
+            build_base_dir = os.path.join(build_base_dir, f"epoch_{epoch}")
+
         ctx = HessianCtx(
             collector_data=collector_data,
             collector_data_corr=collector_data_corr,
@@ -414,72 +536,57 @@ def main(models_config_path: str, analysis_config_path: str) -> None:
             logger.info("--- reference: %s ---", reference.value)
             if ComputationType.MATRIX in comp_cfg.computation_types:
                 res = compare_matrices(
-                    ctx, reference, comp_cfg.approximators,
+                    ctx,
+                    reference,
+                    comp_cfg.approximators,
                     analysis_cfg.matrix_config.metrics,
                 )
                 for metric, scores in res.items():
                     matrix_comparisons.setdefault(metric, {})[reference.value] = scores
             if ComputationType.HVP in comp_cfg.computation_types:
                 res = compare_hvps(
-                    ctx, reference, comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
+                    ctx,
+                    reference,
+                    comp_cfg.approximators,
+                    analysis_cfg.vector_config.metrics,
+                    grads_1,
+                    grads_2,
                 )
                 for metric, scores in res.items():
                     hvp_comparisons.setdefault(metric, {})[reference.value] = scores
             if ComputationType.IHVP in comp_cfg.computation_types:
                 res, rt = compare_ihvps(
-                    ctx, reference, comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
-                    damping, pif,
+                    ctx,
+                    reference,
+                    comp_cfg.approximators,
+                    analysis_cfg.vector_config.metrics,
+                    grads_1,
+                    grads_2,
+                    damping,
+                    pif,
                 )
                 for metric, scores in res.items():
                     ihvp_comparisons.setdefault(metric, {})[reference.value] = scores
                 round_trip_errors[reference.value] = rt
 
-        influence_section: Optional[Dict] = None
-        if comp_cfg.compute_influence:
-            train_flat_grads = compute_per_example_flat_grads(
-                model, params, dataset.inputs, dataset.targets, loss_fn
-            )
-            test_flat_grads = compute_per_example_flat_grads(
-                model, params, test_dataset.inputs, test_dataset.targets, loss_fn
-            )
-            all_methods = list(dict.fromkeys(
-                list(comp_cfg.approximators) + list(comp_cfg.comparison_references)
-            ))
-            model_tag = f"{model_id}_{tag}"
-            influence_paths = compute_influence_scores(
-                ctx=ctx,
-                methods=all_methods,
-                train_flat_grads=train_flat_grads,
-                test_flat_grads=test_flat_grads,
-                damping=damping,
-                pseudo_inverse_factor=pif,
-                run_id=run_id,
-                model_tag=model_tag,
-            )
-            influence_section = {"paths": influence_paths}
-
-        all_results.append({
-            "model_id": model_id,
-            "model_name": model_config.get_model_display_name(),
-            "model_directory": model_dir,
-            "epoch": epoch,
-            "config_hash": result_config_hash,
-            "model_hash": result_model_hash,
-            "model_config": asdict(model_config),
-            "num_parameters": model.num_params,
-            "metadata": metadata or {},
-            "damping": damping,
-            "pseudo_inverse_factor": pif,
-            "hessian_analysis": {
-                "matrix_comparisons": matrix_comparisons,
-                "hvp_comparisons": hvp_comparisons,
-                "ihvp_comparisons": ihvp_comparisons,
-                "ihvp_round_trip_approximation_errors": round_trip_errors,
-                "influence": influence_section,
-            },
-        })
+        all_results.append(
+            {
+                "model_name": model_config.get_model_display_name(),
+                "model_directory": model_dir,
+                "epoch": epoch,
+                "model_config": asdict(model_config),
+                "num_parameters": model.num_params,
+                "metadata": metadata or {},
+                "damping": damping,
+                "pseudo_inverse_factor": pif,
+                "hessian_analysis": {
+                    "matrix_comparisons": matrix_comparisons,
+                    "hvp_comparisons": hvp_comparisons,
+                    "ihvp_comparisons": ihvp_comparisons,
+                    "ihvp_round_trip_approximation_errors": round_trip_errors,
+                },
+            }
+        )
 
     output_file = run_dir / "results.json"
     with open(output_file, "w") as f:
@@ -505,7 +612,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         default="experiments/shared_models.yaml",
-        help="Models YAML (models list, dataset, seed, epochs).",
+        help="Models YAML (`models` field with list of model directories).",
     )
     parser.add_argument(
         "--analysis-config",
