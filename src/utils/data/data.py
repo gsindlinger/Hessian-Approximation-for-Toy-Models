@@ -586,34 +586,113 @@ class CancerDataset(UCIClassificationDataset):
     id = 17
 
 
-class DigitsDataset(UCIClassificationDataset):
-    """Optical recognition of handwritten digits - 10-class classification.
-    8x8 images (64 features) with pixel values in range 0-16, already flattened.
+@dataclass
+class DigitsDataset(DownloadableDataset, ClassificationDataset):
+    """Optical recognition of handwritten digits (UCI id 80).
+
+    The dataset was collected from 43 writers: 30 contributed to the training
+    file and the remaining 13 to the test file.  The canonical split is
+    therefore person-disjoint (3 823 train / 1 797 test).
+
+    We download the raw ``.tra`` / ``.tes`` files directly from the UCI
+    archive because ``ucimlrepo`` merges them into a single dataframe,
+    discarding the split information.
     """
 
-    id = 80
+    _UCI_DIGITS_TRA_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/optdigits/optdigits.tra"
+    _UCI_DIGITS_TES_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/optdigits/optdigits.tes"
+
+    # Column names: 64 pixel features + class label
+    _OPTDIGITS_COLS = [f"pixel_{i}" for i in range(64)] + ["class"]
 
     @classmethod
-    def create_dataset_from_raw(cls, raw: RawDataset) -> Dataset:
-        X = raw.X.values
+    def download(cls) -> RawDataset:
+        import urllib.request
+
+        def _fetch(url: str) -> pd.DataFrame:
+            with urllib.request.urlopen(url) as resp:
+                return pd.read_csv(resp, header=None, names=cls._OPTDIGITS_COLS)
+
+        tra = _fetch(cls._UCI_DIGITS_TRA_URL)
+        tes = _fetch(cls._UCI_DIGITS_TES_URL)
+        # Store split membership so we can recover it later.
+        tra["_split"] = "train"
+        tes["_split"] = "test"
+        combined = pd.concat([tra, tes], ignore_index=True)
+
+        X = combined[cls._OPTDIGITS_COLS[:-1]]  # 64 pixel columns
+        Y = combined[["class"]]
+        metadata = {
+            "split_col": "_split",
+            "split_values": combined["_split"].tolist(),
+            "n_train": len(tra),
+            "n_test": len(tes),
+        }
+        return RawDataset(X=X, Y=Y, metadata=metadata)
+
+    @staticmethod
+    def save(directory: Path, raw: RawDataset) -> None:
+        raw.X.to_csv(directory / "X.csv", index=False)
+        raw.Y.to_csv(directory / "Y.csv", index=False)
+        with open(directory / "metadata.json", "w") as f:
+            json.dump(raw.metadata, f, indent=2)
+
+    @staticmethod
+    def load_from_disk(directory: Path) -> RawDataset:
+        X = pd.read_csv(directory / "X.csv")
+        Y = pd.read_csv(directory / "Y.csv")
+        with open(directory / "metadata.json") as f:
+            metadata = json.load(f)
+        return RawDataset(X=X, Y=Y, metadata=metadata)
+
+    @classmethod
+    def create_dataset_from_raw(cls, raw: RawDataset) -> "DigitsDataset":
+        X = raw.X.values.astype(np.float32)
         Y = raw.Y.values.ravel()
 
-        # Handle missing values
         X = np.nan_to_num(X, nan=0.0)
 
-        # Normalize pixels from [0, 16] to [0, 1] range
-        # (digits dataset uses 0-16 range, not 0-255)
+        # Normalise pixels from [0, 16] to [0, 1]
         if X.max() > 1.0:
             X = X / 16.0
 
-        # Encode labels as integers starting from 0
         label_encoder = LabelEncoder()
-        Y = label_encoder.fit_transform(Y)
+        Y = label_encoder.fit_transform(Y).astype(np.int32)
 
-        return cls(
+        # Stash split membership on the instance so default_split() can use it.
+        obj = cls(
             inputs=jnp.asarray(X, dtype=jnp.float32),
             targets=jnp.asarray(Y, dtype=jnp.int32),
         )
+        # Attach the split boundary derived from the metadata.
+        n_train = raw.metadata.get("n_train") if raw.metadata else None
+        object.__setattr__(obj, "_n_train", n_train)  # works for frozen & non-frozen
+        return obj
+
+    # ------------------------------------------------------------------
+    # Default split
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def has_default_split() -> bool:
+        return True
+
+    def default_split(self) -> tuple[Dataset, Dataset]:
+        n_train: int | None = getattr(self, "_n_train", None)
+        if n_train is None:
+            # Fallback: canonical sizes are well-known (3 823 / 1 797)
+            n_train = 3_823
+        return _slice_split(self, n_train=n_train)
+
+    # ------------------------------------------------------------------
+    # Dimensions
+    # ------------------------------------------------------------------
+
+    def input_dim(self) -> int:
+        return self.inputs.shape[1]
+
+    def output_dim(self) -> int:
+        return int(jnp.max(self.targets)) + 1
 
 
 @dataclass
@@ -722,9 +801,27 @@ class FashionMNISTDataset(OpenMLDataset):
 
 @dataclass
 class CIFAR10Dataset(OpenMLDataset):
-    """CIFAR-10 - 32x32 color images, 10 classes."""
+    """CIFAR-10 — 32x32 colour images, 10 classes.
 
-    name = "CIFAR_10_small"
+    Uses the full OpenML ``CIFAR_10`` dataset (id 40927) which preserves the
+    canonical order: first 50 000 samples are the original training set, the
+    last 10 000 are the original test set.
+
+    The previous ``CIFAR_10_small`` name pointed at a 20 000-sample stratified
+    subsample where the train/test split had been discarded — that version has
+    no recoverable canonical split and is therefore unsuitable here.
+    """
+
+    name = "CIFAR_10"  # full 60 k dataset, canonical ordering kept
+
+    @staticmethod
+    def has_default_split() -> bool:
+        return True
+
+    def default_split(self) -> tuple[Dataset, Dataset]:
+        # Original CIFAR-10: 50 000 train + 10 000 test, stored in that order
+        # by OpenML's CIFAR_10 (id 40927).
+        return _slice_split(self, n_train=50_000)
 
 
 class DatasetRegistry:
