@@ -103,11 +103,11 @@ class Dataset:
     @staticmethod
     def load_split(directory: Path, dataset_cls: Type[Dataset]) -> Dataset:
         """Load a previously saved split from disk into the given Dataset subclass."""
-        data = np.load(directory / SPLIT_DATA_FILENAME)
-        return dataset_cls(
-            inputs=jnp.asarray(data["inputs"]),
-            targets=jnp.asarray(data["targets"]),
-        )
+        with np.load(directory / SPLIT_DATA_FILENAME) as data:
+            return dataset_cls(
+                inputs=jnp.asarray(data["inputs"]),
+                targets=jnp.asarray(data["targets"]),
+            )
 
     @staticmethod
     def normalize_data(
