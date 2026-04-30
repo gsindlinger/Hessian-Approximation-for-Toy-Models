@@ -434,8 +434,8 @@ def compute_influence_scores(
     run_id: str,
     model_tag: str,
 ) -> Dict[str, str]:
-    """Per-method `(n_train,)` influence score (mean over query dim), saved
-    as `.npy` under `outputs/runs/<run_id>/influence/`."""
+    """Per-method `(n_query, n_train)` influence score matrix, saved as `.npy`
+    under `outputs/runs/<run_id>/influence/`. No aggregation over queries."""
     paths.influence_dir(run_id).mkdir(parents=True, exist_ok=True)
     influence_paths: Dict[str, str] = {}
     pbar = tqdm(methods, desc="influence")
@@ -447,10 +447,9 @@ def compute_influence_scores(
             computer=ctx.get(approx),
             damping=damping_table[approx.value],
             pseudo_inverse_factor=pseudo_inverse_factor,
-        )  # (n_test, n_train)
-        vec = np.asarray(jnp.mean(matrix, axis=0))  # (n_train,)
+        )  # (n_query, n_train)
         path = paths.influence_path(run_id, model_tag, approx.value)
-        np.save(str(path), vec)
+        np.save(str(path), np.asarray(matrix))
         influence_paths[approx.value] = str(path)
     return influence_paths
 

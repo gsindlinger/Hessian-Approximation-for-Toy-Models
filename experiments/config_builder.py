@@ -21,6 +21,7 @@ from src.config import (
     HessianApproximationMethod,
     HessianComputationConfig,
     LossType,
+    LRSchedule,
     MatrixAnalysisConfig,
     ModelArchitecture,
     ModelConfig,
@@ -236,7 +237,7 @@ def digits_sweep_better_hessian():
     # Create training-only config
     config = TrainingExperimentConfig(
         experiment_name="digits_better_hessian_sweep",
-        model_model_seed=12,
+        model_seed=12,
         base_output_dir="experiments/data/",
         dataset=DatasetConfig(
             name=DatasetEnum.SKLEARN_DIGITS,
@@ -248,6 +249,38 @@ def digits_sweep_better_hessian():
         save_epochs=[10, 100, 1000],
     )
     return config
+
+
+def short_config():
+    """Narrow MLPs on digits at depths 1/4/7 — minimal config for quick iteration."""
+    models = []
+    for depth in (1, 4, 7):
+        models.extend(
+            create_hyperparameter_sweep(
+                ModelArchitecture.MLP,
+                hidden_dim=[16] * depth,
+                learning_rates=[1e-3],
+                weight_decays=[1e-2],
+                epochs=500,
+                batch_size=32,
+                input_dim=64,
+                output_dim=10,
+            )
+        )
+
+    return TrainingExperimentConfig(
+        experiment_name="short_config",
+        model_seed=42,
+        base_output_dir="experiments/data/",
+        dataset=DatasetConfig(
+            name=DatasetEnum.DIGITS,
+            path="experiments/datasets/digits",
+        ),
+        models=models,
+        selection_metric="val_loss",
+        selection_minimize=True,
+        save_epochs=[10, 100, 500],
+    )
 
 
 def digits_sweep_simple():
@@ -685,6 +718,7 @@ def register_enum_representers():
     yaml.add_representer(FullMatrixMetric, enum_representer)
     yaml.add_representer(ActivationFunction, enum_representer)
     yaml.add_representer(PseudoTargetGenerationStrategy, enum_representer)
+    yaml.add_representer(LRSchedule, enum_representer)
 
 
 def hessian_analysis_sweep():
@@ -735,6 +769,7 @@ if __name__ == "__main__":
             "digits_all",
             "digits_simple",
             "digits_better_hessian",
+            "short",
             "concrete",
             "concrete_simple",
             "concrete_single_model",
@@ -762,6 +797,9 @@ if __name__ == "__main__":
         case "digits_better_hessian":
             config = digits_sweep_better_hessian()
             output_path = "experiments/configs/digits_sweep_better_hessian.yaml"
+        case "short":
+            config = short_config()
+            output_path = "experiments/configs/short_config.yaml"
         case "hessian":
             config = hessian_analysis_sweep()
             output_path = "experiments/configs/hessian_analysis.yaml"
