@@ -589,11 +589,14 @@ def main(
 
         loss_fn = get_loss(model_config.loss)
         collector_dir = str(
-            paths.collector_dir(dataset_name, model_id, epoch, strategy_str, reps)
+            paths.collector_dir(
+                dataset_name, model_id, epoch, strategy_str, reps, analysis_seed
+            )
         )
         collector_dir_corr = str(
             paths.collector_dir(
-                dataset_name, model_id, epoch, strategy_str, reps, corr=True
+                dataset_name, model_id, epoch, strategy_str, reps, analysis_seed,
+                corr=True,
             )
         )
         cache_inputs_base = {

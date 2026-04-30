@@ -39,15 +39,18 @@ def collector_dir(
     epoch: int,
     strategy: str,
     repetitions: int,
+    analysis_seed: int,
     corr: bool = False,
 ) -> Path:
-    """outputs/models/<dataset>/<model_id>/epoch_<e>/collector_<strategy>_r<reps>[_corr]/
+    """outputs/models/<dataset>/<model_id>/epoch_<e>/collector_<strategy>_r<reps>_s<seed>[_corr]/
 
-    The cache key is encoded in the dir name so different (strategy, reps)
-    settings produce parallel caches instead of clobbering.
+    The cache key is encoded in the dir name so different (strategy, reps,
+    analysis_seed) settings produce parallel caches instead of clobbering.
     """
     suffix = "_corr" if corr else ""
-    return epoch_dir(dataset, model_id, epoch) / f"collector_{strategy}_r{repetitions}{suffix}"
+    return epoch_dir(dataset, model_id, epoch) / (
+        f"collector_{strategy}_r{repetitions}_s{analysis_seed}{suffix}"
+    )
 
 
 # -- training-sweep bookkeeping ---------------------------------------------
