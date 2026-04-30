@@ -82,12 +82,12 @@ class HessianEstimator(ABC):
         ):
             self.layer_matrix = LayerMatrix.load(directory_path)
             self.is_built = True
-            logger.info(f"Loaded LayerMatrix from directory: {directory_path}")
+            logger.debug(f"Loaded LayerMatrix from directory: {directory_path}")
         else:
             self.layer_matrix = self._build()
             if directory_path is not None and self.layer_matrix is not None:
                 self.layer_matrix.save(directory=directory_path)
-                logger.info(f"Saved LayerMatrix to directory: {directory_path}")
+                logger.debug(f"Saved LayerMatrix to directory: {directory_path}")
             self.is_built = True
         return self
 
@@ -307,7 +307,7 @@ class KroneckerEstimator(HessianEstimator):
         Dict[str, Float[Array, "O"]],
     ]:
         """Compute `(Q_A, Q_G, λ_A, λ_G)` per layer from the covariance data."""
-        logger.info("Computing covariances for Kronecker approximation.")
+        logger.debug("Computing covariances for Kronecker approximation.")
         covariances = self._compute_covariances(
             activations_dict=data.activations,
             gradients_dict=data.gradients,
@@ -320,7 +320,7 @@ class KroneckerEstimator(HessianEstimator):
         ) = self.compute_eigenvectors_and_eigenvalues(
             covariances["activation_cov"], covariances["gradient_cov"]
         )
-        logger.info("Computed eigenvectors for Kronecker approximation.")
+        logger.debug("Computed eigenvectors for Kronecker approximation.")
         return (
             activation_eigvecs,
             gradient_eigvecs,
@@ -428,7 +428,7 @@ class KroneckerEstimator(HessianEstimator):
             }
 
         summed = _accumulate_chunks(N, self.batch_size, _chunk)
-        logger.info("Computed eigenvalue corrections for Kronecker approximation.")
+        logger.debug("Computed eigenvalue corrections for Kronecker approximation.")
         return {layer: summed[layer] / total_prob for layer in layer_names}
 
     @staticmethod
