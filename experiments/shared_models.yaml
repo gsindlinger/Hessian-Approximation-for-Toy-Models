@@ -1,4 +1,4 @@
 # Model IDs (no path); resolved via paths.model_dir(<model.json metadata.dataset.name>, model_id).
 # Dataset, seeds, and saved checkpoints are read from each model's model.json.
 models:
-  - mlp_f3d39df867d1
+  - mlp_9ab1273debd3

@@ -21,6 +21,23 @@ def hash_data(data: Dict[str, Any], length: int = 10) -> str:
     return digest[:length]
 
 
+def elso_cache_dir(
+    model_directory: str,
+    cache_key: Dict[str, Any],
+) -> str:
+    """Return a content-addressed cache directory for ELSO retraining outputs.
+
+    ELSO ground-truth Δm depends on the retraining recipe, the subset sampling,
+    the epoch checkpoints, and the query selection — but **not** on the Hessian
+    approximation or its regularisation. Caching keyed by those variables lets
+    downstream damping / pseudo-inverse sweeps reuse the expensive retraining.
+
+    Structure: {model_directory}/elso_cache/{config_hash}/
+    """
+    cfg_hash = hash_data(cache_key)
+    return os.path.join(model_directory, "elso_cache", cfg_hash)
+
+
 def plot_training_curve(train_losses, val_losses, title="Training Curve"):
     plt.figure(figsize=(10, 6))
     plt.plot(train_losses, label="Training Loss")

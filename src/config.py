@@ -383,3 +383,33 @@ class ExperimentConfig:
     # If specified, allow for analyzing the different checkpoints saved during training
     # The subsequent code assumes that the epochs are actually stored within the models directory, otherwise their analysis will be skipped
     epochs: Optional[List[int]] = None
+
+
+@dataclass
+class LDSFilter:
+    """Subselect entries from a results.json. None / empty = no filter."""
+    model_ids: Optional[List[str]] = None
+    epochs: Optional[List[int]] = None
+    methods: Optional[List[str]] = None
+
+
+@dataclass
+class LDSConfig:
+    """LDS recipe — applied uniformly to every (model, epoch, method) entry
+    surviving ``filter`` in the target results.json. The results.json path
+    itself is supplied at invocation, not stored here.
+    """
+    filter: LDSFilter = field(default_factory=LDSFilter)
+
+    # ELSO sampling parameters.
+    num_subsets: int = 100
+    reps_per_model: int = 1
+    subset_fraction: float = 0.5
+    num_test_examples: int = 50
+
+    # Seed for subset sampling and ELSO retraining.
+    lds_seed: int = 42
+
+    # Cache rep-averaged per-query losses alongside the model directory so
+    # subsequent runs with different attribution files can reuse them.
+    cache_elso: bool = True

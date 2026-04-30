@@ -39,6 +39,14 @@ def to_dataclass(cls, config):
     except Exception:
         type_hints = {f.name: f.type for f in fields(cls)}
 
+    known_fields = {f.name for f in fields(cls)}
+    unknown = set(config) - known_fields
+    if unknown:
+        raise ValueError(
+            f"unknown keys for {cls.__name__}: {sorted(unknown)} "
+            f"(allowed: {sorted(known_fields)})"
+        )
+
     for field_info in fields(cls):
         field_name = field_info.name
 

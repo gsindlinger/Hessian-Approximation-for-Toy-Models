@@ -86,9 +86,15 @@ CREATE INDEX IF NOT EXISTS idx_metrics_approx ON metrics(approximator);
 CREATE INDEX IF NOT EXISTS idx_metrics_metric ON metrics(metric);
 
 CREATE TABLE IF NOT EXISTS influence (
-    result_id  INTEGER NOT NULL REFERENCES results(result_id) ON DELETE CASCADE,
-    method     TEXT NOT NULL,
-    npy_path   TEXT NOT NULL
+    result_id              INTEGER NOT NULL REFERENCES results(result_id) ON DELETE CASCADE,
+    method                 TEXT NOT NULL,
+    npy_path               TEXT NOT NULL,
+    -- LDS scores: NULL until lds_analysis.py runs against this row.
+    lds_mean               REAL,
+    lds_std                REAL,
+    lds_ci_low             REAL,
+    lds_ci_high            REAL,
+    lds_num_valid_queries  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_influence_result ON influence(result_id);
 """
@@ -232,7 +238,69 @@ def append_influence(
         con.commit()
 
 
+def update_lds_scores(
+    con: sqlite3.Connection,
+    *,
+    result_id: int,
+    method: str,
+    mean: Optional[float],
+    std: Optional[float],
+    ci_low: Optional[float],
+    ci_high: Optional[float],
+    num_valid: Optional[int],
+) -> int:
+    """Fill in the LDS columns of an existing influence row. Returns the
+    number of rows updated (0 if no matching (result_id, method) exists)."""
+    cur = con.execute(
+        """UPDATE influence
+              SET lds_mean = ?, lds_std = ?, lds_ci_low = ?, lds_ci_high = ?,
+                  lds_num_valid_queries = ?
+            WHERE result_id = ? AND method = ?""",
+        (
+            None if mean is None else float(mean),
+            None if std is None else float(std),
+            None if ci_low is None else float(ci_low),
+            None if ci_high is None else float(ci_high),
+            None if num_valid is None else int(num_valid),
+            int(result_id),
+            method,
+        ),
+    )
+    con.commit()
+    return cur.rowcount
+
+
 # -- reads ------------------------------------------------------------------
+
+def find_result_id(
+    con: sqlite3.Connection,
+    *,
+    run_id: str,
+    model_id: str,
+    epoch: Optional[int],
+) -> Optional[int]:
+    """Return the result_id for (run_id, model_id, epoch), or None.
+
+    NULL epoch is matched explicitly because SQL `=` on NULL never returns
+    true, which would silently drop final-checkpoint results otherwise.
+    """
+    if epoch is None:
+        cur = con.execute(
+            """SELECT result_id FROM results
+                WHERE run_id = ? AND model_id = ? AND epoch IS NULL
+                LIMIT 1""",
+            (run_id, model_id),
+        )
+    else:
+        cur = con.execute(
+            """SELECT result_id FROM results
+                WHERE run_id = ? AND model_id = ? AND epoch = ?
+                LIMIT 1""",
+            (run_id, model_id, int(epoch)),
+        )
+    row = cur.fetchone()
+    return None if row is None else int(row[0])
+
 
 def result_exists(
     con: sqlite3.Connection,
