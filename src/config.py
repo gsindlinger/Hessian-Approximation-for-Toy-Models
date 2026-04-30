@@ -92,12 +92,11 @@ class ComputationType(str, Enum):
     IHVP = "ihvp"
 
 
-class RegularizationStrategy(str, Enum):
+class DampingStrategy(str, Enum):
     """Strategy for computing the damping parameter."""
 
-    FIXED = "fixed"
-    AUTO_MEAN_EIGENVALUE = "auto_mean_eigenvalue"
-    AUTO_MEAN_EIGENVALUE_CORRECTION = "auto_mean_eigenvalue_correction"
+    UNIFORM = "uniform"
+    AUTO_MEAN = "auto_mean"
     PSEUDO_INVERSE = "pseudo_inverse"
 
 
@@ -282,10 +281,8 @@ class HessianComputationConfig:
         PseudoTargetGenerationStrategy.MCMC
     )
     pseudo_target_generation_repetitions: int = 5
-    regularization_value: float = 0.1
-    regularization_strategy: RegularizationStrategy = (
-        RegularizationStrategy.AUTO_MEAN_EIGENVALUE
-    )
+    damping_value: Optional[float] = 0.1
+    damping_strategy: DampingStrategy = DampingStrategy.AUTO_MEAN
     compute_influence: bool = False
     # Subsample the train set used by the collector (activations + gradients
     # input). None = full train. Subsample is a deterministic permutation

@@ -26,7 +26,7 @@ from src.config import (
     ModelConfig,
     OptimizerType,
     PseudoTargetGenerationStrategy,
-    RegularizationStrategy,
+    DampingStrategy,
     TrainingConfig,
     TrainingExperimentConfig,
     VectorAnalysisConfig,
@@ -679,7 +679,7 @@ def register_enum_representers():
     yaml.add_representer(DatasetEnum, enum_representer)
     yaml.add_representer(HessianApproximationMethod, enum_representer)
     yaml.add_representer(ComputationType, enum_representer)
-    yaml.add_representer(RegularizationStrategy, enum_representer)
+    yaml.add_representer(DampingStrategy, enum_representer)
     yaml.add_representer(VectorSamplingMethod, enum_representer)
     yaml.add_representer(VectorMetric, enum_representer)
     yaml.add_representer(FullMatrixMetric, enum_representer)
@@ -705,8 +705,8 @@ def hessian_analysis_sweep():
                 )
             ),
             computation_config=HessianComputationConfig(
-                regularization_value=0.1,
-                regularization_strategy=RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
+                damping_value=0.1,
+                damping_strategy=DampingStrategy.AUTO_MEAN,
                 approximators=HessianApproximationMethod.get_approximator_list_except_exact(),
                 computation_types=[
                     ComputationType.MATRIX,

@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from src.config import RegularizationStrategy
+from src.config import DampingStrategy
 from src.hessians.layer_matrix import KroneckerFactors, LayerMatrix, LayerVector
 from src.hessians.utils.data import (
     DataActivationsGradients,
@@ -511,52 +511,29 @@ class KroneckerEstimator(HessianEstimator):
 
     def get_damping(
         self,
-        damping_strategy: RegularizationStrategy,
+        damping_strategy: DampingStrategy,
         factor: float,
-    ) -> float:
-        """Get damping value based on strategy.
+    ) -> Dict[str, float]:
+        """Per-layer damping `{layer: λ}`.
 
-        Reads per-layer statistics from the `KroneckerFactors` blocks of the
-        built `LayerMatrix`:
-
-        * `AUTO_MEAN_EIGENVALUE` → average over layers of
-          `mean(λ_A) * mean(λ_G)`, the product of the raw activation and
-          gradient covariance eigenvalue means.  For the uncorrected variant
-          this equals `mean(Lambda)` because `Lambda = outer(λ_A, λ_G)`, but
-          for the corrected variant the eigenvalue correction diverges and
-          this strategy reflects the *uncorrected* basis.
-        * `AUTO_MEAN_EIGENVALUE_CORRECTION` → average over layers of
-          `mean(block.Lambda)`, i.e. the eigenvalue-corrected Λ (equivalent
-          to `AUTO_MEAN_EIGENVALUE` for the uncorrected variant, but the
-          correction-aware version for the corrected variant).
+        * `UNIFORM` → `factor` for every layer.
+        * `AUTO_MEAN` → `mean(block.Lambda) * factor` per layer.  `Lambda` is
+          `outer(λ_A, λ_G)` for uncorrected variants (KFAC / Shampoo) and the
+          eigenvalue-corrected matrix for E-variants (EKFAC / EShampoo), so
+          this single path picks up the right semantic per approximator.
         """
-        if damping_strategy == RegularizationStrategy.FIXED:
-            return factor
-        if damping_strategy not in (
-            RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
-            RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
-        ):
-            raise ValueError(f"Unsupported regularization strategy: {damping_strategy}")
+        layer_names = self.get_layer_names()
+        if damping_strategy == DampingStrategy.UNIFORM:
+            return {layer: factor for layer in layer_names}
+        if damping_strategy != DampingStrategy.AUTO_MEAN:
+            raise ValueError(f"Unsupported damping strategy: {damping_strategy}")
         if self.layer_matrix is None:
             raise RuntimeError(
                 f"{type(self).__name__} is not built — call `.build()` before `.get_damping()`."
             )
-        means = []
-        for layer in self.get_layer_names():
+        out: Dict[str, float] = {}
+        for layer in layer_names:
             block = self.layer_matrix.blocks[(layer, layer)]
             assert isinstance(block, KroneckerFactors)
-            if damping_strategy == RegularizationStrategy.AUTO_MEAN_EIGENVALUE:
-                if block.lambda_A is None or block.lambda_G is None:
-                    raise RuntimeError(
-                        f"Layer '{layer}' KroneckerFactors block is missing "
-                        f"`lambda_A` / `lambda_G` — AUTO_MEAN_EIGENVALUE "
-                        f"requires the raw covariance eigenvalues.  Rebuild "
-                        f"with a Kronecker pipeline, which populates them."
-                    )
-                means.append(jnp.mean(block.lambda_A) * jnp.mean(block.lambda_G))
-            else:  # AUTO_MEAN_EIGENVALUE_CORRECTION
-                means.append(jnp.mean(block.Lambda))
-        if not means:
-            return 0.0
-        aggregated = jnp.mean(jnp.stack(means))
-        return float(aggregated) * factor
+            out[layer] = float(jnp.mean(block.Lambda)) * factor
+        return out

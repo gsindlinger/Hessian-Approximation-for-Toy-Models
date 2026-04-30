@@ -905,11 +905,25 @@ class LayerMatrix:
 
     __rmul__ = __mul__
 
-    def damped(self, damping: Float) -> "LayerMatrix":
-        """Return `M + damping*I`.  Damping adds to diagonal blocks only."""
+    def damped(self, damping: "Float | Dict[str, Float]") -> "LayerMatrix":
+        """Return `M + damping*I`.  Damping adds to diagonal blocks only.
+
+        `damping` may be a scalar (uniform) or a `{layer: λ}` dict (per-layer).
+        Per-layer is only meaningful when `M` is block-diagonal — for the
+        fully-populated grid case off-diagonal blocks couple layers and a
+        single λ has to apply to the whole matrix.
+        """
+        is_dict = isinstance(damping, dict)
+        if is_dict and not self.is_block_diagonal():
+            raise NotImplementedError(
+                "Per-layer damping is not supported for non-block-diagonal "
+                "LayerMatrix — the layer-coupling off-diagonal blocks make "
+                "per-layer λ ill-defined.  Pass a scalar."
+            )
+        get = (lambda g: damping[g]) if is_dict else (lambda g: damping)
         out_blocks: Dict[Tuple[str, str], LayerBlock] = dict(self.blocks)
         for g in self.param_groups:
-            out_blocks[(g, g)] = self.blocks[(g, g)].damped(damping)
+            out_blocks[(g, g)] = self.blocks[(g, g)].damped(get(g))
         return LayerMatrix(
             blocks=out_blocks,
             param_groups=self.param_groups,
@@ -918,17 +932,22 @@ class LayerMatrix:
 
     def inverse(
         self,
-        damping: Float = 0.0,
+        damping: "Float | Dict[str, Float]" = 0.0,
         pseudo_inverse_factor: Float = 0.0,
     ) -> "LayerMatrix":
         """
         Per-block inverse for block-diagonal matrices, or solve-via-dense
         for the fully-populated `(i, j)` grid case.
+
+        `damping` may be a scalar or a `{layer: λ}` dict for the block-diagonal
+        case; the dense path requires a scalar (see `damped`).
         """
+        is_dict = isinstance(damping, dict)
         if self.is_block_diagonal():
+            get = (lambda g: damping[g]) if is_dict else (lambda g: damping)
             out_blocks: Dict[Tuple[str, str], LayerBlock] = {
                 (g, g): self.blocks[(g, g)].inverse(
-                    damping=damping, pseudo_inverse_factor=pseudo_inverse_factor
+                    damping=get(g), pseudo_inverse_factor=pseudo_inverse_factor
                 )
                 for g in self.param_groups
             }
@@ -936,6 +955,11 @@ class LayerMatrix:
                 blocks=out_blocks,
                 param_groups=self.param_groups,
                 layer_shapes=self.layer_shapes,
+            )
+        if is_dict:
+            raise NotImplementedError(
+                "Per-layer damping is not supported for non-block-diagonal "
+                "LayerMatrix — pass a scalar."
             )
         # Fully-populated grid: the inverse of a non-block-diagonal matrix
         # is not itself sparse, so go through dense (assemble → solve → re-slice).

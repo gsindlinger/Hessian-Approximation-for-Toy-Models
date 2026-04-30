@@ -35,10 +35,10 @@ from src.config import (
     LossType,
     ProbeSource,
     PseudoTargetGenerationStrategy,
-    RegularizationStrategy,
+    DampingStrategy,
 )
 from src.hessians.collector import CollectorActivationsGradients
-from src.hessians.computer.computer import HessianEstimator
+from src.hessians.computer.computer import HessianEstimator, KroneckerEstimator
 from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
@@ -261,32 +261,67 @@ class HessianCtx:
         return self._cache[approx]
 
 
-def resolve_damping(
-    ctx: HessianCtx, analysis_cfg: HessianAnalysisConfig
-) -> Tuple[Optional[float], Optional[float]]:
-    """Return (damping, pseudo_inverse_factor).
+DampingValue = "Optional[float | Dict[str, float]]"
 
-    Note: AUTO_MEAN_EIGENVALUE* strategies derive the damping from EKFAC's
-    spectrum and apply it to *every* approximator. See BUGS.md ("Damping is
-    shared across approximators…") for context — that coupling is a known
-    issue but out of scope for the merge-fix work.
+
+def resolve_damping(
+    ctx: HessianCtx,
+    analysis_cfg: HessianAnalysisConfig,
+    approximators: List[HessianApproximationMethod],
+) -> Tuple[Dict[str, "Optional[float | Dict[str, float]]"], Optional[float]]:
+    """Per-approximator damping table.
+
+    Returns `(damping_table, pseudo_inverse_factor)` where `damping_table`
+    maps each approximator's value-string to one of:
+      - `None` (PSEUDO_INVERSE strategy — pif used instead)
+      - a scalar (UNIFORM for everyone; AUTO* for non-Kronecker estimators)
+      - a `{layer: λ}` dict (AUTO* for `KroneckerEstimator` subclasses)
+
+    Today AUTO* on non-Kronecker estimators falls back to EKFAC's
+    mean-aggregated scalar (preserves prior behavior). A future patch can
+    derive estimator-specific dampings for the block_fim / block_hessian
+    paths too.
     """
     comp = analysis_cfg.computation_config
-    strat = comp.regularization_strategy
-    if strat in (
-        RegularizationStrategy.AUTO_MEAN_EIGENVALUE,
-        RegularizationStrategy.AUTO_MEAN_EIGENVALUE_CORRECTION,
-    ):
+    strat = comp.damping_strategy
+
+    if strat == DampingStrategy.PSEUDO_INVERSE:
+        return {a.value: None for a in approximators}, comp.damping_value
+    if strat == DampingStrategy.UNIFORM:
+        # `damping_value: null` → fall back to EKFAC's cross-layer mean as
+        # the global scalar. Otherwise use the specified value as the
+        # absolute λ for every approximator and every layer.
+        if comp.damping_value is None:
+            ekfac = ctx.get(HessianApproximationMethod.EKFAC)
+            assert isinstance(ekfac, EKFACComputer)
+            ekfac_per_layer = ekfac.get_damping(
+                damping_strategy=DampingStrategy.AUTO_MEAN, factor=1.0
+            )
+            value = float(jnp.mean(jnp.stack(list(ekfac_per_layer.values()))))
+        else:
+            value = comp.damping_value
+        return {a.value: value for a in approximators}, None
+    if strat == DampingStrategy.AUTO_MEAN:
         ekfac = ctx.get(HessianApproximationMethod.EKFAC)
         assert isinstance(ekfac, EKFACComputer)
-        return ekfac.get_damping(
-            damping_strategy=strat, factor=comp.regularization_value
-        ), None
-    if strat == RegularizationStrategy.FIXED:
-        return comp.regularization_value, None
-    if strat == RegularizationStrategy.PSEUDO_INVERSE:
-        return None, comp.regularization_value
-    return None, None
+        ekfac_per_layer = ekfac.get_damping(
+            damping_strategy=strat, factor=comp.damping_value
+        )
+        ekfac_scalar = float(
+            jnp.mean(jnp.stack(list(ekfac_per_layer.values())))
+        )
+        out: Dict[str, "Optional[float | Dict[str, float]]"] = {}
+        for approx in approximators:
+            est = ctx.get(approx)
+            if isinstance(est, KroneckerEstimator):
+                out[approx.value] = est.get_damping(
+                    damping_strategy=strat, factor=comp.damping_value
+                )
+            else:
+                out[approx.value] = ekfac_scalar
+        return out, None
+
+    return {a.value: None for a in approximators}, None
 
 
 # ---------------------------------------------------------------------------
@@ -349,14 +384,16 @@ def compare_ihvps(
     metrics: List[VectorMetric],
     grads_1,
     grads_2,
-    damping: Optional[float],
+    damping_table: Dict[str, "Optional[float | Dict[str, float]]"],
     pseudo_inverse_factor: Optional[float],
     compute_approximation_error: bool = True,
 ) -> Tuple[Dict[str, Dict[str, float]], Dict[str, float]]:
     ref = ctx.get(reference)
     ref_ihvp = block_tree(
         ref.estimate_ihvp(
-            grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor
+            grads_1,
+            damping=damping_table[reference.value],
+            pseudo_inverse_factor=pseudo_inverse_factor,
         ),
         f"{reference.value}_ihvp",
     )
@@ -368,7 +405,9 @@ def compare_ihvps(
         pbar.set_postfix_str(approx.value[:5].ljust(5))
         approx_ihvp = block_tree(
             ctx.get(approx).estimate_ihvp(
-                grads_1, damping=damping, pseudo_inverse_factor=pseudo_inverse_factor
+                grads_1,
+                damping=damping_table[approx.value],
+                pseudo_inverse_factor=pseudo_inverse_factor,
             ),
             f"{approx.value}_ihvp",
         )
@@ -390,7 +429,7 @@ def compute_influence_scores(
     methods: List[HessianApproximationMethod],
     train_flat_grads,
     test_flat_grads,
-    damping: Optional[float],
+    damping_table: Dict[str, "Optional[float | Dict[str, float]]"],
     pseudo_inverse_factor: Optional[float],
     run_id: str,
     model_tag: str,
@@ -406,7 +445,7 @@ def compute_influence_scores(
             test_flat_grads=test_flat_grads,
             train_flat_grads=train_flat_grads,
             computer=ctx.get(approx),
-            damping=damping,
+            damping=damping_table[approx.value],
             pseudo_inverse_factor=pseudo_inverse_factor,
         )  # (n_test, n_train)
         vec = np.asarray(jnp.mean(matrix, axis=0))  # (n_train,)
@@ -458,6 +497,40 @@ def _apply_overrides(
         logger.info("override: %s = %r", key, value)
 
 
+def _write_rerun_artifacts(
+    run_dir: Path,
+    models_cfg: Dict[str, Any],
+    analysis_raw: Dict[str, Any],
+) -> None:
+    """Drop post-override configs + a runnable `rerun.sh` into the run dir.
+
+    The script anchors paths to its own location and to a relative project
+    root, so the entire `outputs/runs/<run_id>/` folder stays self-contained
+    and portable across moves of the project tree.
+    """
+    models_path = run_dir / "models_config.yaml"
+    analysis_path = run_dir / "analysis_config.yaml"
+    with open(models_path, "w") as f:
+        yaml.safe_dump(models_cfg, f, sort_keys=False)
+    with open(analysis_path, "w") as f:
+        yaml.safe_dump(analysis_raw, f, sort_keys=False)
+
+    rerun = run_dir / "rerun.sh"
+    rerun.write_text(
+        '#!/bin/bash\n'
+        'set -e\n'
+        'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        'PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"\n'
+        'cd "$PROJECT_ROOT"\n'
+        'export TF_CPP_MIN_LOG_LEVEL=3\n'
+        'python -m experiments.analyze_hessians \\\n'
+        '    --config "$SCRIPT_DIR/models_config.yaml" \\\n'
+        '    --analysis-config "$SCRIPT_DIR/analysis_config.yaml" \\\n'
+        '    "$@"\n'
+    )
+    rerun.chmod(0o755)
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -493,6 +566,11 @@ def main(
     run_dir = paths.run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     code_info = provenance.git_info()
+
+    # Reproducibility: dump post-override configs + a runnable rerun.sh next
+    # to the results, so `bash outputs/runs/<run_id>/rerun.sh` reruns this
+    # exact analysis (including any overrides that were on the CLI).
+    _write_rerun_artifacts(run_dir, models_cfg, analysis_raw)
 
     db = results_db.init_db()
     results_db.append_run(
@@ -673,10 +751,19 @@ def main(
             build_base_dir=os.path.join(collector_dir, "factors"),
         )
 
-        damping, pif = resolve_damping(ctx, analysis_cfg)
-        if damping is not None:
-            logger.info("  damping=%.6f", damping)
-        elif pif is not None:
+        all_approx = list(dict.fromkeys(
+            list(comp_cfg.approximators) + list(comp_cfg.comparison_references)
+        ))
+        damping_table, pif = resolve_damping(ctx, analysis_cfg, all_approx)
+        for k, v in damping_table.items():
+            if v is None:
+                continue
+            if isinstance(v, dict):
+                layer_strs = ", ".join(f"{layer}={d:.4g}" for layer, d in v.items())
+                logger.info("  damping[%s] per-layer: %s", k, layer_strs)
+            else:
+                logger.info("  damping[%s]=%.6f", k, v)
+        if pif is not None:
             logger.info("  pseudo_inverse_factor=%.6f", pif)
 
         matrix_comparisons: Dict[str, Dict[str, Dict[str, float]]] = {}
@@ -704,7 +791,7 @@ def main(
                 res, rt = compare_ihvps(
                     ctx, reference, comp_cfg.approximators,
                     analysis_cfg.vector_config.metrics, grads_1, grads_2,
-                    damping, pif,
+                    damping_table, pif,
                 )
                 for metric, scores in res.items():
                     ihvp_comparisons.setdefault(metric, {})[reference.value] = scores
@@ -718,16 +805,13 @@ def main(
             test_flat_grads = compute_per_example_flat_grads(
                 model, params, test_ds.inputs, test_ds.targets, loss_fn,
             )
-            all_methods = list(dict.fromkeys(
-                list(comp_cfg.approximators) + list(comp_cfg.comparison_references)
-            ))
             model_tag = f"{model_id}_{tag}"
             influence_paths = compute_influence_scores(
                 ctx=ctx,
-                methods=all_methods,
+                methods=all_approx,
                 train_flat_grads=train_flat_grads,
                 test_flat_grads=test_flat_grads,
-                damping=damping,
+                damping_table=damping_table,
                 pseudo_inverse_factor=pif,
                 run_id=run_id,
                 model_tag=model_tag,
@@ -744,7 +828,7 @@ def main(
             "model_config": asdict(model_config),
             "num_parameters": model.num_params,
             "metadata": metadata or {},
-            "damping": damping,
+            "damping_table": damping_table,
             "pseudo_inverse_factor": pif,
             "hessian_analysis": {
                 "matrix_comparisons": matrix_comparisons,
@@ -772,14 +856,15 @@ def main(
                 if dataset_info.get("test_size") is not None else None
             ),
             collector_subset_size=int(comp_cfg.collector_subset_size),
-            regularization_value=float(comp_cfg.regularization_value),
-            regularization_strategy=comp_cfg.regularization_strategy.value,
+            damping_value=(
+                None if comp_cfg.damping_value is None else float(comp_cfg.damping_value)
+            ),
+            damping_strategy=comp_cfg.damping_strategy.value,
             pseudo_target_strategy=strategy_str,
             pseudo_target_repetitions=int(reps),
             vector_num_samples=int(analysis_cfg.vector_config.num_samples),
             sampling_method=analysis_cfg.vector_config.sampling_method.value,
             comparison_probe_source=analysis_cfg.vector_config.comparison_probe_source.value,
-            damping=damping,
             pseudo_inverse_factor=pif,
             num_parameters=int(model.num_params),
             val_loss=(
@@ -794,6 +879,7 @@ def main(
                 "model_config": asdict(model_config),
                 "model_directory": model_dir,
                 "metadata": metadata or {},
+                "damping_table": damping_table,
             },
         )
         results_db.append_metrics(
@@ -847,7 +933,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--override", action="append", default=[],
         help="Repeatable. Override a YAML field, e.g. "
-             "--override analysis.computation_config.regularization_value=0.05.",
+             "--override analysis.computation_config.damping_value=0.05.",
     )
     args = parser.parse_args()
     main(
