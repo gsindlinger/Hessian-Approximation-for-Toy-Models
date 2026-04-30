@@ -61,6 +61,7 @@ class ModelConfigBuilder:
         self.optimizer = OptimizerType.ADAMW
         self.epochs = 500
         self.batch_size = 32
+        self.lr_schedule = LRSchedule.NONE
 
     def with_loss(self, loss: LossType):
         self.loss = loss
@@ -79,6 +80,7 @@ class ModelConfigBuilder:
         batch_size=None,
         input_dim=None,
         output_dim=None,
+        lr_schedule=None,
     ):
         if learning_rate is not None:
             self.learning_rate = learning_rate
@@ -94,6 +96,8 @@ class ModelConfigBuilder:
             self.input_dim = input_dim
         if output_dim is not None:
             self.output_dim = output_dim
+        if lr_schedule is not None:
+            self.lr_schedule = lr_schedule
         return self
 
     def build(self) -> ModelConfig:
@@ -111,6 +115,7 @@ class ModelConfigBuilder:
                 optimizer=self.optimizer,
                 epochs=self.epochs,
                 batch_size=self.batch_size,
+                lr_schedule=self.lr_schedule,
             ),
         )
 
@@ -252,19 +257,41 @@ def digits_sweep_better_hessian():
 
 
 def short_config():
-    """Narrow MLPs on digits at depths 1/4/7 — minimal config for quick iteration."""
+    """Paper-replica training config (better_hessians_paper, Table 1).
+
+    Six MLPs on Digits, all trained with SGD + cosine schedule, lr=0.03,
+    weight_decay=0, batch_size=32, 1000 epochs, checkpointing at
+    {10, 100, 1000}:
+      - depth sweep: depths {1, 4, 8} at width 16
+      - width sweep: widths {32, 64, 128} at depth 1
+    """
+    paper_training = dict(
+        learning_rates=[0.03],
+        weight_decays=[0.0],
+        optimizer=OptimizerType.SGD,
+        lr_schedule=LRSchedule.COSINE,
+        epochs=1000,
+        batch_size=32,
+        input_dim=64,
+        output_dim=10,
+        activation_function=ActivationFunction.TANH,
+    )
+
     models = []
-    for depth in (1, 4, 7):
+    for depth in (1, 4, 8):
         models.extend(
             create_hyperparameter_sweep(
                 ModelArchitecture.MLP,
                 hidden_dim=[16] * depth,
-                learning_rates=[1e-3],
-                weight_decays=[1e-2],
-                epochs=500,
-                batch_size=32,
-                input_dim=64,
-                output_dim=10,
+                **paper_training,
+            )
+        )
+    for width in (32, 64, 128):
+        models.extend(
+            create_hyperparameter_sweep(
+                ModelArchitecture.MLP,
+                hidden_dim=[width],
+                **paper_training,
             )
         )
 
@@ -279,7 +306,7 @@ def short_config():
         models=models,
         selection_metric="val_loss",
         selection_minimize=True,
-        save_epochs=[10, 100, 500],
+        save_epochs=[10, 100, 1000],
     )
 
 

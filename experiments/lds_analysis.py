@@ -199,21 +199,6 @@ def main() -> None:
 
     _write_lds_to_db(out.get("run_id"), out["results"])
 
-    summary = out["results"]
-    if summary:
-        logger.info("=" * 70)
-        for r in summary:
-            s = r["lds_scores"]
-            logger.info(
-                "[LDS] %s epoch=%s method=%-12s mean=%.4f ± %.4f  CI=[%.4f, %.4f]  valid=%d",
-                r["model_id"], r.get("epoch"), r["method"],
-                s.get("mean_lds", float("nan")),
-                s.get("std_lds", float("nan")),
-                s.get("ci_low", float("nan")),
-                s.get("ci_high", float("nan")),
-                s.get("num_valid_queries", -1),
-            )
-        logger.info("=" * 70)
     if out["skipped"]:
         logger.info("[LDS] skipped %d entries (no influence paths)", len(out["skipped"]))
 
