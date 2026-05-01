@@ -278,26 +278,38 @@ def find_result_id(
     run_id: str,
     model_id: str,
     epoch: Optional[int],
+    damping_value: Optional[float] = None,
+    damping_strategy: Optional[str] = None,
 ) -> Optional[int]:
-    """Return the result_id for (run_id, model_id, epoch), or None.
+    """Return the result_id for (run_id, model_id, epoch[, damping]), or None.
 
-    NULL epoch is matched explicitly because SQL `=` on NULL never returns
-    true, which would silently drop final-checkpoint results otherwise.
+    NULL epoch / NULL damping_value are matched explicitly because SQL `=` on
+    NULL never returns true, which would silently drop matching rows
+    otherwise. `damping_value` and `damping_strategy` disambiguate sweeps
+    where multiple result rows share (run, model, epoch) and differ only by λ;
+    callers that don't need that filter can omit them.
     """
+    where = ["run_id = ?", "model_id = ?"]
+    params: list = [run_id, model_id]
+
     if epoch is None:
-        cur = con.execute(
-            """SELECT result_id FROM results
-                WHERE run_id = ? AND model_id = ? AND epoch IS NULL
-                LIMIT 1""",
-            (run_id, model_id),
-        )
+        where.append("epoch IS NULL")
     else:
-        cur = con.execute(
-            """SELECT result_id FROM results
-                WHERE run_id = ? AND model_id = ? AND epoch = ?
-                LIMIT 1""",
-            (run_id, model_id, int(epoch)),
-        )
+        where.append("epoch = ?")
+        params.append(int(epoch))
+
+    if damping_value is not None:
+        where.append("damping_value = ?")
+        params.append(float(damping_value))
+
+    if damping_strategy is not None:
+        where.append("damping_strategy = ?")
+        params.append(damping_strategy)
+
+    cur = con.execute(
+        f"SELECT result_id FROM results WHERE {' AND '.join(where)} LIMIT 1",
+        tuple(params),
+    )
     row = cur.fetchone()
     return None if row is None else int(row[0])
 

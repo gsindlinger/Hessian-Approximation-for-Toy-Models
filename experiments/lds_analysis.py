@@ -108,12 +108,17 @@ def _write_lds_to_db(run_id: Optional[str], results: List[Dict[str, Any]]) -> No
     try:
         for r in results:
             result_id = results_db.find_result_id(
-                con, run_id=run_id, model_id=r["model_id"], epoch=r.get("epoch"),
+                con,
+                run_id=run_id,
+                model_id=r["model_id"],
+                epoch=r.get("epoch"),
+                damping_value=r.get("damping_value"),
+                damping_strategy=r.get("damping_strategy"),
             )
             if result_id is None:
                 logger.warning(
-                    "[LDS] no influence row for run=%s model=%s epoch=%s — skipping db update",
-                    run_id, r["model_id"], r.get("epoch"),
+                    "[LDS] no influence row for run=%s model=%s epoch=%s damping=%s — skipping db update",
+                    run_id, r["model_id"], r.get("epoch"), r.get("damping_value"),
                 )
                 continue
             scores = r["lds_scores"]

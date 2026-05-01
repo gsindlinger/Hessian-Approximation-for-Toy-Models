@@ -30,12 +30,13 @@ from experiments import paths, provenance, results as results_db
 from experiments.utils import block_tree, json_safe, to_dataclass
 from src.config import (
     ComputationType,
+    DampingStrategy,
     HessianAnalysisConfig,
     HessianApproximationMethod,
+    HessianComputationConfig,
     LossType,
     ProbeSource,
     PseudoTargetGenerationStrategy,
-    DampingStrategy,
 )
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator, KroneckerEstimator
@@ -262,6 +263,50 @@ class HessianCtx:
 
 
 DampingValue = "Optional[float | Dict[str, float]]"
+
+
+def _damping_values(
+    comp_cfg: HessianComputationConfig,
+) -> List[Optional[float]]:
+    """Resolve `damping_value` (scalar | list | None) to the per-iteration list.
+
+    A list expands to a sweep of scalars sharing the (model, epoch) precomputes;
+    a scalar wraps to a single-element list; None is one iteration with no λ
+    (strategy-dependent fallback inside `resolve_damping`).
+    """
+    v = comp_cfg.damping_value
+    if v is None:
+        return [None]
+    if isinstance(v, list):
+        if not v:
+            raise ValueError(
+                "damping_value: [] is not allowed; use null or a non-empty list"
+            )
+        return [float(x) for x in v]
+    return [float(v)]
+
+
+def _format_damping_for_tag(value: float) -> str:
+    """`repr(float(...))` with the PyYAML-1.1 dot-in-mantissa fixup, so the
+    string round-trips through both Python and yaml without ambiguity. Mirrors
+    the normalizer in `run_damping_sweep.sh`."""
+    s = repr(float(value))
+    if "e" in s:
+        head, _, tail = s.partition("e")
+        if "." not in head:
+            head += ".0"
+        s = f"{head}e{tail}"
+    return s
+
+
+def _damping_tag(strategy: DampingStrategy, value: Optional[float]) -> str:
+    """Filename-safe tag identifying a (strategy, λ) combination, e.g.
+    `uniform_1.0e-06`, `auto_mean_0.1`, `pseudo_inverse_1.0`. `λ=None` means
+    the strategy uses a derived value (uniform with EKFAC mean fallback) and
+    is rendered as `<strategy>_auto`."""
+    if value is None:
+        return f"{strategy.value}_auto"
+    return f"{strategy.value}_{_format_damping_for_tag(value)}"
 
 
 def resolve_damping(
@@ -607,9 +652,6 @@ def main(
             else paths.model_dir(dataset_name, model_id) / "checkpoint.msgpack"
         )
         result_model_hash = provenance.model_hash(ckpt_path)
-        result_config_hash = provenance.config_hash(
-            dataset_info, analysis_cfg, analysis_seed, model_id, epoch
-        )
 
         logger.info("")
         logger.info("=" * 70)
@@ -618,19 +660,6 @@ def main(
             model_config.get_model_display_name(), tag, model.num_params,
         )
         logger.info("=" * 70)
-
-        if (
-            skip_if_exists
-            and code_info.get("sha")
-            and results_db.result_exists(
-                db, config_hash=result_config_hash, code_sha=code_info["sha"],
-            )
-        ):
-            logger.info(
-                "  SKIP — config_hash=%s already computed on code_sha=%s",
-                result_config_hash, code_info["sha"],
-            )
-            continue
 
         if model_config.loss not in cached_splits:
             cached_splits[model_config.loss] = load_train_test_for_loss(
@@ -753,50 +782,10 @@ def main(
         all_approx = list(dict.fromkeys(
             list(comp_cfg.approximators) + list(comp_cfg.comparison_references)
         ))
-        damping_table, pif = resolve_damping(ctx, analysis_cfg, all_approx)
-        for k, v in damping_table.items():
-            if v is None:
-                continue
-            if isinstance(v, dict):
-                layer_strs = ", ".join(f"{layer}={d:.4g}" for layer, d in v.items())
-                logger.info("  damping[%s] per-layer: %s", k, layer_strs)
-            else:
-                logger.info("  damping[%s]=%.6f", k, v)
-        if pif is not None:
-            logger.info("  pseudo_inverse_factor=%.6f", pif)
 
-        matrix_comparisons: Dict[str, Dict[str, Dict[str, float]]] = {}
-        hvp_comparisons: Dict[str, Dict[str, Dict[str, float]]] = {}
-        ihvp_comparisons: Dict[str, Dict[str, Dict[str, float]]] = {}
-        round_trip_errors: Dict[str, Dict[str, float]] = {}
-
-        for reference in comp_cfg.comparison_references:
-            logger.info("--- reference: %s ---", reference.value)
-            if ComputationType.MATRIX in comp_cfg.computation_types:
-                res = compare_matrices(
-                    ctx, reference, comp_cfg.approximators,
-                    analysis_cfg.matrix_config.metrics,
-                )
-                for metric, scores in res.items():
-                    matrix_comparisons.setdefault(metric, {})[reference.value] = scores
-            if ComputationType.HVP in comp_cfg.computation_types:
-                res = compare_hvps(
-                    ctx, reference, comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
-                )
-                for metric, scores in res.items():
-                    hvp_comparisons.setdefault(metric, {})[reference.value] = scores
-            if ComputationType.IHVP in comp_cfg.computation_types:
-                res, rt = compare_ihvps(
-                    ctx, reference, comp_cfg.approximators,
-                    analysis_cfg.vector_config.metrics, grads_1, grads_2,
-                    damping_table, pif,
-                )
-                for metric, scores in res.items():
-                    ihvp_comparisons.setdefault(metric, {})[reference.value] = scores
-                round_trip_errors[reference.value] = rt
-
-        influence_section: Optional[Dict] = None
+        # Train/test flat grads for influence are λ-independent; compute once
+        # per (model, epoch) and reuse across the sweep.
+        influence_grads: Optional[Tuple[Any, Any]] = None
         if comp_cfg.compute_influence:
             train_flat_grads = compute_per_example_flat_grads(
                 model, params, train_ds.inputs, train_ds.targets, loss_fn,
@@ -804,97 +793,182 @@ def main(
             test_flat_grads = compute_per_example_flat_grads(
                 model, params, test_ds.inputs, test_ds.targets, loss_fn,
             )
-            model_tag = f"{model_id}_{tag}"
-            influence_paths = compute_influence_scores(
-                ctx=ctx,
-                methods=all_approx,
-                train_flat_grads=train_flat_grads,
-                test_flat_grads=test_flat_grads,
-                damping_table=damping_table,
-                pseudo_inverse_factor=pif,
-                run_id=run_id,
-                model_tag=model_tag,
+            influence_grads = (train_flat_grads, test_flat_grads)
+
+        damping_values = _damping_values(comp_cfg)
+        if len(damping_values) > 1:
+            logger.info(
+                "  damping sweep: %d value(s) — %s",
+                len(damping_values),
+                ", ".join("auto" if v is None else f"{v:g}" for v in damping_values),
             )
-            influence_section = {"paths": influence_paths}
 
-        all_results.append({
-            "model_id": model_id,
-            "model_name": model_config.get_model_display_name(),
-            "model_directory": model_dir,
-            "epoch": epoch,
-            "config_hash": result_config_hash,
-            "model_hash": result_model_hash,
-            "model_config": asdict(model_config),
-            "num_parameters": model.num_params,
-            "metadata": metadata or {},
-            "damping_table": damping_table,
-            "pseudo_inverse_factor": pif,
-            "hessian_analysis": {
-                "matrix_comparisons": matrix_comparisons,
-                "hvp_comparisons": hvp_comparisons,
-                "ihvp_comparisons": ihvp_comparisons,
-                "ihvp_round_trip_approximation_errors": round_trip_errors,
-                "influence": influence_section,
-            },
-        })
+        for lam in damping_values:
+            comp_cfg_lam = replace(comp_cfg, damping_value=lam)
+            analysis_cfg_lam = replace(
+                analysis_cfg, computation_config=comp_cfg_lam
+            )
+            damping_tag = _damping_tag(comp_cfg.damping_strategy, lam)
 
-        # Persist this result incrementally — ctrl-C mid-sweep keeps what's done.
-        # Same (config_hash, code_sha) on rerun overwrites this row.
-        result_id = results_db.append_result(
-            db,
-            run_id=run_id,
-            model_id=model_id,
-            epoch=epoch,
-            config_hash=result_config_hash,
-            model_hash=result_model_hash,
-            code_sha=code_info.get("sha"),
-            analysis_seed=analysis_seed,
-            dataset_name=dataset_name,
-            dataset_test_size=(
-                float(dataset_info["test_size"])
-                if dataset_info.get("test_size") is not None else None
-            ),
-            collector_subset_size=int(comp_cfg.collector_subset_size),
-            damping_value=(
-                None if comp_cfg.damping_value is None else float(comp_cfg.damping_value)
-            ),
-            damping_strategy=comp_cfg.damping_strategy.value,
-            pseudo_target_strategy=strategy_str,
-            pseudo_target_repetitions=int(reps),
-            vector_num_samples=int(analysis_cfg.vector_config.num_samples),
-            sampling_method=analysis_cfg.vector_config.sampling_method.value,
-            comparison_probe_source=analysis_cfg.vector_config.comparison_probe_source.value,
-            pseudo_inverse_factor=pif,
-            num_parameters=int(model.num_params),
-            val_loss=(
-                float((metadata or {}).get("val_loss"))
-                if metadata and metadata.get("val_loss") is not None else None
-            ),
-            val_accuracy=(
-                float((metadata or {}).get("val_accuracy"))
-                if metadata and metadata.get("val_accuracy") is not None else None
-            ),
-            params={
-                "model_config": asdict(model_config),
+            result_config_hash = provenance.config_hash(
+                dataset_info, analysis_cfg_lam, analysis_seed, model_id, epoch,
+            )
+
+            logger.info("--- damping: %s ---", damping_tag)
+
+            if (
+                skip_if_exists
+                and code_info.get("sha")
+                and results_db.result_exists(
+                    db, config_hash=result_config_hash, code_sha=code_info["sha"],
+                )
+            ):
+                logger.info(
+                    "  SKIP — config_hash=%s already computed on code_sha=%s",
+                    result_config_hash, code_info["sha"],
+                )
+                continue
+
+            damping_table, pif = resolve_damping(ctx, analysis_cfg_lam, all_approx)
+            for k, v in damping_table.items():
+                if v is None:
+                    continue
+                if isinstance(v, dict):
+                    layer_strs = ", ".join(
+                        f"{layer}={d:.4g}" for layer, d in v.items()
+                    )
+                    logger.info("  damping[%s] per-layer: %s", k, layer_strs)
+                else:
+                    logger.info("  damping[%s]=%.6f", k, v)
+            if pif is not None:
+                logger.info("  pseudo_inverse_factor=%.6f", pif)
+
+            matrix_comparisons: Dict[str, Dict[str, Dict[str, float]]] = {}
+            hvp_comparisons: Dict[str, Dict[str, Dict[str, float]]] = {}
+            ihvp_comparisons: Dict[str, Dict[str, Dict[str, float]]] = {}
+            round_trip_errors: Dict[str, Dict[str, float]] = {}
+
+            for reference in comp_cfg.comparison_references:
+                logger.info("    reference: %s", reference.value)
+                if ComputationType.MATRIX in comp_cfg.computation_types:
+                    res = compare_matrices(
+                        ctx, reference, comp_cfg.approximators,
+                        analysis_cfg.matrix_config.metrics,
+                    )
+                    for metric, scores in res.items():
+                        matrix_comparisons.setdefault(metric, {})[reference.value] = scores
+                if ComputationType.HVP in comp_cfg.computation_types:
+                    res = compare_hvps(
+                        ctx, reference, comp_cfg.approximators,
+                        analysis_cfg.vector_config.metrics, grads_1, grads_2,
+                    )
+                    for metric, scores in res.items():
+                        hvp_comparisons.setdefault(metric, {})[reference.value] = scores
+                if ComputationType.IHVP in comp_cfg.computation_types:
+                    res, rt = compare_ihvps(
+                        ctx, reference, comp_cfg.approximators,
+                        analysis_cfg.vector_config.metrics, grads_1, grads_2,
+                        damping_table, pif,
+                    )
+                    for metric, scores in res.items():
+                        ihvp_comparisons.setdefault(metric, {})[reference.value] = scores
+                    round_trip_errors[reference.value] = rt
+
+            influence_section: Optional[Dict] = None
+            if influence_grads is not None:
+                train_flat_grads, test_flat_grads = influence_grads
+                model_tag = f"{model_id}_{tag}_{damping_tag}"
+                influence_paths = compute_influence_scores(
+                    ctx=ctx,
+                    methods=all_approx,
+                    train_flat_grads=train_flat_grads,
+                    test_flat_grads=test_flat_grads,
+                    damping_table=damping_table,
+                    pseudo_inverse_factor=pif,
+                    run_id=run_id,
+                    model_tag=model_tag,
+                )
+                influence_section = {"paths": influence_paths}
+
+            all_results.append({
+                "model_id": model_id,
+                "model_name": model_config.get_model_display_name(),
                 "model_directory": model_dir,
+                "epoch": epoch,
+                "config_hash": result_config_hash,
+                "model_hash": result_model_hash,
+                "model_config": asdict(model_config),
+                "num_parameters": model.num_params,
                 "metadata": metadata or {},
+                "damping_value": lam,
+                "damping_strategy": comp_cfg.damping_strategy.value,
                 "damping_table": damping_table,
-            },
-        )
-        results_db.append_metrics(
-            db,
-            result_id=result_id,
-            rows=results_db.flatten_metric_dicts(
-                matrix_comparisons=matrix_comparisons,
-                hvp_comparisons=hvp_comparisons,
-                ihvp_comparisons=ihvp_comparisons,
-                round_trip_errors=round_trip_errors,
-            ),
-        )
-        if influence_section is not None:
-            results_db.append_influence(
-                db, result_id=result_id, method_to_path=influence_section["paths"],
+                "pseudo_inverse_factor": pif,
+                "hessian_analysis": {
+                    "matrix_comparisons": matrix_comparisons,
+                    "hvp_comparisons": hvp_comparisons,
+                    "ihvp_comparisons": ihvp_comparisons,
+                    "ihvp_round_trip_approximation_errors": round_trip_errors,
+                    "influence": influence_section,
+                },
+            })
+
+            # Persist this result incrementally — ctrl-C mid-sweep keeps what's done.
+            # Same (config_hash, code_sha) on rerun overwrites this row.
+            result_id = results_db.append_result(
+                db,
+                run_id=run_id,
+                model_id=model_id,
+                epoch=epoch,
+                config_hash=result_config_hash,
+                model_hash=result_model_hash,
+                code_sha=code_info.get("sha"),
+                analysis_seed=analysis_seed,
+                dataset_name=dataset_name,
+                dataset_test_size=(
+                    float(dataset_info["test_size"])
+                    if dataset_info.get("test_size") is not None else None
+                ),
+                collector_subset_size=int(comp_cfg.collector_subset_size),
+                damping_value=(None if lam is None else float(lam)),
+                damping_strategy=comp_cfg.damping_strategy.value,
+                pseudo_target_strategy=strategy_str,
+                pseudo_target_repetitions=int(reps),
+                vector_num_samples=int(analysis_cfg.vector_config.num_samples),
+                sampling_method=analysis_cfg.vector_config.sampling_method.value,
+                comparison_probe_source=analysis_cfg.vector_config.comparison_probe_source.value,
+                pseudo_inverse_factor=pif,
+                num_parameters=int(model.num_params),
+                val_loss=(
+                    float((metadata or {}).get("val_loss"))
+                    if metadata and metadata.get("val_loss") is not None else None
+                ),
+                val_accuracy=(
+                    float((metadata or {}).get("val_accuracy"))
+                    if metadata and metadata.get("val_accuracy") is not None else None
+                ),
+                params={
+                    "model_config": asdict(model_config),
+                    "model_directory": model_dir,
+                    "metadata": metadata or {},
+                    "damping_table": damping_table,
+                },
             )
+            results_db.append_metrics(
+                db,
+                result_id=result_id,
+                rows=results_db.flatten_metric_dicts(
+                    matrix_comparisons=matrix_comparisons,
+                    hvp_comparisons=hvp_comparisons,
+                    ihvp_comparisons=ihvp_comparisons,
+                    round_trip_errors=round_trip_errors,
+                ),
+            )
+            if influence_section is not None:
+                results_db.append_influence(
+                    db, result_id=result_id,
+                    method_to_path=influence_section["paths"],
+                )
 
     output_file = run_dir / "results.json"
     with open(output_file, "w") as f:

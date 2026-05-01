@@ -68,7 +68,20 @@ def to_dataclass(cls, config):
         if origin is type(None) or (origin and origin.__name__ == "Union"):
             non_none_types = [arg for arg in args if arg is not type(None)]
             if non_none_types:
-                field_type = non_none_types[0]
+                # Pick the alternative that matches the value's shape: a list-typed
+                # alternative when the YAML value is a list, otherwise a non-list
+                # one. Without this, `Optional[float | List[float]]` would route a
+                # list through the scalar branch and silently pass it through.
+                if isinstance(value, list):
+                    list_types = [t for t in non_none_types if get_origin(t) is list]
+                    field_type = list_types[0] if list_types else non_none_types[0]
+                else:
+                    non_list_types = [
+                        t for t in non_none_types if get_origin(t) is not list
+                    ]
+                    field_type = (
+                        non_list_types[0] if non_list_types else non_none_types[0]
+                    )
                 origin = get_origin(field_type)
                 args = get_args(field_type)
 

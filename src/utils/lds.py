@@ -772,6 +772,14 @@ def compute_lds(*, results_json: str, config: LDSConfig) -> Dict:
         )
         r["model_id"] = model_id
         r["method"] = method
+        # Carry damping forward so the DB write-back can disambiguate sweep
+        # rows that share (run, model, epoch). Older results.json entries that
+        # predate the damping sweep simply lack these keys → write-back falls
+        # back to the (run, model, epoch) match.
+        if "damping_value" in entry:
+            r["damping_value"] = entry["damping_value"]
+        if "damping_strategy" in entry:
+            r["damping_strategy"] = entry["damping_strategy"]
         out_results.append(r)
 
     if out_results:

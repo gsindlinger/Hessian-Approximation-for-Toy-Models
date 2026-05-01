@@ -283,7 +283,10 @@ class HessianComputationConfig:
         PseudoTargetGenerationStrategy.MCMC
     )
     pseudo_target_generation_repetitions: int = 5
-    damping_value: Optional[float] = 0.1
+    # Scalar = single λ. List = sweep these λ values inside one invocation,
+    # sharing collector + factor precomputes across values (one DB result row
+    # per (model, epoch, λ)). None = strategy-specific fallback.
+    damping_value: Optional[float | List[float]] = 0.1
     damping_strategy: DampingStrategy = DampingStrategy.AUTO_MEAN
     compute_influence: bool = False
     # Subsample the train set used by the collector (activations + gradients
