@@ -1,5 +1,5 @@
 """LDS analysis driver — score every (model, epoch, method) attribution
-recorded in a results.json from analyze_hessians.py.
+recorded in one or more results.json files from analyze_hessians.py.
 
 The script is purely a *consumer* of attributions: for each entry in
 results.json that has an ``hessian_analysis.influence.paths`` block, it loads
@@ -7,22 +7,28 @@ the saved .npy attribution matrix, runs ELSO retraining (cached per
 ``(model_directory, recipe)``, so methods within the same checkpoint share
 the retraining cost), and writes the resulting LDS scores to:
 
-  - ``<run_dir>/lds.json`` (sibling of the input results.json), and
+  - ``<run_dir>/lds.json`` (sibling of each input results.json), and
   - the matching row of the ``influence`` table in ``runs.db``
     (columns ``lds_mean`` / ``lds_std`` / ``lds_ci_low`` / ``lds_ci_high`` /
     ``lds_num_valid_queries``).
 
+The recipe yaml is **required** so every run is reproducible from a single
+checked-in config (default: ``experiments/configs/lds.yaml`` matches the
+paper's α/K/R/Q). CLI flags can override individual fields per invocation.
+
 Examples:
 
-    # Use dataclass defaults — no recipe yaml.
+    # One run.
     python -m experiments.lds_analysis \\
+        --config experiments/configs/lds.yaml \\
         --results-json experiments/outputs/runs/<run_id>/results.json
 
-    # With a recipe yaml + CLI overrides.
+    # Many runs in a single invocation (e.g. a damping sweep).
     python -m experiments.lds_analysis \\
-        --results-json experiments/outputs/runs/<run_id>/results.json \\
-        --config experiments/configs/lds_analysis.yaml \\
-        --num-subsets 200 --method ekfac --method exact --epoch 100
+        --config experiments/configs/lds.yaml \\
+        --results-json experiments/outputs/runs/<run_id_1>/results.json \\
+        --results-json experiments/outputs/runs/<run_id_2>/results.json \\
+        --method ekfac --method exact --epoch 100
 """
 
 from __future__ import annotations
@@ -49,10 +55,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _load_config(yaml_path: Optional[str]) -> LDSConfig:
-    """Build an LDSConfig: dataclass defaults, optionally overlaid with yaml."""
-    if yaml_path is None:
-        return LDSConfig()
+def _load_config(yaml_path: str) -> LDSConfig:
+    """Build an LDSConfig from a recipe yaml. The yaml is required so the
+    hyperparameters in use are always explicit and checked-in alongside the
+    experiments."""
     with open(yaml_path) as f:
         raw = yaml.safe_load(f) or {}
     filter_raw = raw.pop("filter", None) or {}
@@ -137,15 +143,16 @@ def _write_lds_to_db(run_id: Optional[str], results: List[Dict[str, Any]]) -> No
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Score attributions in a results.json via ELSO LDS."
+        description="Score attributions in one or more results.json files via ELSO LDS."
     )
     p.add_argument(
-        "--results-json", required=True,
-        help="Path to the results.json produced by analyze_hessians.py.",
+        "--results-json", required=True, action="append", default=[],
+        help="Path to a results.json produced by analyze_hessians.py. "
+             "Repeat the flag to score multiple runs in one invocation.",
     )
     p.add_argument(
-        "--config", default=None,
-        help="Optional LDS recipe yaml. Omit to use LDSConfig() defaults.",
+        "--config", required=True,
+        help="LDS recipe yaml (required). See experiments/configs/lds.yaml.",
     )
     p.add_argument("--num-subsets",       type=int,   default=None)
     p.add_argument("--reps-per-model",    type=int,   default=None)
@@ -168,30 +175,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--method", action="append", default=[],
         help="Filter: include only this method (repeatable).",
     )
-    p.add_argument(
-        "--output", default=None,
-        help="Output lds.json path (default: sibling of results-json).",
-    )
     return p
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    args = _build_parser().parse_args()
-
-    results_json_path = Path(args.results_json).resolve()
-    cfg = _apply_cli_overrides(_load_config(args.config), args)
-
+def _process_one(results_json_path: Path, cfg: LDSConfig) -> None:
+    """Score a single results.json and write its sibling lds.json + db rows."""
     out = compute_lds(results_json=str(results_json_path), config=cfg)
 
     out["code"] = provenance.git_info()
     out["timestamp"] = time.strftime("%Y%m%d-%H%M%S")
     out["lds_config"] = asdict(cfg)  # re-stamp post-overrides for provenance
 
-    output_path = (
-        Path(args.output) if args.output
-        else results_json_path.parent / "lds.json"
-    )
+    output_path = results_json_path.parent / "lds.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
         json.dump(out, f, indent=2, default=str)
@@ -200,7 +195,26 @@ def main() -> None:
     _write_lds_to_db(out.get("run_id"), out["results"])
 
     if out["skipped"]:
-        logger.info("[LDS] skipped %d entries (no influence paths)", len(out["skipped"]))
+        logger.info(
+            "[LDS] skipped %d entries (no influence paths) in %s",
+            len(out["skipped"]), results_json_path.name,
+        )
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    args = _build_parser().parse_args()
+
+    cfg = _apply_cli_overrides(_load_config(args.config), args)
+
+    paths = [Path(p).resolve() for p in args.results_json]
+    logger.info(
+        "[LDS] scoring %d results.json file(s) with recipe %s",
+        len(paths), args.config,
+    )
+    for i, p in enumerate(paths, 1):
+        logger.info("[LDS] (%d/%d) %s", i, len(paths), p)
+        _process_one(p, cfg)
 
 
 if __name__ == "__main__":
