@@ -37,10 +37,10 @@ class ResNetMLP(ApproximationModel):
         Returns the logits of the model.
         """
         act_fn = self.get_activation_fn(self.activation)
-        
-        # TODO: First embedding w/o residual (linear layer)
 
-        if self.hidden_dim is not None:
+        if self.hidden_dim is not None and len(self.hidden_dim) > 0:
+            x = nn.Dense(self.hidden_dim[0], use_bias=False, name="embedding")(x)
+
             for i, h in enumerate(self.hidden_dim):
                 residual = x
 
@@ -78,7 +78,19 @@ class ResNetMLP(ApproximationModel):
         activations = x
         act_fn = self.get_activation_fn(self.activation)
 
-        if self.hidden_dim is not None:
+        if self.hidden_dim is not None and len(self.hidden_dim) > 0:
+            embed_module = nn.Dense(
+                features=self.hidden_dim[0], use_bias=False, name="embedding"
+            )
+            embed_params = self.variables["params"]["embedding"]
+            activations = layer_wrapper_vjp(
+                lambda p, a: pure_apply_fn(embed_module, p, a),
+                embed_params,
+                activations,
+                "embedding",
+                collector,
+            )
+
             for i, h in enumerate(self.hidden_dim):
                 residual = activations
 

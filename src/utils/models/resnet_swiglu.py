@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import field
 from typing import List, Tuple
 
-import jax.numpy as jnp
 from flax import linen as nn
 from jaxtyping import Array, Float
 
@@ -39,15 +38,10 @@ class ResNetMLPSwiGLU(ApproximationModel):
         Returns the logits of the model.
         """
         
-        # TODO: First embedding w/o residual (linear layer)
-        # hidden_dim = 64 -> W_Embedding(x)_shape(64, 10) -> (20,20,10) -> (10,10,10)
-        
-        # W_up = [10, 20]
-        # W_gate = [10, 20]
-        # W_down = [20, 10]
-        
-        
-        if self.hidden_dim is not None:
+        if self.hidden_dim is not None and len(self.hidden_dim) > 0:
+            _, _, first_down_dim = self.hidden_dim[0]
+            x = nn.Dense(first_down_dim, use_bias=False, name="embedding")(x)
+
             for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
                 residual = x
 
@@ -89,7 +83,20 @@ class ResNetMLPSwiGLU(ApproximationModel):
 
         activations = x
 
-        if self.hidden_dim is not None:
+        if self.hidden_dim is not None and len(self.hidden_dim) > 0:
+            _, _, first_down_dim = self.hidden_dim[0]
+            embed_module = nn.Dense(
+                features=first_down_dim, use_bias=False, name="embedding"
+            )
+            embed_params = self.variables["params"]["embedding"]
+            activations = layer_wrapper_vjp(
+                lambda p, a: pure_apply_fn(embed_module, p, a),
+                embed_params,
+                activations,
+                "embedding",
+                collector,
+            )
+
             for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
                 residual = activations
 
@@ -123,7 +130,6 @@ class ResNetMLPSwiGLU(ApproximationModel):
                     prefix=f"swiglu_{i}",
                     method=swiglu_module.collector_apply,
                 )
-                assert isinstance(activations, jnp.ndarray)
                 activations = activations + residual
 
         # Final output layer
