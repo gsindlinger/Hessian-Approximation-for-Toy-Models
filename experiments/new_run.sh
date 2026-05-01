@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")/.."
 
 MODELS_CONFIG="experiments/shared_models.yaml"
-ANALYSIS_CONFIG="experiments/configs/hessian_analysis.yaml"
+ANALYSIS_CONFIG="experiments/configs/hessian_sweep.yaml"
 
 # Positional args (only if they don't start with '-'); rest are forwarded.
 #   ./new_run.sh --skip-if-exists                  → defaults + flag
