@@ -5,6 +5,7 @@ from typing import Dict
 from src.config import HessianApproximationMethod
 from src.hessians.computer.computer import HessianEstimator
 from src.hessians.computer.ekfac import EKFACComputer
+from src.hessians.computer.emac import EMacComputer
 from src.hessians.computer.eshampoo import EShampooComputer
 from src.hessians.computer.fim import FIMComputer
 from src.hessians.computer.fim_block import FIMBlockComputer
@@ -25,6 +26,7 @@ from src.hessians.utils.data import (
 _CORRECTED_KRONECKER_METHODS = frozenset({
     HessianApproximationMethod.EKFAC,
     HessianApproximationMethod.ESHAMPOO,
+    HessianApproximationMethod.EMAC,
 })
 
 
@@ -47,6 +49,10 @@ class HessianComputerRegistry:
             EShampooComputer, apply_eigenvalue_correction=False
         ),
         HessianApproximationMethod.ESHAMPOO: EShampooComputer,
+        HessianApproximationMethod.MAC: partial(
+            EMacComputer, apply_eigenvalue_correction=False
+        ),
+        HessianApproximationMethod.EMAC: EMacComputer,
         HessianApproximationMethod.IDENTITY: IdentityComputer,
     }
 
@@ -63,6 +69,8 @@ class HessianComputerRegistry:
         HessianApproximationMethod.EXACT: "exact_hessian_layer_matrix",
         HessianApproximationMethod.SHAMPOO: "shampoo_layer_matrix",
         HessianApproximationMethod.ESHAMPOO: "eshampoo_layer_matrix",
+        HessianApproximationMethod.MAC: "mac_layer_matrix",
+        HessianApproximationMethod.EMAC: "emac_layer_matrix",
         HessianApproximationMethod.IDENTITY: "identity_layer_matrix",
     }
 

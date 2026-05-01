@@ -68,6 +68,8 @@ class HessianApproximationMethod(str, Enum):
     BLOCK_HESSIAN = "block_hessian"
     SHAMPOO = "shampoo"
     ESHAMPOO = "eshampoo"
+    MAC = "mac"
+    EMAC = "emac"
     IDENTITY = "identity"
 
     @staticmethod
