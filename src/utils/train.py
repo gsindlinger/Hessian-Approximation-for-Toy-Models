@@ -11,6 +11,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 import optax
+import wandb
 from flax import serialization
 from flax.training import train_state
 from tqdm import tqdm
@@ -63,11 +64,17 @@ def train_model(
     seed: int = 42,
     save_epochs: Optional[List[int]] = None,
     save_checkpoints: bool = True,
+    train_dataset: Optional[Dataset] = None,
+    val_dataset: Optional[Dataset] = None,
 ) -> Tuple[ApproximationModel, Dict, List]:
     """Train the model.
 
     Set ``save_checkpoints=False`` for temporary fits that should not write to
     ``model_config.directory``.
+
+    When ``train_dataset`` / ``val_dataset`` are provided, computes per-epoch
+    {train,val}_loss (and {train,val}_acc for cross-entropy) on the full set
+    and logs to W&B if a wandb run is active.
     """
 
     model = ModelRegistry.get_model(model_config=model_config, seed=seed)
@@ -79,6 +86,7 @@ def train_model(
     state = create_train_state(model, params, optimizer)
 
     loss_history = []
+    is_classification = model_config.loss == LossType.CROSS_ENTROPY
 
     for epoch in tqdm(range(1, epochs + 1)):
         running_loss = 0.0
@@ -97,6 +105,37 @@ def train_model(
 
         epoch_loss = running_loss / total_samples
         loss_history.append(epoch_loss)
+
+        epoch_metrics: Dict[str, float] = {
+            "train/running_loss": epoch_loss,
+            "train/grad_norm": float(grad_norm),
+        }
+        if train_dataset is not None:
+            if is_classification:
+                tl, tacc = evaluate_loss_and_classification_accuracy(
+                    model, state.params, train_dataset.inputs, train_dataset.targets, loss_fn
+                )
+                epoch_metrics["train/loss"] = tl
+                epoch_metrics["train/accuracy"] = tacc
+            else:
+                epoch_metrics["train/loss"] = evaluate_loss(
+                    model, state.params, train_dataset.inputs, train_dataset.targets, loss_fn
+                )
+        if val_dataset is not None:
+            if is_classification:
+                vl, vacc = evaluate_loss_and_classification_accuracy(
+                    model, state.params, val_dataset.inputs, val_dataset.targets, loss_fn
+                )
+                epoch_metrics["val/loss"] = vl
+                epoch_metrics["val/accuracy"] = vacc
+            else:
+                epoch_metrics["val/loss"] = evaluate_loss(
+                    model, state.params, val_dataset.inputs, val_dataset.targets, loss_fn
+                )
+
+        if wandb.run is not None:
+            wandb.log(epoch_metrics, step=epoch)
+
         if epoch % 50 == 0 or epoch == epochs:
             logger.info(
                 f"Epoch {epoch}, Loss: {epoch_loss:.4f}, Grad Norm: {grad_norm:.6f}"

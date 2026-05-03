@@ -37,7 +37,7 @@ class ResNetMLP(ApproximationModel):
     def __call__(
         self, x: Float[Array, "batch_size input_dim"]
     ) -> Float[Array, "batch_size output_dim"]:
-        init_fn = nn.initializers.he_uniform()
+        init_fn = nn.initializers.xavier_uniform()
 
         if self.hidden_dim is not None and len(self.hidden_dim) > 0:
             _, first_down_dim = self.hidden_dim[0]
@@ -77,7 +77,7 @@ class ResNetMLP(ApproximationModel):
         def pure_apply_fn(module, params, activations):
             return module.apply({"params": params}, activations)
 
-        init_fn = nn.initializers.he_uniform()
+        init_fn = nn.initializers.xavier_uniform()
         activations = x
 
         if self.hidden_dim is not None and len(self.hidden_dim) > 0:

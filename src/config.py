@@ -338,6 +338,15 @@ class HessianAnalysisConfig:
 
 
 @dataclass
+class WandbConfig:
+    """Optional Weights & Biases logging. Disabled by default."""
+
+    enabled: bool = False
+    project: str = "hessian-approx"
+    entity: Optional[str] = None
+
+
+@dataclass
 class TrainingExperimentConfig:
     """Top-level training experiment configuration (no Hessian analysis).
 
@@ -367,6 +376,9 @@ class TrainingExperimentConfig:
     # Model selection criteria
     selection_metric: str = "val_accuracy"  # or "val_loss"
     selection_minimize: bool = False  # False for accuracy, True for loss
+
+    # Optional W&B logging
+    wandb: WandbConfig = field(default_factory=WandbConfig)
 
 
 @dataclass

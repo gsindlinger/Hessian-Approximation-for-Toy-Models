@@ -67,6 +67,7 @@ from dataclasses import asdict
 from typing import Dict, List, Optional
 
 import hydra
+import wandb
 import yaml
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
@@ -77,7 +78,7 @@ from experiments.config_builder import (
     register_enum_representers,
 )
 from experiments.utils import cleanup_memory, to_dataclass
-from src.config import LossType, ModelConfig, TrainingExperimentConfig
+from src.config import LossType, ModelConfig, TrainingExperimentConfig, WandbConfig
 from src.utils.data.data import (
     Dataset,
     ResolvedSplit,
@@ -138,6 +139,8 @@ def train_single_model(
     split_seed: int,
     save_epochs: List[int],
     dataset_info: Optional[Dict] = None,
+    wandb_config: Optional[WandbConfig] = None,
+    experiment_name: Optional[str] = None,
 ) -> Dict:
     """Train a single model and return its results."""
 
@@ -160,23 +163,54 @@ def train_single_model(
         batch_size = model_config.training.batch_size
         batches_per_epoch = (len(train_dataset) + batch_size - 1) // batch_size
         total_steps = batches_per_epoch * model_config.training.epochs
-        model, params, _ = train_model(
-            model_config=model_config,
-            dataloader=train_dataset.get_dataloader(
-                batch_size=model_config.training.batch_size, seed=model_seed
-            ),
-            loss_fn=get_loss(model_config.loss),
-            optimizer=optimizer(
-                optimizer_enum=model_config.training.optimizer,
-                lr=model_config.training.learning_rate,
-                weight_decay=model_config.training.weight_decay,
-                lr_schedule=model_config.training.lr_schedule,
-                total_steps=total_steps,
-            ),
-            epochs=model_config.training.epochs,
-            seed=model_seed,
-            save_epochs=save_epochs,
-        )
+
+        wandb_run = None
+        if wandb_config is not None and wandb_config.enabled:
+            wandb_run = wandb.init(
+                project=wandb_config.project,
+                entity=wandb_config.entity,
+                name=os.path.basename(model_dir),
+                group=experiment_name,
+                config={
+                    "architecture": model_config.architecture.value,
+                    "hidden_dim": model_config.hidden_dim,
+                    "loss": model_config.loss.value,
+                    "optimizer": model_config.training.optimizer.value,
+                    "learning_rate": model_config.training.learning_rate,
+                    "weight_decay": model_config.training.weight_decay,
+                    "lr_schedule": model_config.training.lr_schedule.value,
+                    "epochs": model_config.training.epochs,
+                    "batch_size": model_config.training.batch_size,
+                    "model_seed": model_seed,
+                    "split_seed": split_seed,
+                    "num_parameters": model.num_params,
+                },
+                reinit=True,
+            )
+
+        try:
+            model, params, _ = train_model(
+                model_config=model_config,
+                dataloader=train_dataset.get_dataloader(
+                    batch_size=model_config.training.batch_size, seed=model_seed
+                ),
+                loss_fn=get_loss(model_config.loss),
+                optimizer=optimizer(
+                    optimizer_enum=model_config.training.optimizer,
+                    lr=model_config.training.learning_rate,
+                    weight_decay=model_config.training.weight_decay,
+                    lr_schedule=model_config.training.lr_schedule,
+                    total_steps=total_steps,
+                ),
+                epochs=model_config.training.epochs,
+                seed=model_seed,
+                save_epochs=save_epochs,
+                train_dataset=train_dataset,
+                val_dataset=val_dataset,
+            )
+        finally:
+            if wandb_run is not None:
+                wandb_run.finish()
 
     if model_config.loss == LossType.CROSS_ENTROPY:
         val_loss, val_acc = evaluate_loss_and_classification_accuracy(
@@ -387,6 +421,8 @@ def main(cfg: DictConfig):
             split_seed=config.dataset.split_seed,
             save_epochs=config.save_epochs,
             dataset_info=dataset_info,
+            wandb_config=config.wandb,
+            experiment_name=config.experiment_name,
         )
         training_results.append(result)
 
