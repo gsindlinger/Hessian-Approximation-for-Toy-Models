@@ -101,10 +101,17 @@ CREATE INDEX IF NOT EXISTS idx_influence_result ON influence(result_id);
 
 
 def init_db(db_path: Path | str = RESULTS_DB) -> sqlite3.Connection:
-    """Open (creating if needed) the results db. Caller closes."""
+    """Open (creating if needed) the results db. Caller closes.
+
+    Concurrency: WAL + 30s busy_timeout so multiple analyze_hessians jobs
+    sharing the same runs.db don't error with `database is locked` when
+    their writes overlap.
+    """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(db_path))
+    con = sqlite3.connect(str(db_path), timeout=30.0)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=30000")
     con.executescript(SCHEMA)
     return con
 

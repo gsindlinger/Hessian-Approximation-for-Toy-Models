@@ -24,10 +24,8 @@ class EIdentityComputer(KroneckerEstimator):
         probs: Float[Array, "N k"],
     ) -> Dict[str, Dict[str, Float[Array, "D D"]]]:
         """Per-chunk sums:
-        act_sum[l]  = Σ_n a_n a_nᵀ
-        grad_sum[l] = 0  (placeholder; gradient cov is fixed to I in
-                          `_finalize_covariances`).  We carry the (O, O)
-                          shape so the finalizer knows the layer width.
+        act_sum[l]  = 0  (placeholder; activation cov is fixed to I at the end)
+        grad_sum[l] = 0  (placeholder; gradient cov is fixed to I in the end)
         """
         act_sums: Dict[str, Array] = {}
         grad_sums: Dict[str, Array] = {}

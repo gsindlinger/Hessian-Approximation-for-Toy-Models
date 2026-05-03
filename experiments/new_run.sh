@@ -3,8 +3,11 @@ set -e
 
 cd "$(dirname "$0")/.."
 
+# MODELS_CONFIG="experiments/shared_models.yaml"
+# ANALYSIS_CONFIG="experiments/configs/hessian_sweep.yaml"
+
 MODELS_CONFIG="experiments/shared_models.yaml"
-ANALYSIS_CONFIG="experiments/configs/hessian_sweep.yaml"
+ANALYSIS_CONFIG="experiments/configs/approximator_sweep.yaml"
 
 # Positional args (only if they don't start with '-'); rest are forwarded.
 #   ./new_run.sh --skip-if-exists                  → defaults + flag
@@ -18,6 +21,7 @@ if [[ "${1:-}" != "" && "${1}" != -* ]]; then
 fi
 
 export TF_CPP_MIN_LOG_LEVEL=3
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
 
 python -m experiments.analyze_hessians \
     --config "$MODELS_CONFIG" \

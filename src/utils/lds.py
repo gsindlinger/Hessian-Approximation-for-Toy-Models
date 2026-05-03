@@ -756,8 +756,10 @@ def compute_lds(*, results_json: str, config: LDSConfig) -> Dict:
     for entry, method, npy_path in pbar:
         model_id = entry.get("model_id") or ""
         epoch = entry.get("epoch")
+        lam = entry.get("damping_value")
+        lam_s = f" λ={lam:g}" if isinstance(lam, (int, float)) else ""
         pbar.set_postfix_str(
-            f"{model_id[-12:]} e={epoch if epoch is not None else 'final'} m={method}"
+            f"{model_id[-12:]} e={epoch if epoch is not None else 'final'} m={method}{lam_s}"
         )
         r = _compute_lds_for_attribution(
             model_directory=entry["model_directory"],
@@ -797,7 +799,7 @@ def compute_lds(*, results_json: str, config: LDSConfig) -> Dict:
 def _log_summary_table(results: List[Dict[str, Any]]) -> None:
     """Pretty per-(model, epoch, method) summary printed once at the end."""
     header = (
-        f"{'model_id':<22} {'epoch':>6} {'method':<14}"
+        f"{'model_id':<22} {'epoch':>6} {'method':<14} {'λ':>10}"
         f" {'mean':>9} {'std':>8} {'95% CI':>20} {'valid':>6}"
     )
     rule = "-" * len(header)
@@ -810,12 +812,14 @@ def _log_summary_table(results: List[Dict[str, Any]]) -> None:
         epoch = r.get("epoch")
         epoch_s = "final" if epoch is None else str(epoch)
         method = (r.get("method") or "")[:14]
+        lam = r.get("damping_value")
+        lam_s = f"{lam:.3g}" if isinstance(lam, (int, float)) else "-"
         ci_low = s.get("ci_low", float("nan"))
         ci_high = s.get("ci_high", float("nan"))
         ci_s = f"[{ci_low:+.3f}, {ci_high:+.3f}]"
         logger.info(
-            "%-22s %6s %-14s %9.4f %8.4f %20s %6d",
-            mid, epoch_s, method,
+            "%-22s %6s %-14s %10s %9.4f %8.4f %20s %6d",
+            mid, epoch_s, method, lam_s,
             s.get("mean_lds", float("nan")),
             s.get("std_lds", float("nan")),
             ci_s,

@@ -22,6 +22,7 @@ dependencies = [
     "torch",  # CPU-only build; see [tool.uv.sources] — keeps GPU stack JAX-only
     "tqdm>=4.67.1",
     "ucimlrepo>=0.0.7",
+    "wandb>=0.26.1",
 ]
 
 [project.optional-dependencies]

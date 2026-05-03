@@ -4,7 +4,7 @@ set -e
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-TRAINING_CONFIG_NAME="short_config"
+TRAINING_CONFIG_NAME="resnet_mlp_single"
 TRAINING_CONFIG_PATH="$PROJECT_ROOT/experiments/configs"
 
 for arg in "$@"; do
