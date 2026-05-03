@@ -71,6 +71,7 @@ class HessianApproximationMethod(str, Enum):
     MAC = "mac"
     EMAC = "emac"
     IDENTITY = "identity"
+    EIDENTITY = "eidentity"
 
     @staticmethod
     def get_approximator_list_except_exact() -> List[HessianApproximationMethod]:

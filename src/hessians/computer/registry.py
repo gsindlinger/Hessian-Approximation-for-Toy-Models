@@ -12,7 +12,7 @@ from src.hessians.computer.fim_block import FIMBlockComputer
 from src.hessians.computer.gnh import GNHComputer
 from src.hessians.computer.hessian import HessianComputer
 from src.hessians.computer.hessian_block import BlockHessianComputer
-from src.hessians.computer.identity import IdentityComputer
+from src.hessians.computer.eidentity import EIdentityComputer
 from src.hessians.utils.data import (
     DataActivationsGradients,
     ModelContext,
@@ -27,6 +27,7 @@ _CORRECTED_KRONECKER_METHODS = frozenset({
     HessianApproximationMethod.EKFAC,
     HessianApproximationMethod.ESHAMPOO,
     HessianApproximationMethod.EMAC,
+    HessianApproximationMethod.EIDENTITY,
 })
 
 
@@ -53,7 +54,10 @@ class HessianComputerRegistry:
             EMacComputer, apply_eigenvalue_correction=False
         ),
         HessianApproximationMethod.EMAC: EMacComputer,
-        HessianApproximationMethod.IDENTITY: IdentityComputer,
+        HessianApproximationMethod.IDENTITY: partial(
+            EIdentityComputer, apply_eigenvalue_correction=False
+        ),
+        HessianApproximationMethod.EIDENTITY: EIdentityComputer,
     }
 
     # Directory names used for `LayerMatrix.save/load` under a shared
@@ -72,6 +76,7 @@ class HessianComputerRegistry:
         HessianApproximationMethod.MAC: "mac_layer_matrix",
         HessianApproximationMethod.EMAC: "emac_layer_matrix",
         HessianApproximationMethod.IDENTITY: "identity_layer_matrix",
+        HessianApproximationMethod.EIDENTITY: "eidentity_layer_matrix",
     }
 
     @staticmethod
@@ -103,7 +108,6 @@ class HessianComputerRegistry:
             HessianApproximationMethod.GNH,
             HessianApproximationMethod.BLOCK_HESSIAN,
             HessianApproximationMethod.EXACT,
-            HessianApproximationMethod.IDENTITY,
         ]:
             return model_ctx
         return collector_data
