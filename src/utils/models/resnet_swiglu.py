@@ -38,9 +38,13 @@ class ResNetMLPSwiGLU(ApproximationModel):
         Returns the logits of the model.
         """
         
+        init_fn = nn.initializers.he_uniform()
+
         if self.hidden_dim is not None and len(self.hidden_dim) > 0:
             _, _, first_down_dim = self.hidden_dim[0]
-            x = nn.Dense(first_down_dim, use_bias=False, name="embedding")(x)
+            x = nn.Dense(
+                first_down_dim, use_bias=False, kernel_init=init_fn, name="embedding"
+            )(x)
 
             for i, (up_dim, gate_dim, down_dim) in enumerate(self.hidden_dim):
                 residual = x
@@ -48,7 +52,10 @@ class ResNetMLPSwiGLU(ApproximationModel):
                 # Project residual if dimensions don't match
                 if x.shape[-1] != down_dim:
                     residual = nn.Dense(
-                        down_dim, use_bias=False, name=f"residual_proj_{i}"
+                        down_dim,
+                        use_bias=False,
+                        kernel_init=init_fn,
+                        name=f"residual_proj_{i}",
                     )(residual)
 
                 # output = input + SwiGLU(input)
@@ -61,7 +68,9 @@ class ResNetMLPSwiGLU(ApproximationModel):
                 x = x + residual
 
         # Final output layer
-        final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
+        final_logits = nn.Dense(
+            self.output_dim, use_bias=False, kernel_init=init_fn, name="output"
+        )(x)
         return final_logits
 
     @nn.compact
@@ -81,12 +90,16 @@ class ResNetMLPSwiGLU(ApproximationModel):
             """Helper to apply a module with given parameters."""
             return module.apply({"params": params}, activations)
 
+        init_fn = nn.initializers.he_uniform()
         activations = x
 
         if self.hidden_dim is not None and len(self.hidden_dim) > 0:
             _, _, first_down_dim = self.hidden_dim[0]
             embed_module = nn.Dense(
-                features=first_down_dim, use_bias=False, name="embedding"
+                features=first_down_dim,
+                use_bias=False,
+                kernel_init=init_fn,
+                name="embedding",
             )
             embed_params = self.variables["params"]["embedding"]
             activations = layer_wrapper_vjp(
@@ -103,7 +116,10 @@ class ResNetMLPSwiGLU(ApproximationModel):
                 # Project residual if dimensions don't match
                 if activations.shape[-1] != down_dim:
                     proj_module = nn.Dense(
-                        features=down_dim, use_bias=False, name=f"residual_proj_{i}"
+                        features=down_dim,
+                        use_bias=False,
+                        kernel_init=init_fn,
+                        name=f"residual_proj_{i}",
                     )
                     proj_params = self.variables["params"][f"residual_proj_{i}"]
                     residual = layer_wrapper_vjp(
@@ -134,7 +150,10 @@ class ResNetMLPSwiGLU(ApproximationModel):
 
         # Final output layer
         output_module = nn.Dense(
-            features=self.output_dim, use_bias=False, name="output"
+            features=self.output_dim,
+            use_bias=False,
+            kernel_init=init_fn,
+            name="output",
         )
         output_params = self.variables["params"]["output"]
         final_logits = layer_wrapper_vjp(

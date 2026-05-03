@@ -21,7 +21,7 @@ class SwiGLU(nn.Module):
     gate_dim: int
     down_dim: int
 
-    init_fn: Callable = nn.initializers.xavier_uniform()
+    init_fn: Callable = nn.initializers.he_uniform()
 
     def __post_init__(self) -> None:
         super().__post_init__()

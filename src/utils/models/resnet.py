@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import field
+from typing import List, Tuple
 
+import jax.nn as jnn
 from flax import linen as nn
 from jaxtyping import Array, Float
 
@@ -11,76 +13,80 @@ from src.utils.models.approximation_model import ApproximationModel
 
 
 class ResNetMLP(ApproximationModel):
-    """ResNet-style MLP with residual connections.
+    """ReLU residual MLP with 2-linear up/down blocks.
 
-    Each layer computes: output = input + activation(Dense(input))
+    Each block computes: h_out = h_in + W_down(ReLU(W_up(h_in))).
 
-    Note: Assumes for simplicity no bias in the layers.
+    `hidden_dim` is a list of (up_dim, down_dim) per block. The residual stream
+    dim is the first block's down_dim; the embedding projects the input to that
+    dim, and a residual_proj is inserted whenever consecutive down_dims differ.
+
+    No bias on any Linear; Kaiming/He uniform init throughout.
     """
 
-    hidden_dim: list[int] | None = field(default_factory=list)
-    activation: ActivationFunction = ActivationFunction.TANH
+    hidden_dim: List[Tuple[int, int]] | None = field(default_factory=list)
+    activation: ActivationFunction = ActivationFunction.RELU
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        assert self.activation in {
-            ActivationFunction.RELU,
-            ActivationFunction.TANH,
-        }, "ResNetMLP only supports ReLU and Tanh activations."
+        assert self.activation == ActivationFunction.RELU, (
+            "ResNetMLP only supports ReLU activation."
+        )
 
     @nn.compact
     def __call__(
         self, x: Float[Array, "batch_size input_dim"]
     ) -> Float[Array, "batch_size output_dim"]:
-        """Forward pass of the ResNet MLP model.
-
-        Returns the logits of the model.
-        """
-        act_fn = self.get_activation_fn(self.activation)
+        init_fn = nn.initializers.he_uniform()
 
         if self.hidden_dim is not None and len(self.hidden_dim) > 0:
-            x = nn.Dense(self.hidden_dim[0], use_bias=False, name="embedding")(x)
+            _, first_down_dim = self.hidden_dim[0]
+            x = nn.Dense(
+                first_down_dim, use_bias=False, kernel_init=init_fn, name="embedding"
+            )(x)
 
-            for i, h in enumerate(self.hidden_dim):
+            for i, (up_dim, down_dim) in enumerate(self.hidden_dim):
                 residual = x
 
-                # Project residual if dimensions don't match
-                if x.shape[-1] != h:
-                    residual = nn.Dense(h, use_bias=False, name=f"residual_proj_{i}")(
-                        residual
-                    )
+                if x.shape[-1] != down_dim:
+                    residual = nn.Dense(
+                        down_dim,
+                        use_bias=False,
+                        kernel_init=init_fn,
+                        name=f"residual_proj_{i}",
+                    )(residual)
 
-                # output = input + act(Wx)
-                x = nn.Dense(h, use_bias=False, name=f"linear_{i}")(x)
-                x = act_fn(x)
+                x = nn.Dense(
+                    up_dim, use_bias=False, kernel_init=init_fn, name=f"up_{i}"
+                )(x)
+                x = jnn.relu(x)
+                x = nn.Dense(
+                    down_dim, use_bias=False, kernel_init=init_fn, name=f"down_{i}"
+                )(x)
                 x = x + residual
 
-        final_logits = nn.Dense(self.output_dim, use_bias=False, name="output")(x)
+        final_logits = nn.Dense(
+            self.output_dim, use_bias=False, kernel_init=init_fn, name="output"
+        )(x)
         return final_logits
 
     @nn.compact
     def collector_apply(
         self, x: Float[Array, "batch_size input_dim"], collector: CollectorBase
     ) -> Float[Array, "batch_size output_dim"]:
-        """Forward pass with hooks for collecting activations and gradients.
-
-        This method uses a custom VJP wrapper around each layer to enable
-        collection of necessary data during forward and backward passes.
-        Data is collected by the provided `collector` instance.
-
-        Returns the logits of the model.
-        """
-
         def pure_apply_fn(module, params, activations):
-            """Helper to apply a module with given parameters."""
             return module.apply({"params": params}, activations)
 
+        init_fn = nn.initializers.he_uniform()
         activations = x
-        act_fn = self.get_activation_fn(self.activation)
 
         if self.hidden_dim is not None and len(self.hidden_dim) > 0:
+            _, first_down_dim = self.hidden_dim[0]
             embed_module = nn.Dense(
-                features=self.hidden_dim[0], use_bias=False, name="embedding"
+                features=first_down_dim,
+                use_bias=False,
+                kernel_init=init_fn,
+                name="embedding",
             )
             embed_params = self.variables["params"]["embedding"]
             activations = layer_wrapper_vjp(
@@ -91,13 +97,15 @@ class ResNetMLP(ApproximationModel):
                 collector,
             )
 
-            for i, h in enumerate(self.hidden_dim):
+            for i, (up_dim, down_dim) in enumerate(self.hidden_dim):
                 residual = activations
 
-                # Project residual if dimensions don't match
-                if activations.shape[-1] != h:
+                if activations.shape[-1] != down_dim:
                     proj_module = nn.Dense(
-                        features=h, use_bias=False, name=f"residual_proj_{i}"
+                        features=down_dim,
+                        use_bias=False,
+                        kernel_init=init_fn,
+                        name=f"residual_proj_{i}",
                     )
                     proj_params = self.variables["params"][f"residual_proj_{i}"]
                     residual = layer_wrapper_vjp(
@@ -108,21 +116,43 @@ class ResNetMLP(ApproximationModel):
                         collector,
                     )
 
-                # output = input + act(Wx)
-                layer_module = nn.Dense(features=h, use_bias=False, name=f"linear_{i}")
-                layer_params = self.variables["params"][f"linear_{i}"]
+                up_module = nn.Dense(
+                    features=up_dim,
+                    use_bias=False,
+                    kernel_init=init_fn,
+                    name=f"up_{i}",
+                )
+                up_params = self.variables["params"][f"up_{i}"]
                 activations = layer_wrapper_vjp(
-                    lambda p, a: pure_apply_fn(layer_module, p, a),
-                    layer_params,
+                    lambda p, a: pure_apply_fn(up_module, p, a),
+                    up_params,
                     activations,
-                    f"linear_{i}",
+                    f"up_{i}",
                     collector,
                 )
-                activations = act_fn(activations)
+                activations = jnn.relu(activations)
+
+                down_module = nn.Dense(
+                    features=down_dim,
+                    use_bias=False,
+                    kernel_init=init_fn,
+                    name=f"down_{i}",
+                )
+                down_params = self.variables["params"][f"down_{i}"]
+                activations = layer_wrapper_vjp(
+                    lambda p, a: pure_apply_fn(down_module, p, a),
+                    down_params,
+                    activations,
+                    f"down_{i}",
+                    collector,
+                )
                 activations = activations + residual
 
         output_module = nn.Dense(
-            features=self.output_dim, use_bias=False, name="output"
+            features=self.output_dim,
+            use_bias=False,
+            kernel_init=init_fn,
+            name="output",
         )
         output_params = self.variables["params"]["output"]
         final_logits = layer_wrapper_vjp(

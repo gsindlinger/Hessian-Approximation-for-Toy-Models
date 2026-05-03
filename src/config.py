@@ -190,7 +190,7 @@ class ModelConfig:
 
     # Model dimensions
     input_dim: int = field(default=0)
-    hidden_dim: List[int] | List[Tuple[int, int, int]] | None = field(default=None)
+    hidden_dim: List[int] | List[Tuple[int, int]] | List[Tuple[int, int, int]] | None = field(default=None)
     output_dim: int = field(default=0)
 
     # Activation function
