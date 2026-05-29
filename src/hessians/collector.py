@@ -165,12 +165,13 @@ class CollectorActivationsGradients:
             assert self._memmap_dir is not None
             I = a_np.shape[-1]
             O = g_np.shape[-1] if g_np.ndim > 1 else 1
+            safe_name = name.replace("/", "_")
             self._act_memmap[name] = np.lib.format.open_memmap(
-                self._memmap_dir / f"activations_{name}.npy",
+                self._memmap_dir / f"activations_{safe_name}.npy",
                 mode="w+", dtype=a_np.dtype, shape=(self._total_n, I),
             )
             self._grad_memmap[name] = np.lib.format.open_memmap(
-                self._memmap_dir / f"gradients_{name}.npy",
+                self._memmap_dir / f"gradients_{safe_name}.npy",
                 mode="w+", dtype=g_np.dtype, shape=(self._total_n, O),
             )
             self._offsets[name] = 0
@@ -408,8 +409,9 @@ class CollectorActivationsGradients:
         activations: Dict[str, Array] = {}
         gradients: Dict[str, Array] = {}
         for name in layer_names:
-            act_mm = np.load(directory / f"activations_{name}.npy", mmap_mode="r")
-            grad_mm = np.load(directory / f"gradients_{name}.npy", mmap_mode="r")
+            safe_name = name.replace("/", "_")
+            act_mm = np.load(directory / f"activations_{safe_name}.npy", mmap_mode="r")
+            grad_mm = np.load(directory / f"gradients_{safe_name}.npy", mmap_mode="r")
             O_dim = grad_mm.shape[-1]
             activations[name] = act_mm[:n_samples]
             gradients[name] = grad_mm.reshape(k, n_samples, O_dim).transpose(1, 2, 0)

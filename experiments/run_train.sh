@@ -1,23 +1,31 @@
 #!/bin/bash
+# Train models from a YAML config and capture the best-models output path.
+#
+# Usage:
+#   ./experiments/run_train.sh <config.yaml>
+#
+# Examples:
+#   ./experiments/run_train.sh experiments/configs/recovered/mlp_08580ee2573a.yaml
+#   ./experiments/run_train.sh experiments/configs/digits_sweep.yaml
+#
+# The script prints BEST_MODELS_YAML=<path> on success, which downstream
+# scripts (e.g. new_run.sh) can consume.
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-TRAINING_CONFIG_NAME="resnet_mlp_single"
-TRAINING_CONFIG_PATH="$PROJECT_ROOT/experiments/configs"
+CONFIG_PATH="${1:?Usage: $0 <config.yaml>}"
+CONFIG_PATH="$(cd "$(dirname "$CONFIG_PATH")" && pwd)/$(basename "$CONFIG_PATH")"
+CONFIG_NAME="$(basename "$CONFIG_PATH" .yaml)"
+CONFIG_DIR="$(dirname "$CONFIG_PATH")"
 
-for arg in "$@"; do
-  eval "$arg"
-done
-
-echo "Starting training sweep with config: $TRAINING_CONFIG_NAME"
-echo "Using config path: $TRAINING_CONFIG_PATH"
+echo "Training with config: $CONFIG_PATH"
 
 BEST_MODELS_PATH=$(python -m experiments.train_models \
-    --config-name="$TRAINING_CONFIG_NAME" \
-    --config-path="$TRAINING_CONFIG_PATH" \
-    hydra.run.dir=experiments/logs/training/$TRAINING_CONFIG_NAME/$(date +%Y%m%d-%H%M%S) | \
+    --config-name="$CONFIG_NAME" \
+    --config-path="$CONFIG_DIR" \
+    hydra.run.dir=experiments/logs/training/$CONFIG_NAME/$(date +%Y%m%d-%H%M%S) | \
     tee /dev/tty | sed -n 's/^BEST_MODELS_YAML=//p')
 
 if [ -z "$BEST_MODELS_PATH" ]; then

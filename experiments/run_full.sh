@@ -1,16 +1,14 @@
 #!/bin/bash
-# Run analyze_hessians on the configured models/analysis YAMLs, then run LDS
-# on the produced results.json. Pins the whole job to a single GPU.
+# Run analyze_hessians + LDS end-to-end, pinned to a single GPU.
 #
 # Usage:
-#   ./run_full.sh --gpu 2
-#   ./run_full.sh --gpu 2 m.yaml a.yaml --skip-if-exists
-#   ./run_full.sh --gpu 2 -- --override analysis.computation_config.damping_strategy=pseudo_inverse
+#   ./experiments/run_full.sh --gpu <N> <models.yaml> <analysis.yaml> [flags...]
 #
-# Anything after --gpu N is forwarded to new_run.sh (positional model/analysis
-# YAMLs first, then flags). LDS is invoked with the default lds.yaml recipe;
-# override via LDS_CONFIG=<path> ./run_full.sh ...
-
+# Examples:
+#   ./experiments/run_full.sh --gpu 0 models.yaml analysis.yaml
+#   ./experiments/run_full.sh --gpu 2 models.yaml analysis.yaml --skip-if-exists
+#
+# LDS uses experiments/configs/lds.yaml by default; override via LDS_CONFIG env var.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -29,8 +27,6 @@ export CUDA_VISIBLE_DEVICES="$GPU"
 
 LDS_CONFIG="${LDS_CONFIG:-experiments/configs/lds.yaml}"
 
-# Stream the analyze_hessians run through tee so we can both watch it live and
-# grep the final "wrote results → <path>" line for the produced results.json.
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
 

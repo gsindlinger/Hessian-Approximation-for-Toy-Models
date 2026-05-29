@@ -1,24 +1,24 @@
 #!/bin/bash
+# Run Hessian analysis on trained models.
+#
+# Usage:
+#   ./experiments/new_run.sh <models.yaml> <analysis.yaml> [flags...]
+#
+# Examples:
+#   ./experiments/new_run.sh models.yaml analysis.yaml
+#   ./experiments/new_run.sh models.yaml analysis.yaml --skip-if-exists
+#   ./experiments/new_run.sh experiments/configs/recovered_analysis/20260503-221136/models.yaml \
+#                            experiments/configs/recovered_analysis/20260503-221136/analysis.yaml
+#
+# Extra flags (e.g. --skip-if-exists, --override ...) are forwarded to
+# analyze_hessians.py.
 set -e
 
 cd "$(dirname "$0")/.."
 
-# MODELS_CONFIG="experiments/shared_models.yaml"
-# ANALYSIS_CONFIG="experiments/configs/hessian_sweep.yaml"
-
-MODELS_CONFIG="experiments/shared_models.yaml"
-ANALYSIS_CONFIG="experiments/configs/approximator_sweep.yaml"
-
-# Positional args (only if they don't start with '-'); rest are forwarded.
-#   ./new_run.sh --skip-if-exists                  → defaults + flag
-#   ./new_run.sh m.yaml --skip-if-exists           → custom models + flag
-#   ./new_run.sh m.yaml a.yaml --skip-if-exists    → both custom + flag
-if [[ "${1:-}" != "" && "${1}" != -* ]]; then
-    MODELS_CONFIG="$1"; shift
-fi
-if [[ "${1:-}" != "" && "${1}" != -* ]]; then
-    ANALYSIS_CONFIG="$1"; shift
-fi
+MODELS_CONFIG="${1:?Usage: $0 <models.yaml> <analysis.yaml> [flags...]}"
+ANALYSIS_CONFIG="${2:?Usage: $0 <models.yaml> <analysis.yaml> [flags...]}"
+shift 2
 
 export TF_CPP_MIN_LOG_LEVEL=3
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95

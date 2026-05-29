@@ -632,7 +632,7 @@ def main(
         dataset_info["train_dir"],
     )
 
-    run_id = time.strftime("%Y%m%d-%H%M%S")
+    run_id = time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
     run_dir = paths.run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     code_info = provenance.git_info()
