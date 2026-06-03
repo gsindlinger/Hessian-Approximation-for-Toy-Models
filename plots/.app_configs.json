@@ -1,0 +1,78 @@
+{
+"828d944d": {
+"cfg_db": "/root/Hessian-Approximation-for-Toy-Models/experiments/outputs/runs.db",
+"cfg_family": "LDS sweeps",
+"cfg_lds_annot": true,
+"cfg_lds_band": true,
+"cfg_lds_mf_methods": [
+"exact"
+],
+"cfg_lds_model": "mlp_08580ee2573a",
+"cfg_lds_pts": "mcmc",
+"cfg_lds_strat": "(all)",
+"cfg_lds_style": "Lines",
+"cfg_lds_variant": "Fix method (epoch \u00d7 damping)"
+},
+"4db9ea97": {
+"cfg_db": "/root/Hessian-Approximation-for-Toy-Models/experiments/outputs/runs.db",
+"cfg_family": "LDS sweeps",
+"cfg_lds_annot": true,
+"cfg_lds_band": true,
+"cfg_lds_mf_methods": [
+"exact"
+],
+"cfg_lds_model": "mlp_08580ee2573a",
+"cfg_lds_pts": "mcmc",
+"cfg_lds_strat": "auto_mean",
+"cfg_lds_style": "Lines",
+"cfg_lds_variant": "Fix method (epoch \u00d7 damping)"
+},
+"da30a737": {
+"cfg_db": "/root/Hessian-Approximation-for-Toy-Models/experiments/outputs/runs.db",
+"cfg_family": "LDS sweeps",
+"cfg_lds_annot": true,
+"cfg_lds_band": true,
+"cfg_lds_mf_methods": [],
+"cfg_lds_model": "resnet_mlp_swiglu_d4186381c706",
+"cfg_lds_pts": "mcmc",
+"cfg_lds_strat": "auto_mean",
+"cfg_lds_style": "Lines",
+"cfg_lds_variant": "Fix method (epoch \u00d7 damping)"
+},
+"452d2d31": {
+"cfg_db": "/root/Hessian-Approximation-for-Toy-Models/experiments/outputs/runs.db",
+"cfg_family": "LDS sweeps",
+"cfg_lds_annot": true,
+"cfg_lds_band": true,
+"cfg_lds_mf_methods": [],
+"cfg_lds_model": "resnet_mlp_adc3030f5daa",
+"cfg_lds_pts": "mcmc",
+"cfg_lds_strat": "auto_mean",
+"cfg_lds_style": "Lines",
+"cfg_lds_variant": "Fix method (epoch \u00d7 damping)"
+},
+"fa59273f": {
+"cfg_db": "/root/Hessian-Approximation-for-Toy-Models/experiments/outputs/runs.db",
+"cfg_family": "LDS sweeps",
+"cfg_lds_annot": true,
+"cfg_lds_band": true,
+"cfg_lds_mf_methods": [],
+"cfg_lds_model": "resnet_mlp_0a69ab6297da",
+"cfg_lds_pts": "mcmc",
+"cfg_lds_strat": "auto_mean",
+"cfg_lds_style": "Lines",
+"cfg_lds_variant": "Fix method (epoch \u00d7 damping)"
+},
+"b589adf5": {
+"cfg_db": "/root/Hessian-Approximation-for-Toy-Models/experiments/outputs/runs.db",
+"cfg_family": "LDS sweeps",
+"cfg_lds_annot": true,
+"cfg_lds_band": true,
+"cfg_lds_mf_methods": [],
+"cfg_lds_model": "mlp_08580ee2573a",
+"cfg_lds_pts": "mcmc",
+"cfg_lds_strat": "auto_mean",
+"cfg_lds_style": "Lines",
+"cfg_lds_variant": "Fix method (epoch \u00d7 damping)"
+}
+}
