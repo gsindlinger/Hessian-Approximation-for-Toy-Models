@@ -545,6 +545,29 @@ def plot_influence_spearman(rho, *, methods=None, annotate=True, title=None):
     return fig, rho
 
 
+def plot_sampling_comparison(series, *, sampling_a, sampling_b, title=None):
+    """Bar per method of Spearman(influence under `sampling_a`, under `sampling_b`)
+    at a fixed config — how much the sampling choice reshuffles each method's
+    influence ranking. ρ≈1 ⇒ sampling barely matters."""
+    methods = D.order_methods(list(series.index))
+    vals = [series[m] for m in methods]
+    fig, ax = plt.subplots(figsize=(max(6, 0.7 * len(methods) + 2), 4.4),
+                           constrained_layout=True)
+    ax.bar(np.arange(len(methods)), vals,
+           color=[COLORS.get(m, "#444444") for m in methods], alpha=0.85)
+    ax.set_xticks(np.arange(len(methods)))
+    ax.set_xticklabels([LABELS.get(m, m) for m in methods], rotation=35, ha="right")
+    ax.axhline(1.0, color="black", lw=0.6, ls="--", alpha=0.5)
+    ax.set_ylim(min(0.0, min(vals) - 0.05) if vals else 0.0, 1.02)
+    ax.set_ylabel("Spearman ρ")
+    ax.grid(axis="y", alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.set_title(title or f"influence rank agreement: {sampling_a} vs {sampling_b}",
+                 fontsize=11, fontweight="bold")
+    return fig
+
+
 def _draw_corr_heatmap(ax, mat, *, sweep, annotate=True):
     xs = list(mat.index)
     n = len(xs)

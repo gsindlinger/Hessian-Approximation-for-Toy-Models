@@ -134,10 +134,20 @@ def resolve_result(pool: pd.DataFrame, *, model, epoch, lam, strat, sampling):
     return int(row["result_id"]), row, len(p)
 
 
+def mean_npy_path(path: str | Path) -> Path:
+    """Influence is now saved as the per-train mean over queries in a sibling
+    `<name>_mean.npy` (1D) next to the legacy `<name>.npy` query×train tensor.
+    The DB still stores the legacy name, so rewrite to the `_mean` file when it
+    exists; fall back to the original otherwise."""
+    p = Path(path)
+    cand = p.with_name(p.stem + "_mean.npy")
+    return cand if cand.exists() else p
+
+
 def influence_paths_for_result(df: pd.DataFrame, result_id: int) -> dict[str, str]:
-    """method -> npy_path for one result_id, read straight from the joined df."""
+    """method -> influence npy path (the `_mean` file) for one result_id."""
     sub = df[(df["result_id"] == result_id) & df["npy_path"].notna()]
-    return dict(zip(sub["approximator"], sub["npy_path"]))
+    return {m: str(mean_npy_path(p)) for m, p in zip(sub["approximator"], sub["npy_path"])}
 
 
 # ── LDS slicing ───────────────────────────────────────────────────────
@@ -230,13 +240,19 @@ def method_metric_table(result_id: int, df: pd.DataFrame, reference: str = "exac
     return wide
 
 
+_SWEEP_KEYS = ["epoch", "damping_value", "damping_strategy",
+               "pseudo_target_strategy", "approximator"]
+
+
 def method_metric_table_sweep(df: pd.DataFrame, *, model: str, reference: str = "exact",
                               sampling: Optional[str] = None,
                               damping_strategy: Optional[str] = None) -> pd.DataFrame:
     """Like `method_metric_table` but pooled across a whole sweep: one row per
-    (result_id, approximator) over all epochs/dampings for `model`. Built from
-    the joined `df` directly. Use the `approximator` index level to colour the
-    scatter. (The reference method is excluded — its error-vs-itself is 0.)"""
+    (epoch, λ, damping_strategy, sampling, approximator) config for `model`.
+    Repeated runs of the same config are averaged (as in `slice_lds`), so `n`
+    counts unique configs rather than raw rows. Index levels `approximator` and
+    `damping_value` drive the Fig 1(b) shape/colour encoding. (The reference
+    method is excluded — its error-vs-itself is 0.)"""
     sub = df[(df["model_id"] == model) & (df["reference"] == reference)
              & df["value"].notna() & (df["approximator"] != reference)]
     if sampling is not None:
@@ -245,12 +261,10 @@ def method_metric_table_sweep(df: pd.DataFrame, *, model: str, reference: str = 
         sub = sub[sub["damping_strategy"] == damping_strategy]
     if sub.empty:
         return pd.DataFrame()
-    wide = sub.pivot_table(index=["result_id", "approximator"],
-                           columns=["computation_type", "metric"],
-                           values="value", aggfunc="mean")
+    wide = sub.pivot_table(index=_SWEEP_KEYS, columns=["computation_type", "metric"],
+                           values="value", aggfunc="mean")  # mean over repeated runs
     wide = wide[[c for c in ordered_categories(sub) if c in wide.columns]]
-    lds = (df[df["lds_mean"].notna()]
-           .groupby(["result_id", "approximator"])["lds_mean"].mean())
+    lds = (df[df["lds_mean"].notna()].groupby(_SWEEP_KEYS)["lds_mean"].mean())
     wide[LDS_AXIS] = lds
     return wide
 
@@ -425,7 +439,7 @@ def spearman_matrix_across_axis(
     canonical_shape = None
     for _, r in rows.iterrows():
         x = r[sweep_col]
-        npy_path = Path(r["npy_path"])
+        npy_path = mean_npy_path(r["npy_path"])
         if not npy_path.exists():
             print(f"  skip {sweep}={x}: influence file missing on disk ({npy_path})")
             continue
@@ -457,6 +471,45 @@ def spearman_matrix_across_axis(
 
     n_query = canonical_shape[0] if canonical_shape else 0
     return pd.DataFrame(mat, index=xs, columns=xs), n_query
+
+
+def _prepared_influence(df: pd.DataFrame, *, model, epoch, damping, strategy,
+                        method, sampling) -> Optional[np.ndarray]:
+    """Rank-prepared influence vector for one fully-specified config, or None."""
+    r = df[(df["model_id"] == model) & (df["epoch"] == epoch)
+           & (df["damping_value"] == damping) & (df["damping_strategy"] == strategy)
+           & (df["approximator"] == method) & (df["pseudo_target_strategy"] == sampling)
+           & df["npy_path"].notna()]
+    if r.empty:
+        return None
+    p = mean_npy_path(r.iloc[0]["npy_path"])
+    if not p.exists():
+        return None
+    return _row_centered_unit(_rankdata(_as_2d(np.load(p).astype(np.float64))))
+
+
+def sampling_spearman(df: pd.DataFrame, *, model: str, epoch: int, damping: float,
+                      strategy: str, sampling_a: str, sampling_b: str,
+                      methods: Optional[list[str]] = None,
+                      aggregate: str = "mean") -> pd.Series:
+    """Per-method Spearman between the influence vectors under two samplings
+    (e.g. mcmc vs all_classes) at one fixed (model, epoch, λ, strategy). ρ≈1 ⇒
+    the sampling choice barely changes that method's influence ranking."""
+    base = df[(df["model_id"] == model) & (df["epoch"] == epoch)
+              & (df["damping_value"] == damping) & (df["damping_strategy"] == strategy)
+              & df["npy_path"].notna()]
+    if methods is None:
+        methods = order_methods(base["approximator"].dropna().unique().tolist())
+    out: dict[str, float] = {}
+    for m in methods:
+        va = _prepared_influence(df, model=model, epoch=epoch, damping=damping,
+                                 strategy=strategy, method=m, sampling=sampling_a)
+        vb = _prepared_influence(df, model=model, epoch=epoch, damping=damping,
+                                 strategy=strategy, method=m, sampling=sampling_b)
+        if va is None or vb is None or va.shape != vb.shape:
+            continue
+        out[m] = _aggregate(_per_query_spearman_vec(va, vb), aggregate)
+    return pd.Series(out, name="spearman")
 
 
 # ── Factor eigenvalues ────────────────────────────────────────────────

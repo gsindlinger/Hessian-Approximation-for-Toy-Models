@@ -23,6 +23,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
+from streamlit_sortables import sort_items
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hessian_data as D  # noqa: E402
@@ -118,6 +119,49 @@ def show(fig):
 
 def fmt(x) -> str:
     return f"{x:g}" if isinstance(x, float) else str(x)
+
+
+# compact chips for the reorder strip (small font / tight padding)
+_CHIP_STYLE = """
+.sortable-item {
+  font-size: 0.74rem; padding: 1px 7px; margin: 2px; border-radius: 10px;
+}
+"""
+
+
+def methods_order(label, all_methods, *, state_key):
+    """Sidebar `st.multiselect` for membership; resolves the current order (prior
+    drag order for still-selected methods, newly added appended). The draggable
+    strip itself is rendered separately under the plot via `reorder_strip`.
+    Returns the ordered method list used for the plot."""
+    disp = lambda m: P.LABELS.get(m, m)
+    ms_key = state_key + "_sel"
+    kw = {} if ms_key in st.session_state else {"default": all_methods}
+    sel = track(ms_key, st.sidebar.multiselect(
+        label, all_methods, format_func=disp, key=ms_key, **kw))
+    prev = [m for m in st.session_state.get(state_key, []) if m in sel]
+    order = prev + [m for m in sel if m not in prev]
+    st.session_state[state_key] = order
+    return track(state_key, order)
+
+
+def reorder_strip(all_methods, *, state_key, container=st):
+    """Compact draggable chip strip (placed under the plot) to reorder the
+    selected methods. Writes the new order to st.session_state[state_key],
+    which the next rerun reads before drawing."""
+    order = [m for m in st.session_state.get(state_key, []) if m in all_methods]
+    if len(order) <= 1:
+        return
+    disp = lambda m: P.LABELS.get(m, m)
+    inv = {disp(m): m for m in all_methods}
+    container.caption("drag to reorder methods")
+    res = sort_items([disp(m) for m in order], direction="horizontal",
+                     custom_style=_CHIP_STYLE)
+    try:
+        new_order = [inv[d] for d in res]
+    except (TypeError, KeyError):  # component returned nothing (e.g. AppTest)
+        new_order = order
+    st.session_state[state_key] = new_order
 
 
 def pick_result_id(pool, *, key: str):
@@ -277,8 +321,8 @@ elif family == "Metric bars":
     rid, _row = pick_result_id(mopts, key="mb")
     reference = track("cfg_mb_ref", st.sidebar.selectbox(
         "Reference (vs)", ["exact", "gnh"], key="cfg_mb_ref"))
-    approxs = track("cfg_mb_approxs", st.sidebar.multiselect(
-        "Approximators (empty = all)", ALL_METHODS, default=[], key="cfg_mb_approxs"))
+    approxs = methods_order("Approximators (bar order)", ALL_METHODS,
+                            state_key="cfg_mb_approxs")
 
     cat_opts = D.metric_category_options(int(rid), reference=reference, db_path=Path(db_path))
     if not cat_opts:
@@ -293,6 +337,7 @@ elif family == "Metric bars":
             categories=cats or None, db_path=Path(db_path),
         )
         show(fig)
+        reorder_strip(ALL_METHODS, state_key="cfg_mb_approxs")  # drag strip under the plot
     except ValueError as e:
         st.warning(str(e))
 
@@ -336,9 +381,7 @@ elif family == "Metric correlation":
             damping_strategy=None if strat == "(all)" else strat)
         if not table.empty:
             point_methods = table.index.get_level_values("approximator")
-            rid_to_damp = df.drop_duplicates("result_id").set_index("result_id")["damping_value"]
-            sweep_damping = rid_to_damp.reindex(
-                table.index.get_level_values("result_id")).to_numpy()
+            sweep_damping = table.index.get_level_values("damping_value").to_numpy()
         else:
             point_methods, sweep_damping = [], None
         annotate_default = False
@@ -391,7 +434,8 @@ elif family == "Metric correlation":
 elif family == "Influence Spearman":
     st.header("Influence Spearman")
     mode = track("cfg_sp_mode", st.sidebar.radio(
-        "Mode", ["Single result (methods)", "Across swept axis"], key="cfg_sp_mode"))
+        "Mode", ["Single result (methods)", "Across swept axis", "Compare samplings"],
+        key="cfg_sp_mode"))
     aggregate = track("cfg_sp_agg", st.sidebar.selectbox(
         "Aggregate over queries", ["mean", "median"], key="cfg_sp_agg"))
     annotate = track("cfg_sp_annot", st.sidebar.checkbox(
@@ -405,8 +449,7 @@ elif family == "Influence Spearman":
         rid, row = pick_result_id(iopts, key="sp")
         paths = D.influence_paths_for_result(df, rid)
         avail = D.order_methods(list(paths))
-        msel = track("cfg_sp_methods", st.sidebar.multiselect(
-            "Methods", avail, default=avail, key="cfg_sp_methods"))
+        msel = methods_order("Methods", avail, state_key="cfg_sp_methods")
         if len(msel) < 2:
             st.info("Pick at least two methods.")
             st.stop()
@@ -416,9 +459,10 @@ elif family == "Influence Spearman":
             fig, _ = P.plot_influence_spearman(
                 rho, annotate=annotate, title=D.result_label(row))
         show(fig)
+        reorder_strip(avail, state_key="cfg_sp_methods")  # drag strip under the plot
         st.dataframe(rho.round(3))
 
-    else:  # Across swept axis
+    elif mode == "Across swept axis":
         infl = df[df["npy_path"].notna()]
         model = track("cfg_sx_model", st.sidebar.selectbox(
             "Model", sorted(infl["model_id"].unique()), key="cfg_sx_model"))
@@ -473,6 +517,52 @@ elif family == "Influence Spearman":
                 st.dataframe(mat.round(3))
         except ValueError as e:
             st.warning(str(e))
+
+    else:  # Compare samplings (e.g. mcmc vs all_classes) at a fixed config
+        infl = df[df["npy_path"].notna()]
+        multi = [m for m in sorted(infl["model_id"].unique())
+                 if infl[infl["model_id"] == m]["pseudo_target_strategy"].nunique() >= 2]
+        if not multi:
+            st.info("No model has ≥2 samplings with influence to compare.")
+            st.stop()
+        model = track("cfg_cs_model", st.sidebar.selectbox(
+            "Model", multi, key="cfg_cs_model"))
+        msub = infl[infl["model_id"] == model]
+        samps = sorted(msub["pseudo_target_strategy"].dropna().unique())
+        a = track("cfg_cs_a", st.sidebar.selectbox("Sampling A", samps, index=0, key="cfg_cs_a"))
+        b = track("cfg_cs_b", st.sidebar.selectbox(
+            "Sampling B", samps, index=min(1, len(samps) - 1), key="cfg_cs_b"))
+        if a == b:
+            st.info("Pick two different samplings.")
+            st.stop()
+        # restrict the config cascade to (epoch, λ, strategy) present under BOTH
+        both = msub.groupby(["epoch", "damping_value", "damping_strategy"]).filter(
+            lambda g: {a, b} <= set(g["pseudo_target_strategy"].dropna()))
+        if both.empty:
+            st.warning(f"No config has both {a} and {b} influence for this model.")
+            st.stop()
+        epoch = track("cfg_cs_epoch", st.sidebar.selectbox(
+            "Epoch", sorted(both["epoch"].dropna().unique()), key="cfg_cs_epoch"))
+        esub = both[both["epoch"] == epoch]
+        lam = track("cfg_cs_lam", st.sidebar.selectbox(
+            "Damping λ", sorted(esub["damping_value"].dropna().unique()),
+            format_func=fmt, key="cfg_cs_lam"))
+        lsub = esub[esub["damping_value"] == lam]
+        strat = track("cfg_cs_strat", st.sidebar.selectbox(
+            "Damping strategy", sorted(lsub["damping_strategy"].dropna().unique()),
+            key="cfg_cs_strat"))
+        with st.spinner("Computing per-method sampling agreement …"):
+            series = D.sampling_spearman(
+                df, model=model, epoch=epoch, damping=lam, strategy=strat,
+                sampling_a=a, sampling_b=b, aggregate=aggregate)
+        if series.empty:
+            st.warning("No methods have both samplings at this config.")
+            st.stop()
+        fig = P.plot_sampling_comparison(
+            series, sampling_a=a, sampling_b=b,
+            title=f"{model} · ep{epoch} · λ={lam:g} · {strat}\ninfluence agreement: {a} vs {b}")
+        show(fig)
+        st.dataframe(series.round(3).rename("Spearman ρ"))
 
 
 # ──────────────────────────────────────────────────────────────────────
