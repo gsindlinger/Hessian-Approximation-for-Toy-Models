@@ -517,6 +517,10 @@ def compute_influence_scores(
         )  # (n_query, n_train) numpy array
         path = paths.influence_path(run_id, model_tag, approx.value)
         np.save(str(path), matrix)
+        # Query-axis mean (n_train,) kept permanently for plotting; the full
+        # (n_query, n_train) tensor above is deleted after LDS scoring.
+        mean_path = paths.influence_mean_path(run_id, model_tag, approx.value)
+        np.save(str(mean_path), matrix.mean(axis=0))
         influence_paths[approx.value] = str(path)
     return influence_paths
 

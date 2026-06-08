@@ -81,3 +81,15 @@ def influence_path(run_id: str, model_tag: str, method: str) -> Path:
     pairs (e.g. `mlp_fec568fb74dc_epoch_1000`).
     """
     return influence_dir(run_id) / f"{model_tag}_{method}.npy"
+
+
+def influence_mean_path(run_id: str, model_tag: str, method: str) -> Path:
+    """`<...>_mean.npy` sibling of `influence_path` — the query-axis mean of the
+    `(n_query, n_train)` influence tensor, shape `(n_train,)`.
+
+    Survives deletion of the full tensor after LDS scoring; the plotting layer
+    (`plots.hessian_data.mean_npy_path`) reads this `_mean` file in preference
+    to the legacy query×train tensor.
+    """
+    p = influence_path(run_id, model_tag, method)
+    return p.with_name(p.stem + "_mean.npy")

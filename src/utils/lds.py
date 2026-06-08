@@ -670,6 +670,17 @@ def _compute_lds_for_attribution(
         seed=lds_seed,
     )
 
+    # This is the only consumer of the full (n_query, n_train) attribution
+    # tensor — `compute_group_attributions` above is its last use. Each tensor
+    # is loaded and scored exactly once (one call site, unique path per task),
+    # so drop it now to reclaim disk. The query-axis `_mean.npy` sibling written
+    # at attribution time survives for plotting.
+    try:
+        os.remove(attribution_path)
+        logger.info("[LDS] deleted scored attribution tensor %s", attribution_path)
+    except OSError as e:
+        logger.warning("[LDS] could not delete %s (%s)", attribution_path, e)
+
     return {
         "model_name": model_config.get_model_display_name(),
         "model_directory": model_directory,
