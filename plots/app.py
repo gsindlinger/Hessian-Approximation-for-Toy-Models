@@ -5,9 +5,9 @@ Thin Streamlit UI: widgets gather a config, then `hessian_data` (D) slices/
 resolves it and `hessian_plots` (P) draws it.
 
 Run with:
-    uv run streamlit run experiments/app.py
+    uv run streamlit run plots/app.py
     # or point at a different DB:
-    uv run streamlit run experiments/app.py -- --db /path/to/runs.db
+    uv run streamlit run plots/app.py -- --db /path/to/runs.db
 """
 
 from __future__ import annotations

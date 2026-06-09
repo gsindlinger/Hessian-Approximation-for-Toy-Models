@@ -133,11 +133,12 @@ Desktop.ini
 .env.*
 !.env.example
 *.secret
-
+.envrc
 # Project-specific cache
 .cache/
 tmp/
 logs/
+.claude/
 
 # Optional: data outputs (uncomment if needed)
 data/checkpoints/*
@@ -149,4 +150,4 @@ data/checkpoints/*
 experiments/outputs/*
 wandb/*
 # Streamlit app config-hash registry (local)
-experiments/.app_configs.json
+plots/.app_configs.json
