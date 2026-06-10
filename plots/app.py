@@ -13,8 +13,6 @@ Run with:
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import sys
 from pathlib import Path
 
@@ -26,16 +24,22 @@ import streamlit as st
 from streamlit_sortables import sort_items
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import config_code as C  # noqa: E402
 import hessian_data as D  # noqa: E402
 import hessian_plots as P  # noqa: E402
 
 st.set_page_config(page_title="runs.db explorer", layout="wide")
 
-# ── Config hash registry ──────────────────────────────────────────────
+# widget option lists shared with the codec (see config_code.SCHEMA)
+V_MF, V_DF, V_EF, V_HM = C.LDS_VARIANTS
+SCOPE_SINGLE, SCOPE_SWEEP = C.MC_SCOPES
+MODE_SINGLE, MODE_AXIS, MODE_COMPARE = C.SP_MODES
+
+# ── Config codes ──────────────────────────────────────────────────────
 # Every config-defining widget records its value into CFG via track(); at the
-# end we hash CFG to an 8-char id and persist {id: config} so a pasted id
-# restores the exact selections. Widget keys are all prefixed "cfg_".
-_REGISTRY = Path(__file__).resolve().parent / ".app_configs.json"
+# end `config_code.encode(CFG)` renders a compact reversible code (family
+# symbol + per-widget fields), so a pasted code restores the exact selections
+# on any machine — no registry. Widget keys are all prefixed "cfg_".
 CFG: dict = {}
 
 
@@ -44,38 +48,11 @@ def track(key: str, value):
     return value
 
 
-def _jsonsafe(v):
-    if isinstance(v, (list, tuple)):
-        return [_jsonsafe(x) for x in v]
-    if isinstance(v, (str, bytes, bool, int, float)) or v is None:
-        return v
-    if hasattr(v, "item"):  # numpy / pandas scalar (int64, float64, …)
-        return v.item()
-    return v
-
-
 def _coerce(v):
-    # invert _jsonsafe just enough: categories are list-of-[ct,metric] -> tuples
+    # defensive: category pairs must be tuples (list-of-[ct,metric] -> tuples)
     if isinstance(v, list):
         return [tuple(x) if isinstance(x, list) else x for x in v]
     return v
-
-
-def _load_registry() -> dict:
-    try:
-        return json.loads(_REGISTRY.read_text())
-    except (FileNotFoundError, ValueError):
-        return {}
-
-
-def config_hash() -> str:
-    canon = json.dumps({k: _jsonsafe(v) for k, v in CFG.items()}, sort_keys=True)
-    h = hashlib.sha256(canon.encode()).hexdigest()[:8]
-    reg = _load_registry()
-    if reg.get(h) != json.loads(canon):
-        reg[h] = json.loads(canon)
-        _REGISTRY.write_text(json.dumps(reg, indent=0))
-    return h
 
 
 # Apply a pending config BEFORE any widget is created (Streamlit forbids
@@ -208,10 +185,7 @@ st.sidebar.caption(
 )
 
 family = track("cfg_family", st.sidebar.radio(
-    "Plot family",
-    ["LDS sweeps", "Metric bars", "Metric correlation",
-     "Influence Spearman", "Factor eigenvalues"],
-    key="cfg_family",
+    "Plot family", C.FAMILIES, key="cfg_family",
 ))
 st.sidebar.divider()
 
@@ -243,15 +217,12 @@ if family == "LDS sweeps":
                          strategy=None if strat == "(all)" else strat)
 
     variant = track("cfg_lds_variant", st.sidebar.radio(
-        "Variant",
-        ["Fix method (epoch × damping)", "Fix damping (epoch × method)",
-         "Fix epoch (damping × method)", "Heatmap per method"],
-        key="cfg_lds_variant",
+        "Variant", C.LDS_VARIANTS, key="cfg_lds_variant",
     ))
-    is_heatmap = variant == "Heatmap per method"
+    is_heatmap = variant == V_HM
     if not is_heatmap:
         kind = "bar" if track("cfg_lds_style", st.sidebar.radio(
-            "Style", ["Lines", "Bars"], key="cfg_lds_style")) == "Bars" else "line"
+            "Style", C.LDS_STYLES, key="cfg_lds_style")) == C.LDS_STYLES[1] else "line"
     else:
         kind = "line"
     show_band = track("cfg_lds_band", st.sidebar.checkbox(
@@ -267,7 +238,7 @@ if family == "LDS sweeps":
 
     st.caption(f"{len(df_sub)} LDS rows · model `{model}` · sampling `{sampling}` · strategy `{strat}`")
 
-    if variant == "Fix method (epoch × damping)":
+    if variant == V_MF:
         sel = track("cfg_lds_mf_methods", st.sidebar.multiselect(
             "Method(s)", methods_here, default=methods_here[:1], key="cfg_lds_mf_methods"))
         for m in sel:
@@ -275,7 +246,7 @@ if family == "LDS sweeps":
             fig.suptitle(model, fontsize=10)
             show(fig)
 
-    elif variant == "Fix damping (epoch × method)":
+    elif variant == V_DF:
         d = track("cfg_lds_df_lam", st.sidebar.selectbox(
             "Damping λ", dampings, format_func=fmt, key="cfg_lds_df_lam"))
         msel = track("cfg_lds_df_methods", st.sidebar.multiselect(
@@ -287,7 +258,7 @@ if family == "LDS sweeps":
         fig.suptitle(model, fontsize=10)
         show(fig)
 
-    elif variant == "Fix epoch (damping × method)":
+    elif variant == V_EF:
         e = track("cfg_lds_ef_epoch", st.sidebar.selectbox(
             "Epoch", epochs, key="cfg_lds_ef_epoch"))
         msel = track("cfg_lds_ef_methods", st.sidebar.multiselect(
@@ -320,7 +291,7 @@ elif family == "Metric bars":
 
     rid, _row = pick_result_id(mopts, key="mb")
     reference = track("cfg_mb_ref", st.sidebar.selectbox(
-        "Reference (vs)", ["exact", "gnh"], key="cfg_mb_ref"))
+        "Reference (vs)", C.REFERENCES, key="cfg_mb_ref"))
     approxs = methods_order("Approximators (bar order)", ALL_METHODS,
                             state_key="cfg_mb_approxs")
 
@@ -348,16 +319,16 @@ elif family == "Metric bars":
 elif family == "Metric correlation":
     st.header("Metric correlation")
     scope = track("cfg_mc_scope", st.sidebar.radio(
-        "Scope", ["Single result", "Across sweep"], key="cfg_mc_scope"))
+        "Scope", C.MC_SCOPES, key="cfg_mc_scope"))
 
-    if scope == "Single result":
+    if scope == SCOPE_SINGLE:
         mopts = opts[opts["result_id"].isin(metric_rids)].copy()
         if mopts.empty:
             st.warning("No results with metrics in this DB.")
             st.stop()
         rid, _row = pick_result_id(mopts, key="mc")
         reference = track("cfg_mc_ref", st.sidebar.selectbox(
-            "Reference (vs)", ["exact", "gnh"], key="cfg_mc_ref"))
+            "Reference (vs)", C.REFERENCES, key="cfg_mc_ref"))
         table = D.method_metric_table(int(rid), df, reference=reference, db_path=Path(db_path))
         point_methods = None  # index is the method
         sweep_damping = None  # single config → colour by method, not λ
@@ -375,7 +346,7 @@ elif family == "Metric correlation":
         strat = track("cfg_mc_strat", st.sidebar.selectbox(
             "Damping strategy", ["(all)"] + strats, key="cfg_mc_strat"))
         reference = track("cfg_mc_ref", st.sidebar.selectbox(
-            "Reference (vs)", ["exact", "gnh"], key="cfg_mc_ref"))
+            "Reference (vs)", C.REFERENCES, key="cfg_mc_ref"))
         table = D.method_metric_table_sweep(
             df, model=model, reference=reference, sampling=sampling,
             damping_strategy=None if strat == "(all)" else strat)
@@ -406,7 +377,7 @@ elif family == "Metric correlation":
     # Per-point labels only make sense for the single-result scope (one point per
     # method); across a sweep there are thousands of points, so colour+legend
     # carry the method identity instead (Fig 1b style).
-    if scope == "Single result":
+    if scope == SCOPE_SINGLE:
         annotate = track("cfg_mc_annot", st.sidebar.checkbox(
             "Label points", value=annotate_default, key="cfg_mc_annot"))
     else:
@@ -434,14 +405,13 @@ elif family == "Metric correlation":
 elif family == "Influence Spearman":
     st.header("Influence Spearman")
     mode = track("cfg_sp_mode", st.sidebar.radio(
-        "Mode", ["Single result (methods)", "Across swept axis", "Compare samplings"],
-        key="cfg_sp_mode"))
+        "Mode", C.SP_MODES, key="cfg_sp_mode"))
     aggregate = track("cfg_sp_agg", st.sidebar.selectbox(
-        "Aggregate over queries", ["mean", "median"], key="cfg_sp_agg"))
+        "Aggregate over queries", C.SP_AGGS, key="cfg_sp_agg"))
     annotate = track("cfg_sp_annot", st.sidebar.checkbox(
         "Annotate cells", value=True, key="cfg_sp_annot"))
 
-    if mode == "Single result (methods)":
+    if mode == MODE_SINGLE:
         iopts = opts[opts["result_id"].isin(infl_rids)].copy()
         if iopts.empty:
             st.warning("No results with influence vectors.")
@@ -462,7 +432,7 @@ elif family == "Influence Spearman":
         reorder_strip(avail, state_key="cfg_sp_methods")  # drag strip under the plot
         st.dataframe(rho.round(3))
 
-    elif mode == "Across swept axis":
+    elif mode == MODE_AXIS:
         infl = df[df["npy_path"].notna()]
         model = track("cfg_sx_model", st.sidebar.selectbox(
             "Model", sorted(infl["model_id"].unique()), key="cfg_sx_model"))
@@ -480,8 +450,8 @@ elif family == "Influence Spearman":
         strat = track("cfg_sx_strat", st.sidebar.selectbox(
             "Damping strategy", strategies, key="cfg_sx_strat"))
         sweep = track("cfg_sx_sweep", st.sidebar.radio(
-            "Sweep axis", ["damping", "epoch"], key="cfg_sx_sweep"))
-        fix_col = "epoch" if sweep == "damping" else "damping_value"
+            "Sweep axis", C.SX_SWEEPS, key="cfg_sx_sweep"))
+        fix_col = "epoch" if sweep == C.SX_SWEEPS[0] else "damping_value"
         fix_vals = sorted(
             minfl[minfl["damping_strategy"] == strat][fix_col].dropna().unique())
         grid = track("cfg_sx_grid", st.sidebar.checkbox(
@@ -624,16 +594,18 @@ elif family == "Factor eigenvalues":
         st.error(f"{type(e).__name__}: {e}")
 
 
-# ── Config hash: copy to save, paste to jump to a config ──────────────
+# ── Config code: copy to save, paste to jump to a config ──────────────
 st.sidebar.divider()
-with st.sidebar.expander("🔗 Config hash", expanded=True):
+with st.sidebar.expander("🔗 Config code", expanded=True):
     st.caption("Copy to save this exact config; paste one below to jump to it.")
-    st.code(config_hash(), language=None)
-    load = st.text_input("Load a hash", key="_load_hash").strip()
-    if st.button("Go", key="_go_hash") and load:
-        reg = _load_registry()
-        if load in reg:
-            st.session_state["_pending_cfg"] = reg[load]
+    try:
+        st.code(C.encode(CFG, db_default=_default_db()), language=None)
+    except ValueError as e:
+        st.error(f"Cannot encode this config: {e}")
+    load = st.text_input("Load a code", key="_load_code").strip()
+    if st.button("Go", key="_go_code") and load:
+        try:
+            st.session_state["_pending_cfg"] = C.decode(load)
             st.rerun()
-        else:
-            st.error("Unknown hash (not saved on this machine).")
+        except ValueError as e:
+            st.error(f"Invalid config code: {e}")
