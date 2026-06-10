@@ -727,10 +727,20 @@ def main(
         else:
             dataset_for_collector = train_ds
 
+        # `_n` token only when actually subsetting, so existing full-train
+        # cache dirs keep their names (and stay valid).
+        name_subset = subset_size if subset_size < n_full else None
+
         loss_fn = get_loss(model_config.loss)
         collector_dir = str(
             paths.collector_dir(
-                dataset_name, model_id, epoch, strategy_str, reps, analysis_seed
+                dataset_name,
+                model_id,
+                epoch,
+                strategy_str,
+                reps,
+                analysis_seed,
+                subset_size=name_subset,
             )
         )
         collector_dir_corr = str(
@@ -741,6 +751,7 @@ def main(
                 strategy_str,
                 reps,
                 analysis_seed,
+                subset_size=name_subset,
                 corr=True,
             )
         )

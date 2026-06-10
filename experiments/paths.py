@@ -40,16 +40,20 @@ def collector_dir(
     strategy: str,
     repetitions: int,
     analysis_seed: int,
+    subset_size: int | None = None,
     corr: bool = False,
 ) -> Path:
-    """outputs/models/<dataset>/<model_id>/epoch_<e>/collector_<strategy>_r<reps>_s<seed>[_corr]/
+    """outputs/models/<dataset>/<model_id>/epoch_<e>/collector_<strategy>_r<reps>_s<seed>[_n<size>][_corr]/
 
     The cache key is encoded in the dir name so different (strategy, reps,
-    analysis_seed) settings produce parallel caches instead of clobbering.
+    analysis_seed, subset_size) settings produce parallel caches instead of
+    clobbering. subset_size=None means full-train and omits the `_n` token,
+    so pre-existing full-train cache dirs keep their names.
     """
+    size = f"_n{subset_size}" if subset_size is not None else ""
     suffix = "_corr" if corr else ""
     return epoch_dir(dataset, model_id, epoch) / (
-        f"collector_{strategy}_r{repetitions}_s{analysis_seed}{suffix}"
+        f"collector_{strategy}_r{repetitions}_s{analysis_seed}{size}{suffix}"
     )
 
 
