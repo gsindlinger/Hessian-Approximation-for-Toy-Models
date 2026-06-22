@@ -151,22 +151,122 @@ def influence_paths_for_result(df: pd.DataFrame, result_id: int) -> dict[str, st
 
 
 # ── LDS slicing ───────────────────────────────────────────────────────
+# `collector_subset_size` is a grouping key (not an averaged axis): LDS climbs
+# steeply with subset size, and mcmc sweeps several sizes while all_classes only
+# ever has the full set. Averaging over it would silently drag the mcmc curve
+# below all_classes; instead the caller fixes a size via `subset_size`.
 _LDS_GROUP = ["approximator", "epoch", "damping_value", "damping_strategy",
-              "pseudo_target_strategy"]
+              "pseudo_target_strategy", "collector_subset_size"]
 
 
 def slice_lds(df: pd.DataFrame, *, model: str, sampling: str,
-              strategy: Optional[str] = None) -> pd.DataFrame:
-    """LDS rows for one (model, sampling), optionally one damping strategy,
-    collapsed to one row per sweep point. Collapsing removes the metrics-join
-    fan-out and averages any runs that recomputed the same config."""
+              strategy: Optional[str] = None,
+              subset_size: Optional[int] = None) -> pd.DataFrame:
+    """LDS rows for one (model, sampling), optionally one damping strategy and
+    one collector subset size, collapsed to one row per sweep point. Collapsing
+    removes the metrics-join fan-out and averages any runs that recomputed the
+    same config. `subset_size=None` keeps every size as a separate row rather
+    than averaging across them (see `_LDS_GROUP`)."""
     sub = df[df["lds_mean"].notna()]
     sub = sub[(sub["model_id"] == model) & (sub["pseudo_target_strategy"] == sampling)]
     if strategy not in (None, "(all)"):
         sub = sub[sub["damping_strategy"] == strategy]
+    if subset_size is not None:
+        sub = sub[sub["collector_subset_size"] == subset_size]
     agg = {c: "mean" for c in ("lds_mean", "lds_ci_low", "lds_ci_high", "lds_std")
            if c in sub.columns}
     return sub.dropna(subset=_LDS_GROUP).groupby(_LDS_GROUP, as_index=False).agg(agg)
+
+
+# ── Sample-size Pareto slicing ────────────────────────────────────────
+# `collector_subset_size` is the raw number of training points fed to the
+# collector, but the *effective* sample/compute cost (the Pareto x-axis) scales
+# with two extra factors:
+#   • sampling: `all_classes` draws one pseudo-target per logit, so it uses
+#     `output_dim`× (the logit-space dimension) the gradients that `mcmc` does.
+#   • eigenvalue correction: the E-* methods take a second pass over the
+#     collector data to fit the eigenbasis diagonal, doubling their cost.
+# Both are independent multipliers, so they compound.
+_PARETO_GROUP = ["approximator", "collector_subset_size", "pseudo_target_strategy"]
+
+# E-prefixed eigenvalue-corrected methods (2× the collector cost).
+EIGENVALUE_CORRECTED = {"emac", "ekfac", "eshampoo", "eidentity"}
+NUM_CLASSES_FALLBACK = 10  # logit dim when output_dim can't be read from the DB
+
+# A method "family" pairs a base approximator with its eigenvalue-corrected
+# E-variant (kfac ↔ ekfac, shampoo ↔ eshampoo, …). On the Pareto plot a family
+# is one colour and one connected line: the E-variant is the same curve, just
+# shifted right to 2× the cost. Methods with no E-variant are singleton
+# families. Keyed by the base name so the family inherits the base's colour.
+METHOD_FAMILY = {
+    "mac": "mac", "emac": "mac",
+    "kfac": "kfac", "ekfac": "kfac",
+    "shampoo": "shampoo", "eshampoo": "shampoo",
+    "identity": "identity", "eidentity": "identity",
+}
+
+
+def method_family(method: str) -> str:
+    """Base-approximator family for a method (kfac & ekfac → 'kfac')."""
+    return METHOD_FAMILY.get(method, method)
+
+
+def model_output_dim(db_path: Path, model_id: str,
+                     default: int = NUM_CLASSES_FALLBACK) -> int:
+    """Logit-space dimension (`model_config.output_dim`) for a model, read from
+    the stored `params_json`. Falls back to `default` if unavailable."""
+    with open_db(db_path) as con:
+        row = con.execute(
+            "SELECT params_json FROM results "
+            "WHERE model_id = ? AND params_json IS NOT NULL LIMIT 1",
+            (model_id,),
+        ).fetchone()
+    if row and row[0]:
+        try:
+            return int(json.loads(row[0])["model_config"]["output_dim"])
+        except (KeyError, ValueError, TypeError):
+            pass
+    return default
+
+
+def pareto_effective_samples(subset_size, method: str, sampling: str, *,
+                             num_classes: int) -> float:
+    """Effective sample cost for one (method, sampling, subset_size):
+    subset_size × (num_classes if all_classes) × (2 if E-* method)."""
+    factor = 1
+    if sampling == "all_classes":
+        factor *= num_classes
+    if method in EIGENVALUE_CORRECTED:
+        factor *= 2
+    return float(subset_size) * factor
+
+
+def slice_pareto(df: pd.DataFrame, *, model: str, num_classes: int = NUM_CLASSES_FALLBACK,
+                 strategy: Optional[str] = None, epoch: Optional[int] = None,
+                 damping: Optional[float] = None) -> pd.DataFrame:
+    """LDS rows for one (model[, strategy, epoch, damping]) collapsed to one row
+    per (method, collector_subset_size, sampling) — both samplings kept so the
+    Pareto plot can overlay them. Adds an `effective_samples` column (the cost
+    axis; see `pareto_effective_samples`). Repeated runs and any unfixed
+    epoch/damping/strategy are averaged per group."""
+    sub = df[df["lds_mean"].notna()]
+    sub = sub[sub["model_id"] == model]
+    if strategy not in (None, "(all)"):
+        sub = sub[sub["damping_strategy"] == strategy]
+    if epoch is not None:
+        sub = sub[sub["epoch"] == epoch]
+    if damping is not None:
+        sub = sub[np.isclose(sub["damping_value"], damping)]
+    agg = {c: "mean" for c in ("lds_mean", "lds_ci_low", "lds_ci_high", "lds_std")
+           if c in sub.columns}
+    out = sub.dropna(subset=_PARETO_GROUP).groupby(_PARETO_GROUP, as_index=False).agg(agg)
+    out["effective_samples"] = [
+        pareto_effective_samples(sz, m, s, num_classes=num_classes)
+        for sz, m, s in zip(out["collector_subset_size"], out["approximator"],
+                            out["pseudo_target_strategy"])
+    ]
+    out["family"] = [method_family(m) for m in out["approximator"]]
+    return out
 
 
 # ── Metrics ───────────────────────────────────────────────────────────

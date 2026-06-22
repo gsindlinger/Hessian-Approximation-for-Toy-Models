@@ -28,8 +28,9 @@ Field encodings:
 * paths                      -> '' when equal to the runtime default, else
                                 '~' + quoted literal                 (PathCodec)
 
-Example: ``1&1&1&1&0&0&1&1&0001`` = LDS sweeps, model 1, mcmc, auto_mean,
-fix-method variant, Lines, CI band on, annotate on, methods {exact}.
+Example: ``1&1&1&1&3823&0&0&1&1&0001`` = LDS sweeps, model 1, mcmc, auto_mean,
+collector subset 3823, fix-method variant, Lines, CI band on, annotate on,
+methods {exact}.
 
 Symbol tables are append-only: never reorder or reuse a symbol, or existing
 codes silently change meaning.
@@ -48,7 +49,7 @@ from hessian_data import APPROX_ORDER, DB_PATH, LDS_AXIS, order_methods
 
 # ── Widget option lists (shared with app.py so they cannot drift) ─────
 FAMILIES = ("LDS sweeps", "Metric bars", "Metric correlation",
-            "Influence Spearman", "Factor eigenvalues")
+            "Influence Spearman", "Factor eigenvalues", "Sample-size Pareto")
 LDS_VARIANTS = ("Fix method (epoch × damping)", "Fix damping (epoch × method)",
                 "Fix epoch (damping × method)", "Heatmap per method")
 LDS_STYLES = ("Lines", "Bars")
@@ -61,7 +62,7 @@ SX_SWEEPS = ("damping", "epoch")
 # ── Fixed symbol tables (append-only — never reorder or reuse) ────────
 FAMILY_SYMS = {
     "LDS sweeps": "1", "Metric bars": "2", "Metric correlation": "3",
-    "Influence Spearman": "4", "Factor eigenvalues": "5",
+    "Influence Spearman": "4", "Factor eigenvalues": "5", "Sample-size Pareto": "6",
 }
 MODEL_SYMS = {
     "mlp_08580ee2573a": "1",
@@ -412,6 +413,7 @@ SCHEMA: dict[str, tuple] = {
         Slot("cfg_lds_model", Sym(MODEL_SYMS)),
         Slot("cfg_lds_pts", Sym(SAMPLING_SYMS)),
         Slot("cfg_lds_strat", Sym(STRATEGY_SYMS)),
+        Slot("cfg_lds_subset", Num()),
         Slot("cfg_lds_variant", Choice(LDS_VARIANTS)),
         Slot("cfg_lds_style", Choice(LDS_STYLES)),  # absent for heatmap
         Slot("cfg_lds_band", BOOL),
@@ -486,6 +488,16 @@ SCHEMA: dict[str, tuple] = {
                           Slot("cfg_cs_lam", Num()),
                           Slot("cfg_cs_strat", Sym(STRATEGY_SYMS))),
         }),
+        DB_SLOT,
+    ),
+    "Sample-size Pareto": (
+        Slot("cfg_pareto_model", Sym(MODEL_SYMS)),
+        Slot("cfg_pareto_strat", Sym(STRATEGY_SYMS)),
+        Slot("cfg_pareto_epoch", Num()),
+        Slot("cfg_pareto_lam", Num()),
+        Slot("cfg_pareto_methods", Bitmap()),
+        Slot("cfg_pareto_band", BOOL),
+        Slot("cfg_pareto_logx", BOOL),
         DB_SLOT,
     ),
     "Factor eigenvalues": (

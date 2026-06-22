@@ -24,7 +24,7 @@ def enc(cfg):
 LDS_MF = {
     "cfg_db": DB, "cfg_family": "LDS sweeps",
     "cfg_lds_model": "mlp_08580ee2573a", "cfg_lds_pts": "mcmc",
-    "cfg_lds_strat": "auto_mean",
+    "cfg_lds_strat": "auto_mean", "cfg_lds_subset": 3823,
     "cfg_lds_variant": "Fix method (epoch × damping)",
     "cfg_lds_style": "Lines", "cfg_lds_band": True, "cfg_lds_annot": True,
     "cfg_lds_mf_methods": ["exact"],
@@ -33,7 +33,7 @@ LDS_MF_ALLSTRAT = {**LDS_MF, "cfg_lds_strat": "(all)"}
 LDS_DF = {
     "cfg_db": DB, "cfg_family": "LDS sweeps",
     "cfg_lds_model": "mlp_08580ee2573a", "cfg_lds_pts": "mcmc",
-    "cfg_lds_strat": "auto_mean",
+    "cfg_lds_strat": "auto_mean", "cfg_lds_subset": 3823,
     "cfg_lds_variant": "Fix damping (epoch × method)",
     "cfg_lds_style": "Lines", "cfg_lds_band": True, "cfg_lds_annot": True,
     "cfg_lds_df_lam": 1e-09, "cfg_lds_df_methods": ALL13,
@@ -41,7 +41,7 @@ LDS_DF = {
 LDS_EF = {
     "cfg_db": DB, "cfg_family": "LDS sweeps",
     "cfg_lds_model": "resnet_mlp_swiglu_d4186381c706", "cfg_lds_pts": "all_classes",
-    "cfg_lds_strat": "pseudo_inverse",
+    "cfg_lds_strat": "pseudo_inverse", "cfg_lds_subset": 60000,
     "cfg_lds_variant": "Fix epoch (damping × method)",
     "cfg_lds_style": "Bars", "cfg_lds_band": False, "cfg_lds_annot": True,
     "cfg_lds_ef_epoch": 10, "cfg_lds_ef_methods": ["exact", "gnh"],
@@ -49,7 +49,8 @@ LDS_EF = {
 LDS_HM = {  # heatmap variant: cfg_lds_style is never tracked
     "cfg_db": DB, "cfg_family": "LDS sweeps",
     "cfg_lds_model": "mlp_08580ee2573a", "cfg_lds_pts": "mcmc",
-    "cfg_lds_strat": "auto_mean", "cfg_lds_variant": "Heatmap per method",
+    "cfg_lds_strat": "auto_mean", "cfg_lds_subset": 3823,
+    "cfg_lds_variant": "Heatmap per method",
     "cfg_lds_band": True, "cfg_lds_annot": False,
     "cfg_lds_hm_methods": ["exact"],
 }
@@ -112,6 +113,14 @@ CS = {
     "cfg_cs_b": "mcmc", "cfg_cs_epoch": 4, "cfg_cs_lam": 1e-09,
     "cfg_cs_strat": "auto_mean",
 }
+PARETO = {
+    "cfg_db": DB, "cfg_family": "Sample-size Pareto",
+    "cfg_pareto_model": "mlp_08580ee2573a",
+    "cfg_pareto_strat": "auto_mean", "cfg_pareto_epoch": 10, "cfg_pareto_lam": 1e-09,
+    "cfg_pareto_methods": ALL13, "cfg_pareto_band": True, "cfg_pareto_logx": True,
+}
+PARETO_ALLSTRAT = {**PARETO, "cfg_pareto_strat": "(all)",
+                   "cfg_pareto_methods": ["exact", "kfac"], "cfg_pareto_logx": False}
 FE_RECS = {
     "cfg_db": DB, "cfg_family": "Factor eigenvalues",
     "cfg_fe_root": "/dbs/models",  # == default for this cfg_db -> drops out
@@ -143,6 +152,8 @@ CASES = [
     ("cs", CS, {"cfg_db"}),
     ("fe_recs", FE_RECS, {"cfg_db", "cfg_fe_root"}),
     ("fe_dir", FE_DIR, {"cfg_db"}),
+    ("pareto", PARETO, {"cfg_db"}),
+    ("pareto_allstrat", PARETO_ALLSTRAT, {"cfg_db"}),
 ]
 
 
@@ -188,8 +199,8 @@ def test_lehmer_roundtrip(n):
 
 # ── Worked examples (exact code strings) ──────────────────────────────
 def test_exact_codes():
-    assert enc(LDS_MF) == "1&1&1&1&0&0&1&1&0001"
-    assert enc(LDS_MF_ALLSTRAT) == "1&1&1&0&0&0&1&1&0001"
+    assert enc(LDS_MF) == "1&1&1&1&3823&0&0&1&1&0001"
+    assert enc(LDS_MF_ALLSTRAT) == "1&1&1&0&3823&0&0&1&1&0001"
     assert enc(MB_CANON) == "2&1&10&1e-09&1&1&0&1fff"  # perm/cats/db stripped
     assert enc(MB_DRAGGED) == "2&1&10&1e-09&1&1&0&0007&2&f5"
 

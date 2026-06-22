@@ -322,6 +322,117 @@ def plot_lds_heatmap(df, *, model_id, method="exact", annotate=True):
 
 
 # =====================================================================
+# Sample-size Pareto (num samples × LDS)
+# =====================================================================
+# sampling → linestyle (solid mcmc, dashed all_classes); fallback cycles.
+_SAMPLING_LINESTYLE = {"mcmc": "-", "all_classes": "--"}
+_SAMPLING_LABEL = {"mcmc": "MCMC", "all_classes": "All classes"}
+
+
+def _sampling_linestyle(s: str) -> str:
+    return _SAMPLING_LINESTYLE.get(s, _LINESTYLES[hash(s) % len(_LINESTYLES)])
+
+
+def _pareto_marker(method: str) -> str:
+    """Square marks the eigenvalue-corrected member so the 2× point stands out
+    from its base sibling on the shared family line; base methods use a circle."""
+    return "s" if method in D.EIGENVALUE_CORRECTED else "o"
+
+
+def _family_label(sub: pd.DataFrame, family: str) -> str:
+    """Legend label for a family: its present members joined (e.g. 'K-FAC / EK-FAC')."""
+    members = D.order_methods(
+        sub[sub["family"] == family]["approximator"].dropna().unique().tolist())
+    return " / ".join(LABELS.get(m, m) for m in members) or LABELS.get(family, family)
+
+
+def plot_lds_pareto(df_sub, *, methods=None, show_band=True, log_x=True,
+                    ax=None, show_legend=True):
+    """Sample-size Pareto: x = effective num samples, y = LDS mean with CI error
+    bars. One connected line per *method family* — a base approximator and its
+    eigenvalue-corrected E-variant share a colour and curve (e.g. K-FAC + EK-FAC),
+    with the E-variant drawn as a square at 2× the base's cost. Linestyle =
+    sampling (solid mcmc / dashed all_classes). Higher-left is better; the upper
+    envelope of the curves is the frontier.
+
+    `df_sub` is a `D.slice_pareto` frame: one row per (method, subset size,
+    sampling) with `effective_samples` (cost) and `family` columns.
+    """
+    from matplotlib.lines import Line2D
+
+    sub = df_sub if methods is None else df_sub[df_sub["approximator"].isin(methods)]
+    fig, ax = _ax_or_new(ax, (8.2, 5.4))
+
+    if sub.empty:
+        ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                transform=ax.transAxes, color="gray")
+        ax.set_axis_off()
+        return fig
+
+    # families ordered by their base method's canonical rank
+    families = D.order_methods(sub["family"].dropna().unique().tolist())
+    samplings = [s for s in ("mcmc", "all_classes")
+                 if s in set(sub["pseudo_target_strategy"].dropna())]
+    samplings += [s for s in sub["pseudo_target_strategy"].dropna().unique()
+                  if s not in samplings]
+
+    for fam in families:
+        color = _method_color(fam)
+        for s in samplings:
+            g = (sub[(sub["family"] == fam) & (sub["pseudo_target_strategy"] == s)]
+                 .sort_values("effective_samples"))
+            if g.empty:
+                continue
+            x = g["effective_samples"].to_numpy(float)
+            y = g["lds_mean"].to_numpy(float)
+            # one connecting line for the whole family (base → E-variant)
+            ax.plot(x, y, color=color, lw=1.6, ls=_sampling_linestyle(s), zorder=2)
+            if show_band and "lds_ci_low" in g and "lds_ci_high" in g:
+                lo = y - g["lds_ci_low"].to_numpy(float)
+                hi = g["lds_ci_high"].to_numpy(float) - y
+                lo = np.where(np.isfinite(lo) & (lo > 0), lo, 0.0)
+                hi = np.where(np.isfinite(hi) & (hi > 0), hi, 0.0)
+                ax.errorbar(x, y, yerr=np.array([lo, hi]), fmt="none", ecolor=color,
+                            elinewidth=0.8, capsize=2.5, capthick=0.8, zorder=2)
+            # per-member markers: square = eigenvalue-corrected, circle = base
+            for mm, mdf in g.groupby("approximator", sort=False):
+                ax.plot(mdf["effective_samples"].to_numpy(float),
+                        mdf["lds_mean"].to_numpy(float), color=color, ls="none",
+                        marker=_pareto_marker(mm), ms=5, zorder=3)
+
+    ax.axhline(0.0, color="black", lw=0.6, alpha=0.4)
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xlabel("effective num samples  (subset × logit factor × E-method ×2)")
+    ax.set_ylabel("LDS mean")
+    ax.grid(alpha=0.3, which="both")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    if show_legend and families:
+        fam_h = [Line2D([0], [0], color=_method_color(fam), lw=1.6, marker="o",
+                        ms=5, label=_family_label(sub, fam)) for fam in families]
+        leg1 = ax.legend(handles=fam_h, loc="best", fontsize=8,
+                         ncol=2 if len(families) > 6 else 1, frameon=False,
+                         title="method family")
+        ax.add_artist(leg1)
+        extra = []
+        if len(samplings) > 1:
+            extra += [Line2D([0], [0], color="0.3", lw=1.6, ls=_sampling_linestyle(s),
+                             label=_SAMPLING_LABEL.get(s, s)) for s in samplings]
+        if sub["approximator"].isin(D.EIGENVALUE_CORRECTED).any():
+            extra += [
+                Line2D([0], [0], color="0.3", ls="none", marker="o", ms=5, label="base"),
+                Line2D([0], [0], color="0.3", ls="none", marker="s", ms=5,
+                       label="eigenvalue-corrected (2×)"),
+            ]
+        if extra:
+            ax.legend(handles=extra, loc="lower right", fontsize=8,
+                      frameon=False, title="sampling / variant")
+    return fig
+
+
+# =====================================================================
 # Metric bar plots
 # =====================================================================
 def plot_metrics_for(result_id, reference="exact", approxs=None, categories=None,
