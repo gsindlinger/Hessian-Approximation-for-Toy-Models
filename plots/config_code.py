@@ -1,49 +1,34 @@
-"""Reversible config codes for the runs.db explorer.
+"""Human-readable word-phrase config codes for the runs.db explorer.
 
-Replaces the old SHA-256 hash + on-disk registry: a config code is a compact,
-deterministic, *decodable* string, so pasting one restores the exact widget
-selections on any machine — the code itself is the config.
+A config code is a short phrase like ``otter-cobalt-maple`` that fully encodes
+the current plot's widget selections — paste it back and the exact plot is
+restored. It replaces the older ``&``-delimited symbol string.
 
-Format: ``<family>&<slot>&<slot>&…`` — the first field is the plot-family
-symbol (FAMILY_SYMS), the rest follow the per-family slot schema in SCHEMA in
-widget (track) order. A slot whose cfg key was not tracked encodes as '';
-trailing empty fields are stripped. Branch-discriminating widgets (LDS
-variant, correlation scope, Spearman mode) are encoded before the slots that
-depend on them, so the decoder always knows which slots follow. The cfg_db
-slot is last in every family and empty for the default DB, so it usually
-strips away.
+How it stays both short and reversible:
 
-Field encodings:
-* fixed-option widgets       -> base36 index char                   (Choice)
-* data-valued strings        -> 1-char symbol from a fixed table (Sym); values
-                                not in the table fall back to a '~'-prefixed
-                                percent-quoted literal
-* method subsets             -> bitmap over APPROX_ORDER (bit i = method i,
-                                LSB first) as exactly 4 hex chars:
-                                {exact} -> 0001, all 13 -> 1fff      (Bitmap)
-* method order (drag strips) -> Lehmer rank of the permutation relative to
-                                canonical order, base36, '' if canonical (Perm)
-* numbers                    -> str(int) / repr(float)               (Num)
-* (computation_type, metric) -> 1-char symbol from PAIR_SYMS         (Pair)
-* paths                      -> '' when equal to the runtime default, else
-                                '~' + quoted literal                 (PathCodec)
+* **Every field is an index, not a literal.** Enum widgets index a fixed option
+  list; the data-valued fields (model, epoch, damping, subset size, layers, …)
+  index the canonical ordering in ``code_vocab.json`` (built by
+  ``build_code_vocab.py``). So ``damping = 1e-3`` codes as "the 5th damping",
+  not the literal ``0.001`` — a few bits instead of a dozen characters.
+* **All indices pack into one integer** in a mixed radix (each field contributes
+  ``log2(its option count)`` bits). The walk order is the per-family ``SCHEMA``;
+  the plot-family goes in the least-significant position so the decoder can read
+  it first and know which schema (and therefore which radices) follow.
+* **That integer renders to words** via ``wordlist.txt`` (2048 words = 11 bits
+  each, base-2048): integer → digits → words, joined by ``-``.
 
-Example: ``1&1&1&1&3823&0&0&1&1&0001`` = LDS sweeps, model 1, mcmc, auto_mean,
-collector subset 3823, fix-method variant, Lines, CI band on, annotate on,
-methods {exact}.
-
-Symbol tables are append-only: never reorder or reuse a symbol, or existing
-codes silently change meaning.
+Reversibility is against ``code_vocab.json``: a phrase decodes correctly on any
+machine sharing that (committed, append-only) file. New data values must be
+appended — never reordered — or existing phrases change meaning.
 """
 
 from __future__ import annotations
 
+import json
 import math
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
-from urllib.parse import quote, unquote
 
 from hessian_data import APPROX_ORDER, DB_PATH, LDS_AXIS, order_methods
 
@@ -59,26 +44,8 @@ SP_MODES = ("Single result (methods)", "Across swept axis", "Compare samplings")
 SP_AGGS = ("mean", "median")
 SX_SWEEPS = ("damping", "epoch")
 
-# ── Fixed symbol tables (append-only — never reorder or reuse) ────────
-FAMILY_SYMS = {
-    "LDS sweeps": "1", "Metric bars": "2", "Metric correlation": "3",
-    "Influence Spearman": "4", "Factor eigenvalues": "5", "Sample-size Pareto": "6",
-}
-MODEL_SYMS = {
-    "mlp_08580ee2573a": "1",
-    "resnet_mlp_0a69ab6297da": "2",
-    "resnet_mlp_adc3030f5daa": "3",
-    "resnet_mlp_fbc1db7ec868": "4",
-    "resnet_mlp_swiglu_d4186381c706": "5",
-}
-SAMPLING_SYMS = {"all_classes": "0", "mcmc": "1"}
-STRATEGY_SYMS = {"(all)": "0", "auto_mean": "1", "pseudo_inverse": "2",
-                 "uniform": "3"}  # "(all)" is the UI-only sentinel
-DATASET_SYMS = {"digits": "0", "fashion_mnist": "1"}
-
-_B36 = "0123456789abcdefghijklmnopqrstuvwxyz"
-
-# (computation_type, metric) pairs, sorted, plus the LDS sentinel axis.
+# (computation_type, metric) pairs, sorted, plus the LDS sentinel axis. Order is
+# fixed (append-only) — a pair's position is its code.
 _PAIRS = (
     ("hvp", "ABSOLUTE_L2_DIFF"), ("hvp", "COSINE_SIMILARITY"),
     ("hvp", "INNER_PRODUCT_DIFF"), ("hvp", "INNER_PRODUCT_RATIO"),
@@ -94,61 +61,108 @@ _PAIRS = (
     ("round_trip", "relative_error"),
     LDS_AXIS,
 )
-PAIR_SYMS = {p: _B36[i] for i, p in enumerate(_PAIRS)}
-_PAIR_REV = {s: p for p, s in PAIR_SYMS.items()}
-_FAMILY_REV = {s: f for f, s in FAMILY_SYMS.items()}
+
+_HERE = Path(__file__).resolve().parent
 
 
-# ── Quoting & small number codecs ─────────────────────────────────────
-def qlit(s: str) -> str:
-    """Percent-quote a literal so it can never contain '&', ',' or '~'.
-    ('~' is RFC-3986 unreserved, so quote() alone would leave our literal
-    marker/terminator ambiguous — escape it by hand.)"""
-    return quote(str(s), safe="/").replace("~", "%7E")
+# ── Wordlist (integer ↔ phrase) ───────────────────────────────────────
+def _load_wordlist() -> list[str]:
+    words = [w.strip() for w in (_HERE / "wordlist.txt").read_text().splitlines() if w.strip()]
+    if len(words) != 2048 or len(set(words)) != 2048:
+        raise ValueError(f"wordlist.txt must hold 2048 unique words, got {len(words)}")
+    return words
 
 
-def unqlit(s: str) -> str:
-    return unquote(s)
+WORDLIST = _load_wordlist()
+_WORD_POS = {w: i for i, w in enumerate(WORDLIST)}
+BASE = len(WORDLIST)  # 2048
 
 
-def _b36enc(n: int) -> str:
-    if n == 0:
-        return "0"
+def int_to_phrase(n: int) -> str:
+    """Non-negative integer → hyphen-joined word phrase (base-2048, MSW first)."""
+    if n < 0:
+        raise ValueError("phrase integer must be non-negative")
     digits = []
-    while n:
-        n, r = divmod(n, 36)
-        digits.append(_B36[r])
-    return "".join(reversed(digits))
+    while True:
+        n, r = divmod(n, BASE)
+        digits.append(WORDLIST[r])
+        if n == 0:
+            break
+    return "-".join(reversed(digits))
 
 
-def _b36dec(s: str) -> int:
-    if not re.fullmatch(r"[0-9a-z]+", s or ""):
-        raise ValueError(f"bad base36 number {s!r}")
-    return int(s, 36)
+def phrase_to_int(phrase: str) -> int:
+    words = [w for w in (phrase or "").strip().lower().replace("_", "-").split("-") if w]
+    if not words:
+        raise ValueError("empty phrase")
+    n = 0
+    for w in words:
+        if w not in _WORD_POS:
+            raise ValueError(f"unknown word {w!r}")
+        n = n * BASE + _WORD_POS[w]
+    return n
 
 
-# ── Methods bitmap (4 hex chars over APPROX_ORDER) ────────────────────
-def methods_to_bitmap(methods: Iterable[str]) -> str:
+# ── Vocab (data-valued domains ↔ index) ───────────────────────────────
+def _vkey(v) -> str:
+    """Canonical string key for a value, so int/float/numpy compare equal.
+    Integer-valued floats collapse to the integer form (3823.0 == 3823)."""
+    if hasattr(v, "item"):
+        v = v.item()
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    if isinstance(v, float):
+        return repr(v)
+    return str(v)
+
+
+def _load_vocab() -> dict[str, list]:
+    vocab = json.loads((_HERE / "code_vocab.json").read_text())
+    for domain, values in vocab.items():
+        keys = [_vkey(v) for v in values]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"code_vocab.json domain {domain!r} has duplicate values")
+    return vocab
+
+
+VOCAB = _load_vocab()
+_VOCAB_POS = {d: {_vkey(v): i for i, v in enumerate(vals)} for d, vals in VOCAB.items()}
+
+
+def _vocab_pos(domain: str, value) -> int:
+    pos = _VOCAB_POS.get(domain, {}).get(_vkey(value))
+    if pos is None:
+        raise ValueError(
+            f"{value!r} not in vocab domain {domain!r} — run build_code_vocab.py")
+    return pos
+
+
+def _vocab_val(domain: str, pos: int):
+    vals = VOCAB.get(domain, [])
+    if not 0 <= pos < len(vals):
+        raise ValueError(f"index {pos} out of range for vocab domain {domain!r}")
+    return vals[pos]
+
+
+# ── Methods bitmap helpers (bit i = APPROX_ORDER[i]) ──────────────────
+def methods_to_bits(methods) -> int:
     bits = 0
     for m in methods:
         try:
             bits |= 1 << APPROX_ORDER.index(m)
         except ValueError:
             raise ValueError(f"unknown method {m!r}") from None
-    return format(bits, "04x")
+    return bits
 
 
-def bitmap_to_methods(s: str) -> list[str]:
-    if not re.fullmatch(r"[0-9a-f]{4}", s or ""):
-        raise ValueError(f"bad methods bitmap {s!r}")
-    bits = int(s, 16)
+def bits_to_methods(bits: int) -> list[str]:
     if bits >= 1 << len(APPROX_ORDER):
-        raise ValueError(f"methods bitmap {s!r} has unknown bits set")
+        raise ValueError(f"methods bits {bits} has unknown bits set")
     return [m for i, m in enumerate(APPROX_ORDER) if bits >> i & 1]
 
 
 # ── Lehmer code (lexicographic permutation rank) ──────────────────────
-def lehmer_rank(perm: Sequence[int]) -> int:
+def lehmer_rank(perm) -> int:
     n = len(perm)
     return sum(sum(1 for q in perm[i + 1:] if q < p) * math.factorial(n - 1 - i)
                for i, p in enumerate(perm))
@@ -164,232 +178,248 @@ def lehmer_unrank(rank: int, n: int) -> list[int]:
     return out
 
 
-# ── Field codecs ──────────────────────────────────────────────────────
-@dataclass(frozen=True)
-class _Ctx:
-    cfg: dict
-    db_default: str
-
-
+# ── Codecs ────────────────────────────────────────────────────────────
+# Each codec maps one field to an index in [0, radix): index 0 means "the field
+# is absent from this config" (an optional slot / non-taken branch leaf), and
+# 1..cardinality are the real values. `reader` is the sibling-value source —
+# `cfg` when encoding, the partially-decoded `out` when decoding — so a codec
+# whose size depends on another field (Perm on its bitmap, the sweep-conditional
+# axis) can look it up.
 class Codec:
-    """enc/dec turn one present value into/from one non-empty field; the
-    *_field hooks add the "absent key <-> empty field" rule and key context."""
-
-    def enc(self, value, ctx: _Ctx) -> str:
+    def cardinality(self, key: str, reader) -> int:
         raise NotImplementedError
 
-    def dec(self, text: str):
+    def value_index(self, value, key: str, reader) -> int:
         raise NotImplementedError
 
-    def enc_field(self, key: str, ctx: _Ctx) -> str:
-        if key not in ctx.cfg:
-            return ""
-        try:
-            return self.enc(ctx.cfg[key], ctx)
-        except ValueError as e:
-            raise ValueError(f"{key}: {e}") from None
+    def value_at(self, pos: int, key: str, reader):
+        raise NotImplementedError
 
-    def dec_field(self, text: str, key: str, out: dict) -> None:
-        if text:
-            try:
-                out[key] = self.dec(text)
-            except ValueError as e:
-                raise ValueError(f"{key}: {e}") from None
+    def radix(self, key: str, reader) -> int:
+        return self.cardinality(key, reader) + 1
+
+    def enc(self, key: str, reader) -> int:
+        value = reader.get(key)
+        if value is None:
+            return 0
+        pos = self.value_index(value, key, reader)
+        if not 0 <= pos < self.cardinality(key, reader):
+            raise ValueError(f"{key}: {value!r} out of domain")
+        return pos + 1
+
+    def dec(self, idx: int, key: str, reader) -> None:
+        if idx:  # 0 == absent
+            reader[key] = self.value_at(idx - 1, key, reader)
+
+
+class _DefaultAbsent:
+    """Mixin: a value equal to the widget default encodes as absent (index 0),
+    so a canonical method order / an empty category set / an all-layers pick
+    costs zero bits instead of inflating every field packed after it. Decode
+    leaves the key unset and the app supplies the same default."""
+
+    def is_default(self, value, key, reader) -> bool:  # noqa: D401
+        raise NotImplementedError
+
+    def enc(self, key: str, reader) -> int:
+        value = reader.get(key)
+        if value is None or self.is_default(value, key, reader):
+            return 0
+        pos = self.value_index(value, key, reader)
+        if not 0 <= pos < self.cardinality(key, reader):
+            raise ValueError(f"{key}: {value!r} out of domain")
+        return pos + 1
 
 
 class Choice(Codec):
-    def __init__(self, options: Sequence):
-        assert len(options) <= len(_B36)
+    """Index into a fixed option tuple."""
+
+    def __init__(self, options):
         self.options = tuple(options)
 
-    def enc(self, value, ctx):
+    def cardinality(self, key, reader):
+        return len(self.options)
+
+    def value_index(self, value, key, reader):
         if value not in self.options:
             raise ValueError(f"{value!r} not one of {self.options}")
-        return _B36[self.options.index(value)]
+        return self.options.index(value)
 
-    def dec(self, text):
-        if len(text) != 1 or text not in _B36 or _B36.index(text) >= len(self.options):
-            raise ValueError(f"bad choice {text!r}")
-        return self.options[_B36.index(text)]
+    def value_at(self, pos, key, reader):
+        return self.options[pos]
 
 
 BOOL = Choice((False, True))
 
 
-class Sym(Codec):
-    def __init__(self, table: dict):
-        self.table = table
-        self.rev = {s: v for v, s in table.items()}
+class Dom(Codec):
+    """Index into a `code_vocab.json` domain. `domain` may be a name or a
+    callable(reader)->name for a sweep-conditional axis."""
 
-    def enc(self, value, ctx):
-        sym = self.table.get(value)
-        return sym if sym is not None else "~" + qlit(value)
+    def __init__(self, domain):
+        self.domain = domain
 
-    def dec(self, text):
-        if text.startswith("~"):
-            return unqlit(text[1:])
-        if text not in self.rev:
-            raise ValueError(f"unknown symbol {text!r}")
-        return self.rev[text]
+    def _name(self, reader) -> str:
+        return self.domain(reader) if callable(self.domain) else self.domain
+
+    def cardinality(self, key, reader):
+        return len(VOCAB.get(self._name(reader), []))
+
+    def value_index(self, value, key, reader):
+        return _vocab_pos(self._name(reader), value)
+
+    def value_at(self, pos, key, reader):
+        return _vocab_val(self._name(reader), pos)
+
+
+class MethodIdx(Codec):
+    """A single approximator, indexed into APPROX_ORDER."""
+
+    def cardinality(self, key, reader):
+        return len(APPROX_ORDER)
+
+    def value_index(self, value, key, reader):
+        if value not in APPROX_ORDER:
+            raise ValueError(f"unknown method {value!r}")
+        return APPROX_ORDER.index(value)
+
+    def value_at(self, pos, key, reader):
+        return APPROX_ORDER[pos]
+
+
+class Pair(Codec):
+    """A single (computation_type, metric) pair, indexed into _PAIRS."""
+
+    def cardinality(self, key, reader):
+        return len(_PAIRS)
+
+    def value_index(self, value, key, reader):
+        p = tuple(value)
+        if p not in _PAIRS:
+            raise ValueError(f"unknown pair {p!r}")
+        return _PAIRS.index(p)
+
+    def value_at(self, pos, key, reader):
+        return _PAIRS[pos]
 
 
 class Bitmap(Codec):
-    def enc(self, value, ctx):
-        return methods_to_bitmap(value)
+    """A *set* of methods as a bitmap over APPROX_ORDER (order-insensitive)."""
 
-    def dec(self, text):
-        return bitmap_to_methods(text)
+    def cardinality(self, key, reader):
+        return 1 << len(APPROX_ORDER)
+
+    def value_index(self, value, key, reader):
+        return methods_to_bits(value)
+
+    def value_at(self, pos, key, reader):
+        return bits_to_methods(pos)
 
 
-class Perm(Codec):
-    """Order of a drag-reorderable method list, as the Lehmer rank of its
-    permutation relative to canonical order. The membership itself lives in
-    the companion `sel_key` Bitmap slot, which must precede this one."""
+class PairSet(_DefaultAbsent, Codec):
+    """A *set* of pairs as a bitmap over _PAIRS (e.g. metric-bar categories).
+    Empty (= "all categories", the widget default) encodes as absent."""
+
+    def is_default(self, value, key, reader):
+        return not value
+
+    def cardinality(self, key, reader):
+        return 1 << len(_PAIRS)
+
+    def _pos(self, p):
+        p = tuple(p)
+        if p not in _PAIRS:
+            raise ValueError(f"unknown pair {p!r}")
+        return _PAIRS.index(p)
+
+    def value_index(self, value, key, reader):
+        bits = 0
+        for p in value:
+            bits |= 1 << self._pos(p)
+        return bits
+
+    def value_at(self, pos, key, reader):
+        return [_PAIRS[i] for i in range(len(_PAIRS)) if pos >> i & 1]
+
+
+class DomSet(_DefaultAbsent, Codec):
+    """A *set* of values from a vocab domain, as a bitmap over that domain
+    (order-insensitive). `domain` may be a name or callable(reader)->name.
+    Empty encodes as absent."""
+
+    def __init__(self, domain):
+        self.domain = domain
+
+    def is_default(self, value, key, reader):
+        return not value
+
+    def _name(self, reader) -> str:
+        return self.domain(reader) if callable(self.domain) else self.domain
+
+    def cardinality(self, key, reader):
+        return 1 << len(VOCAB.get(self._name(reader), []))
+
+    def value_index(self, value, key, reader):
+        name = self._name(reader)
+        bits = 0
+        for v in value:
+            bits |= 1 << _vocab_pos(name, v)
+        return bits
+
+    def value_at(self, pos, key, reader):
+        name = self._name(reader)
+        vals = VOCAB.get(name, [])
+        return [vals[i] for i in range(len(vals)) if pos >> i & 1]
+
+
+class Perm(_DefaultAbsent, Codec):
+    """Order of a drag-reorderable method list, as the Lehmer rank relative to
+    canonical order. The membership lives in the companion `sel_key` Bitmap slot
+    (which precedes this one), so the rank's radix is `len(sel)!`. Canonical
+    order (rank 0, the default) encodes as absent."""
 
     def __init__(self, sel_key: str):
         self.sel_key = sel_key
 
-    def enc_field(self, key, ctx):
-        cfg = ctx.cfg
-        if key not in cfg or self.sel_key not in cfg:
-            return ""
-        members = set(cfg[self.sel_key])
+    def is_default(self, value, key, reader):
+        sel = self._sel(reader)
+        return sel is None or self.value_index(value, key, reader) == 0
+
+    def _sel(self, reader):
+        return reader.get(self.sel_key)
+
+    def cardinality(self, key, reader):
+        sel = self._sel(reader)
+        return math.factorial(len(sel)) if sel is not None else 0
+
+    def value_index(self, value, key, reader):
+        sel = self._sel(reader)
+        members = set(sel)
         canon = order_methods(list(members))
-        order = [m for m in cfg[key] if m in members]
+        order = [m for m in value if m in members]
         order += [m for m in canon if m not in order]
-        rank = lehmer_rank([canon.index(m) for m in order])
-        return "" if rank == 0 else _b36enc(rank)
+        return lehmer_rank([canon.index(m) for m in order])
 
-    def dec_field(self, text, key, out):
-        sel = out.get(self.sel_key)
-        if sel is None:
-            if text:
-                raise ValueError(f"{key}: order given without a method selection")
-            return
-        try:
-            rank = _b36dec(text) if text else 0
-            out[key] = [sel[i] for i in lehmer_unrank(rank, len(sel))]
-        except ValueError as e:
-            raise ValueError(f"{key}: {e}") from None
+    def value_at(self, pos, key, reader):
+        canon = order_methods(list(self._sel(reader)))
+        return [canon[i] for i in lehmer_unrank(pos, len(canon))]
 
 
-class Num(Codec):
-    def enc(self, value, ctx):
-        v = value.item() if hasattr(value, "item") else value  # numpy scalar
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
-            raise ValueError(f"not a number: {value!r}")
-        return repr(v) if isinstance(v, float) else str(v)
+class Drop(Codec):
+    """A field intentionally excluded from the phrase (paths / DB location).
+    Always absent; decode leaves the widget at its runtime default."""
 
-    def dec(self, text):
-        if re.fullmatch(r"[+-]?\d+", text):
-            return int(text)
-        try:
-            return float(text)
-        except ValueError:
-            raise ValueError(f"bad number {text!r}") from None
+    def cardinality(self, key, reader):
+        return 0
+
+    def enc(self, key, reader):
+        return 0
+
+    def dec(self, idx, key, reader):
+        return None
 
 
-_NUM = Num()
-
-
-class NumList(Codec):
-    def enc(self, value, ctx):
-        return ",".join(_NUM.enc(v, ctx) for v in value)
-
-    def dec(self, text):
-        return [_NUM.dec(t) for t in text.split(",")]
-
-
-class MethodIdx(Codec):
-    def enc(self, value, ctx):
-        if value in APPROX_ORDER:
-            return _B36[APPROX_ORDER.index(value)]
-        return "~" + qlit(value)
-
-    def dec(self, text):
-        if text.startswith("~"):
-            return unqlit(text[1:])
-        if len(text) != 1 or text not in _B36 or _B36.index(text) >= len(APPROX_ORDER):
-            raise ValueError(f"bad method index {text!r}")
-        return APPROX_ORDER[_B36.index(text)]
-
-
-class Pair(Codec):
-    def enc(self, value, ctx):
-        p = tuple(value)
-        sym = PAIR_SYMS.get(p)
-        return sym if sym is not None else f"~{qlit(p[0])},{qlit(p[1])}"
-
-    def dec(self, text):
-        if text.startswith("~"):
-            ct, sep, metric = text[1:].partition(",")
-            if not sep:
-                raise ValueError(f"bad literal pair {text!r}")
-            return (unqlit(ct), unqlit(metric))
-        if text not in _PAIR_REV:
-            raise ValueError(f"unknown pair symbol {text!r}")
-        return _PAIR_REV[text]
-
-
-class PairList(Codec):
-    """Concatenated 1-char pair symbols; literal pairs are embedded as
-    '~ct,metric~' (the trailing '~' terminates the literal)."""
-
-    def enc(self, value, ctx):
-        parts = []
-        for p in value:
-            p = tuple(p)
-            sym = PAIR_SYMS.get(p)
-            parts.append(sym if sym is not None else f"~{qlit(p[0])},{qlit(p[1])}~")
-        return "".join(parts)
-
-    def dec(self, text):
-        out, i = [], 0
-        while i < len(text):
-            if text[i] == "~":
-                j = text.find("~", i + 1)
-                if j < 0:
-                    raise ValueError(f"unterminated literal pair in {text!r}")
-                ct, sep, metric = text[i + 1:j].partition(",")
-                if not sep:
-                    raise ValueError(f"bad literal pair in {text!r}")
-                out.append((unqlit(ct), unqlit(metric)))
-                i = j + 1
-            elif text[i] in _PAIR_REV:
-                out.append(_PAIR_REV[text[i]])
-                i += 1
-            else:
-                raise ValueError(f"unknown pair symbol {text[i]!r}")
-        return out
-
-
-class PathCodec(Codec):
-    """Empty when the value equals the runtime default, else a literal."""
-
-    def __init__(self, default_fn):
-        self.default_fn = default_fn
-
-    def enc(self, value, ctx):
-        d = self.default_fn(ctx)
-        if d is not None and str(value) == str(d):
-            return ""
-        return "~" + qlit(value)
-
-    def dec(self, text):
-        if not text.startswith("~"):
-            raise ValueError(f"bad path field {text!r}")
-        return unqlit(text[1:])
-
-
-class StrList(Codec):
-    def enc(self, value, ctx):
-        return ",".join(qlit(v) for v in value)
-
-    def dec(self, text):
-        return [unqlit(t) for t in text.split(",")]
-
-
-# ── Per-family slot schemas (slot order = track() order in app.py) ────
+# ── Per-family slot schemas ───────────────────────────────────────────
 @dataclass(frozen=True)
 class Slot:
     key: str
@@ -402,55 +432,60 @@ class Branch:
     arms: dict  # decoded value -> tuple of Slot/Branch items
 
 
-def _fe_root_default(ctx: _Ctx) -> str:
-    return str(Path(ctx.cfg.get("cfg_db") or ctx.db_default).parent / "models")
+# sweep-conditional axis: cfg_sx_fix / _fixvals hold the *fixed* axis, which is
+# epoch when sweeping damping and damping when sweeping epoch.
+def _sx_fixed_domain(reader) -> str:
+    return "epoch" if reader.get("cfg_sx_sweep") == SX_SWEEPS[0] else "damping"
 
 
-DB_SLOT = Slot("cfg_db", PathCodec(lambda ctx: ctx.db_default))
+DB_SLOT = Slot("cfg_db", Drop())
 
 SCHEMA: dict[str, tuple] = {
     "LDS sweeps": (
-        Slot("cfg_lds_model", Sym(MODEL_SYMS)),
-        Slot("cfg_lds_pts", Sym(SAMPLING_SYMS)),
-        Slot("cfg_lds_strat", Sym(STRATEGY_SYMS)),
-        Slot("cfg_lds_subset", Num()),
+        Slot("cfg_lds_model", Dom("model")),
+        Slot("cfg_lds_pts", Dom("sampling")),
+        Slot("cfg_lds_strat", Dom("strategy")),
+        Slot("cfg_lds_subset", Dom("subset_size")),
         Slot("cfg_lds_variant", Choice(LDS_VARIANTS)),
         Slot("cfg_lds_style", Choice(LDS_STYLES)),  # absent for heatmap
         Slot("cfg_lds_band", BOOL),
         Slot("cfg_lds_annot", BOOL),
+        Slot("cfg_lds_keep_epochs", DomSet("epoch")),
+        Slot("cfg_lds_keep_damps", DomSet("damping")),
         Branch("cfg_lds_variant", {
             LDS_VARIANTS[0]: (Slot("cfg_lds_mf_methods", Bitmap()),),
-            LDS_VARIANTS[1]: (Slot("cfg_lds_df_lam", Num()),
+            LDS_VARIANTS[1]: (Slot("cfg_lds_df_lam", Dom("damping")),
                               Slot("cfg_lds_df_methods", Bitmap())),
-            LDS_VARIANTS[2]: (Slot("cfg_lds_ef_epoch", Num()),
+            LDS_VARIANTS[2]: (Slot("cfg_lds_ef_epoch", Dom("epoch")),
                               Slot("cfg_lds_ef_methods", Bitmap())),
             LDS_VARIANTS[3]: (Slot("cfg_lds_hm_methods", Bitmap()),),
         }),
         DB_SLOT,
     ),
     "Metric bars": (
-        Slot("cfg_mb_model", Sym(MODEL_SYMS)),
-        Slot("cfg_mb_epoch", Num()),
-        Slot("cfg_mb_lam", Num()),
-        Slot("cfg_mb_strat", Sym(STRATEGY_SYMS)),
-        Slot("cfg_mb_pts", Sym(SAMPLING_SYMS)),
+        Slot("cfg_mb_model", Dom("model")),
+        Slot("cfg_mb_epoch", Dom("epoch")),
+        Slot("cfg_mb_lam", Dom("damping")),
+        Slot("cfg_mb_strat", Dom("strategy")),
+        Slot("cfg_mb_pts", Dom("sampling")),
         Slot("cfg_mb_ref", Choice(REFERENCES)),
         Slot("cfg_mb_approxs_sel", Bitmap()),
         Slot("cfg_mb_approxs", Perm("cfg_mb_approxs_sel")),
-        Slot("cfg_mb_cats", PairList()),
+        Slot("cfg_mb_cats", PairSet()),
         DB_SLOT,
     ),
     "Metric correlation": (
         Slot("cfg_mc_scope", Choice(MC_SCOPES)),
         Branch("cfg_mc_scope", {
-            MC_SCOPES[0]: (Slot("cfg_mc_model", Sym(MODEL_SYMS)),
-                           Slot("cfg_mc_epoch", Num()),
-                           Slot("cfg_mc_lam", Num()),
-                           Slot("cfg_mc_strat", Sym(STRATEGY_SYMS)),
-                           Slot("cfg_mc_pts", Sym(SAMPLING_SYMS))),
-            MC_SCOPES[1]: (Slot("cfg_mc_model", Sym(MODEL_SYMS)),
-                           Slot("cfg_mc_pts", Sym(SAMPLING_SYMS)),
-                           Slot("cfg_mc_strat", Sym(STRATEGY_SYMS))),
+            MC_SCOPES[0]: (Slot("cfg_mc_model", Dom("model")),
+                           Slot("cfg_mc_epoch", Dom("epoch")),
+                           Slot("cfg_mc_lam", Dom("damping")),
+                           Slot("cfg_mc_strat", Dom("strategy")),
+                           Slot("cfg_mc_pts", Dom("sampling"))),
+            MC_SCOPES[1]: (Slot("cfg_mc_model", Dom("model")),
+                           Slot("cfg_mc_pts", Dom("sampling")),
+                           Slot("cfg_mc_strat", Dom("strategy")),
+                           Slot("cfg_mc_keep_damps", DomSet("damping"))),
         }),
         Slot("cfg_mc_ref", Choice(REFERENCES)),
         Slot("cfg_mc_x", Pair()),
@@ -466,129 +501,123 @@ SCHEMA: dict[str, tuple] = {
         Slot("cfg_sp_agg", Choice(SP_AGGS)),
         Slot("cfg_sp_annot", BOOL),
         Branch("cfg_sp_mode", {
-            SP_MODES[0]: (Slot("cfg_sp_model", Sym(MODEL_SYMS)),
-                          Slot("cfg_sp_epoch", Num()),
-                          Slot("cfg_sp_lam", Num()),
-                          Slot("cfg_sp_strat", Sym(STRATEGY_SYMS)),
-                          Slot("cfg_sp_pts", Sym(SAMPLING_SYMS)),
+            SP_MODES[0]: (Slot("cfg_sp_model", Dom("model")),
+                          Slot("cfg_sp_epoch", Dom("epoch")),
+                          Slot("cfg_sp_lam", Dom("damping")),
+                          Slot("cfg_sp_strat", Dom("strategy")),
+                          Slot("cfg_sp_pts", Dom("sampling")),
                           Slot("cfg_sp_methods_sel", Bitmap()),
                           Slot("cfg_sp_methods", Perm("cfg_sp_methods_sel"))),
-            SP_MODES[1]: (Slot("cfg_sx_model", Sym(MODEL_SYMS)),
-                          Slot("cfg_sx_pts", Sym(SAMPLING_SYMS)),
+            SP_MODES[1]: (Slot("cfg_sx_model", Dom("model")),
+                          Slot("cfg_sx_pts", Dom("sampling")),
                           Slot("cfg_sx_method", MethodIdx()),
-                          Slot("cfg_sx_strat", Sym(STRATEGY_SYMS)),
+                          Slot("cfg_sx_strat", Dom("strategy")),
                           Slot("cfg_sx_sweep", Choice(SX_SWEEPS)),
                           Slot("cfg_sx_grid", BOOL),
-                          Slot("cfg_sx_fix", Num()),        # grid off
-                          Slot("cfg_sx_fixvals", NumList())),  # grid on
-            SP_MODES[2]: (Slot("cfg_cs_model", Sym(MODEL_SYMS)),
-                          Slot("cfg_cs_a", Sym(SAMPLING_SYMS)),
-                          Slot("cfg_cs_b", Sym(SAMPLING_SYMS)),
-                          Slot("cfg_cs_epoch", Num()),
-                          Slot("cfg_cs_lam", Num()),
-                          Slot("cfg_cs_strat", Sym(STRATEGY_SYMS))),
+                          Slot("cfg_sx_fix", Dom(_sx_fixed_domain)),         # grid off
+                          Slot("cfg_sx_fixvals", DomSet(_sx_fixed_domain))),  # grid on
+            SP_MODES[2]: (Slot("cfg_cs_model", Dom("model")),
+                          Slot("cfg_cs_a", Dom("sampling")),
+                          Slot("cfg_cs_b", Dom("sampling")),
+                          Slot("cfg_cs_epoch", Dom("epoch")),
+                          Slot("cfg_cs_lam", Dom("damping")),
+                          Slot("cfg_cs_strat", Dom("strategy"))),
         }),
         DB_SLOT,
     ),
     "Sample-size Pareto": (
-        Slot("cfg_pareto_model", Sym(MODEL_SYMS)),
-        Slot("cfg_pareto_strat", Sym(STRATEGY_SYMS)),
-        Slot("cfg_pareto_epoch", Num()),
-        Slot("cfg_pareto_lam", Num()),
+        Slot("cfg_pareto_model", Dom("model")),
+        Slot("cfg_pareto_strat", Dom("strategy")),
+        Slot("cfg_pareto_epoch", Dom("epoch")),
+        Slot("cfg_pareto_lam", Dom("damping")),
         Slot("cfg_pareto_methods", Bitmap()),
         Slot("cfg_pareto_band", BOOL),
         Slot("cfg_pareto_logx", BOOL),
         DB_SLOT,
     ),
     "Factor eigenvalues": (
-        Slot("cfg_fe_root", PathCodec(_fe_root_default)),
-        # parsed-layout cascade … or the raw-dir fallback; the unused
-        # branch's keys are simply absent and encode as empty slots.
-        Slot("cfg_fe_dataset", Sym(DATASET_SYMS)),
-        Slot("cfg_fe_model", Sym(MODEL_SYMS)),
-        Slot("cfg_fe_epoch", Num()),
-        Slot("cfg_fe_pts", Sym(SAMPLING_SYMS)),
+        # raw-dir fallback path is dropped; the parsed cascade is what encodes.
+        Slot("cfg_fe_root", Drop()),
+        Slot("cfg_fe_dir", Drop()),
+        Slot("cfg_fe_dataset", Dom("dataset")),
+        Slot("cfg_fe_model", Dom("model")),
+        Slot("cfg_fe_epoch", Dom("epoch")),
+        Slot("cfg_fe_pts", Dom("sampling")),
         Slot("cfg_fe_method", MethodIdx()),
-        Slot("cfg_fe_dir", PathCodec(lambda ctx: None)),
-        Slot("cfg_fe_layers", StrList()),
         Slot("cfg_fe_logx", BOOL),
+        Slot("cfg_fe_layers", DomSet("layer")),
         DB_SLOT,
     ),
 }
 
 
 # ── encode / decode ───────────────────────────────────────────────────
-def _enc_walk(items, ctx, fields, visited):
+def _walk_slots(items, reader):
+    """Yield (codec, key) in schema order, descending the branch arm selected by
+    `reader`. Lazy so decode can rely on the discriminator being decoded into
+    `reader` (=out) by the time its Branch is reached."""
     for it in items:
         if isinstance(it, Slot):
-            visited.add(it.key)
-            fields.append(it.codec.enc_field(it.key, ctx))
+            yield it.codec, it.key
         else:
-            val = ctx.cfg.get(it.on)
+            val = reader.get(it.on)
             if val not in it.arms:
-                raise ValueError(f"cannot encode: {it.on} is {val!r}")
-            _enc_walk(it.arms[val], ctx, fields, visited)
+                raise ValueError(f"cannot resolve branch on {it.on} = {val!r}")
+            yield from _walk_slots(it.arms[val], reader)
 
 
-def encode(cfg: dict, *, db_default: str | None = None) -> str:
-    """Encode a tracked-widget CFG dict into a config code."""
+def encode(cfg: dict, *, db_default=None) -> str:
+    """Encode a tracked-widget CFG dict into a word-phrase code.
+
+    `db_default` is accepted for signature compatibility; DB/path fields are not
+    carried in the phrase.
+    """
     fam = cfg.get("cfg_family")
     if fam not in SCHEMA:
         raise ValueError(f"unknown plot family {fam!r}")
-    ctx = _Ctx(cfg=cfg, db_default=str(db_default) if db_default else str(DB_PATH))
-    fields, visited = [FAMILY_SYMS[fam]], {"cfg_family"}
-    _enc_walk(SCHEMA[fam], ctx, fields, visited)
+    # family occupies the least-significant position (decoded first).
+    n, place = FAMILIES.index(fam) + 1, len(FAMILIES) + 1
+    visited = {"cfg_family"}
+    for codec, key in _walk_slots(SCHEMA[fam], cfg):
+        visited.add(key)
+        radix = codec.radix(key, cfg)
+        idx = codec.enc(key, cfg)
+        if not 0 <= idx < radix:
+            raise ValueError(f"{key}: index {idx} out of radix {radix}")
+        n += idx * place
+        place *= radix
     extra = set(cfg) - visited
-    if extra:  # drift guard: a new track() key needs a schema slot
+    if extra:  # a new track() key needs a schema slot
         raise ValueError(f"cfg keys missing from the schema: {sorted(extra)}")
-    while fields and fields[-1] == "":
-        fields.pop()
-    return "&".join(fields)
-
-
-_END = object()
-
-
-def _dec_walk(items, it, out):
-    for item in items:
-        if isinstance(item, Slot):
-            item.codec.dec_field(next(it, ""), item.key, out)
-        else:
-            if item.on not in out:
-                raise ValueError(f"missing {item.on} before its dependent fields")
-            val = out[item.on]
-            if val not in item.arms:
-                raise ValueError(f"no schema branch for {item.on} = {val!r}")
-            _dec_walk(item.arms[val], it, out)
+    return int_to_phrase(n)
 
 
 def decode(code: str) -> dict:
     """Invert encode(): a {cfg_key: value} dict ready for _pending_cfg."""
-    code = (code or "").strip()
-    if not code:
-        raise ValueError("empty config code")
-    fields = code.split("&")
-    fam = _FAMILY_REV.get(fields[0])
-    if fam is None:
-        raise ValueError(f"unknown plot-family symbol {fields[0]!r}")
-    out, it = {"cfg_family": fam}, iter(fields[1:])
-    _dec_walk(SCHEMA[fam], it, out)
-    if next(it, _END) is not _END:
-        raise ValueError("too many fields for this plot family")
+    n = phrase_to_int(code)
+    fam_radix = len(FAMILIES) + 1
+    n, fam_idx = n // fam_radix, n % fam_radix
+    if fam_idx == 0 or fam_idx > len(FAMILIES):
+        raise ValueError("phrase does not start with a valid plot family")
+    fam = FAMILIES[fam_idx - 1]
+    out: dict = {"cfg_family": fam}
+    for codec, key in _walk_slots(SCHEMA[fam], out):
+        radix = codec.radix(key, out)
+        n, idx = n // radix, n % radix
+        codec.dec(idx, key, out)
+    if n != 0:
+        raise ValueError("phrase has trailing data for this plot family")
     return out
 
 
-# ── Import-time sanity checks on the fixed tables ─────────────────────
+# ── Import-time sanity checks ─────────────────────────────────────────
 def _check_tables():
-    for name, table in [("FAMILY_SYMS", FAMILY_SYMS), ("MODEL_SYMS", MODEL_SYMS),
-                        ("SAMPLING_SYMS", SAMPLING_SYMS), ("STRATEGY_SYMS", STRATEGY_SYMS),
-                        ("DATASET_SYMS", DATASET_SYMS), ("PAIR_SYMS", PAIR_SYMS)]:
-        syms = list(table.values())
-        assert len(set(syms)) == len(syms) and all(
-            len(s) == 1 and s in _B36 for s in syms), f"bad symbols in {name}"
-    assert len(APPROX_ORDER) <= 16, "methods bitmap no longer fits 4 hex chars"
-    assert LDS_AXIS in PAIR_SYMS
-    assert set(SCHEMA) == set(FAMILIES) == set(FAMILY_SYMS)
+    assert set(SCHEMA) == set(FAMILIES), "SCHEMA / FAMILIES mismatch"
+    assert len(_PAIRS) == len(set(_PAIRS)), "duplicate pair in _PAIRS"
+    assert LDS_AXIS in _PAIRS
+    for domain in ("model", "dataset", "sampling", "strategy", "epoch",
+                   "damping", "subset_size", "layer"):
+        assert VOCAB.get(domain), f"code_vocab.json missing/empty domain {domain!r}"
 
 
 _check_tables()

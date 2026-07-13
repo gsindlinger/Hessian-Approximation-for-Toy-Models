@@ -13,6 +13,8 @@ Run with:
 from __future__ import annotations
 
 import argparse
+import io
+import re
 import sys
 from pathlib import Path
 
@@ -90,9 +92,39 @@ def get_factor_dirs(root: str) -> list[str]:
     return D.find_factor_dirs(root)
 
 
-def show(fig):
-    """Render a matplotlib figure and free it."""
+# running counter so each download_button gets a unique key across a rerun
+_dl_counter = [0]
+
+
+def _plot_basename() -> str:
+    """Filename stem for plot downloads: the config code (the "hash") for the
+    current selections, sanitised to filesystem-safe chars. Falls back to the
+    plot family when the config can't be encoded yet."""
+    try:
+        code = C.encode(CFG, db_default=_default_db())
+    except Exception:  # noqa: BLE001 - any encode failure → family fallback
+        code = str(CFG.get("cfg_family", "plot"))
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", code).strip("_")
+    return safe or "plot"
+
+
+def show(fig, *, suffix: str = "", download: bool = True):
+    """Render a matplotlib figure, offer PNG/PDF downloads (named by config
+    code), then free it."""
     st.pyplot(fig, width="content")
+    if download:
+        base = _plot_basename()
+        name = f"{base}_{suffix}" if suffix else base
+        c1, c2, _ = st.columns([1, 1, 6])
+        for col, ext, mime in ((c1, "png", "image/png"), (c2, "pdf", "application/pdf")):
+            buf = io.BytesIO()
+            fig.savefig(buf, format=ext, dpi=200, bbox_inches="tight")
+            _dl_counter[0] += 1
+            col.download_button(
+                f"⬇ {ext.upper()}", data=buf.getvalue(),
+                file_name=f"{name}.{ext}", mime=mime,
+                key=f"dl_{_dl_counter[0]}", use_container_width=True,
+            )
     plt.close(fig)
 
 
@@ -175,7 +207,8 @@ def pick_result_id(pool, *, key: str):
     model = track(
         f"cfg_{key}_model",
         st.sidebar.selectbox(
-            "Model", sorted(pool["model_id"].unique()), key=f"cfg_{key}_model"
+            "Model", sorted(pool["model_id"].unique()),
+            format_func=P.model_label, key=f"cfg_{key}_model"
         ),
     )
     p = pool[pool["model_id"] == model]
@@ -266,7 +299,8 @@ if family == "LDS sweeps":
         st.stop()
 
     model = track(
-        "cfg_lds_model", st.sidebar.selectbox("Model", models, key="cfg_lds_model")
+        "cfg_lds_model",
+        st.sidebar.selectbox("Model", models, format_func=P.model_label, key="cfg_lds_model"),
     )
     mlds = lds[lds["model_id"] == model]
     sampling = track(
@@ -285,7 +319,7 @@ if family == "LDS sweeps":
     strat = track(
         "cfg_lds_strat",
         st.sidebar.selectbox(
-            "Damping strategy", ["(all)"] + strategies, key="cfg_lds_strat"
+            "Damping strategy", strategies, key="cfg_lds_strat"
         ),
     )
     # Collector subset size is a real hyperparameter, not something to average
@@ -347,6 +381,31 @@ if family == "LDS sweeps":
         st.sidebar.checkbox("Annotate heatmap", value=True, key="cfg_lds_annot"),
     )
 
+    # General axis focus — optionally restrict any free axis to a subset of its
+    # values (empty = keep all). Applied to df_sub before the variant selectors,
+    # so it scopes every variant uniformly: e.g. pin the "Fix epoch" view to a
+    # single λ, or zoom "Fix method" to a few epochs. Method already has a
+    # subset control in every variant, so only epoch/λ need this here.
+    pool_epochs = sorted(int(e) for e in df_sub["epoch"].dropna().unique())
+    pool_damps = sorted(df_sub["damping_value"].dropna().unique())
+    keep_epochs = track(
+        "cfg_lds_keep_epochs",
+        st.sidebar.multiselect(
+            "Focus epochs (empty = all)", pool_epochs, key="cfg_lds_keep_epochs"
+        ),
+    )
+    keep_damps = track(
+        "cfg_lds_keep_damps",
+        st.sidebar.multiselect(
+            "Focus λ (empty = all)", pool_damps, format_func=fmt,
+            key="cfg_lds_keep_damps",
+        ),
+    )
+    if keep_epochs:
+        df_sub = df_sub[df_sub["epoch"].isin(keep_epochs)]
+    if keep_damps:
+        df_sub = df_sub[df_sub["damping_value"].isin(keep_damps)]
+
     methods_here = D.order_methods(df_sub["approximator"].dropna().unique().tolist())
     epochs = sorted(int(e) for e in df_sub["epoch"].dropna().unique())
     dampings = sorted(df_sub["damping_value"].dropna().unique())
@@ -368,8 +427,8 @@ if family == "LDS sweeps":
         )
         for m in sel:
             fig = P.plot_lds_methodfix(df_sub, m, show_band=show_band, kind=kind)
-            fig.suptitle(model, fontsize=10)
-            show(fig)
+            fig.suptitle(P.model_label(model), fontsize=10)
+            show(fig, suffix=m)
 
     elif variant == V_DF:
         d = track(
@@ -392,7 +451,7 @@ if family == "LDS sweeps":
             kind=kind,
             strategy=None if strat == "(all)" else strat,
         )
-        fig.suptitle(model, fontsize=10)
+        fig.suptitle(P.model_label(model), fontsize=10)
         show(fig)
 
     elif variant == V_EF:
@@ -414,7 +473,7 @@ if family == "LDS sweeps":
             kind=kind,
             strategy=None if strat == "(all)" else strat,
         )
-        fig.suptitle(model, fontsize=10)
+        fig.suptitle(P.model_label(model), fontsize=10)
         show(fig)
 
     else:  # Heatmap per method
@@ -429,8 +488,8 @@ if family == "LDS sweeps":
         )
         for m in sel:
             fig, _ = P.plot_lds_heatmap_for_method(df_sub, m, annotate=annotate)
-            fig.suptitle(model, fontsize=10)
-            show(fig)
+            fig.suptitle(P.model_label(model), fontsize=10)
+            show(fig, suffix=m)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -446,14 +505,15 @@ elif family == "Sample-size Pareto":
 
     model = track(
         "cfg_pareto_model",
-        st.sidebar.selectbox("Model", models, key="cfg_pareto_model"),
+        st.sidebar.selectbox("Model", models, format_func=P.model_label,
+                             key="cfg_pareto_model"),
     )
     mlds = lds[lds["model_id"] == model]
     strategies = sorted(mlds["damping_strategy"].dropna().unique())
     strat = track(
         "cfg_pareto_strat",
         st.sidebar.selectbox(
-            "Damping strategy", ["(all)"] + strategies, key="cfg_pareto_strat"
+            "Damping strategy", strategies, key="cfg_pareto_strat"
         ),
     )
     tsub = mlds if strat == "(all)" else mlds[mlds["damping_strategy"] == strat]
@@ -516,7 +576,7 @@ elif family == "Sample-size Pareto":
     fig = P.plot_lds_pareto(
         df_sub, methods=msel or None, show_band=show_band, log_x=log_x
     )
-    fig.suptitle(f"{model} · ep{epoch} · λ={lam:g} · {strat}", fontsize=10)
+    fig.suptitle(f"{P.model_label(model)} · ep{epoch} · λ={lam:g} · {strat}", fontsize=10)
     show(fig)
 
 
@@ -603,7 +663,8 @@ elif family == "Metric correlation":
         model = track(
             "cfg_mc_model",
             st.sidebar.selectbox(
-                "Model", sorted(mopts["model_id"].unique()), key="cfg_mc_model"
+                "Model", sorted(mopts["model_id"].unique()),
+                format_func=P.model_label, key="cfg_mc_model"
             ),
         )
         msub = mopts[mopts["model_id"] == model]
@@ -623,7 +684,7 @@ elif family == "Metric correlation":
         strat = track(
             "cfg_mc_strat",
             st.sidebar.selectbox(
-                "Damping strategy", ["(all)"] + strats, key="cfg_mc_strat"
+                "Damping strategy", strats, key="cfg_mc_strat"
             ),
         )
         reference = track(
@@ -637,6 +698,23 @@ elif family == "Metric correlation":
             sampling=sampling,
             damping_strategy=None if strat == "(all)" else strat,
         )
+        # Optionally fix / focus the sweep to a subset of damping values (empty =
+        # all λ). Picking a single λ isolates the epoch × method variation; the
+        # colour axis (λ) then collapses to one shade while shape still marks the
+        # method. Options come from the table so only realised λ appear.
+        if not table.empty:
+            damp_opts = sorted(table.index.get_level_values("damping_value").unique())
+            keep_damps = track(
+                "cfg_mc_keep_damps",
+                st.sidebar.multiselect(
+                    "Focus λ (empty = all)", damp_opts, format_func=fmt,
+                    key="cfg_mc_keep_damps",
+                ),
+            )
+            if keep_damps:
+                table = table[
+                    table.index.get_level_values("damping_value").isin(keep_damps)
+                ]
         if not table.empty:
             point_methods = table.index.get_level_values("approximator")
             sweep_damping = table.index.get_level_values("damping_value").to_numpy()
@@ -761,7 +839,8 @@ elif family == "Influence Spearman":
         model = track(
             "cfg_sx_model",
             st.sidebar.selectbox(
-                "Model", sorted(infl["model_id"].unique()), key="cfg_sx_model"
+                "Model", sorted(infl["model_id"].unique()),
+                format_func=P.model_label, key="cfg_sx_model"
             ),
         )
         minfl = infl[infl["model_id"] == model]
@@ -870,7 +949,8 @@ elif family == "Influence Spearman":
             st.info("No model has ≥2 samplings with influence to compare.")
             st.stop()
         model = track(
-            "cfg_cs_model", st.sidebar.selectbox("Model", multi, key="cfg_cs_model")
+            "cfg_cs_model",
+            st.sidebar.selectbox("Model", multi, format_func=P.model_label, key="cfg_cs_model"),
         )
         msub = infl[infl["model_id"] == model]
         samps = sorted(msub["pseudo_target_strategy"].dropna().unique())
@@ -937,7 +1017,7 @@ elif family == "Influence Spearman":
             series,
             sampling_a=a,
             sampling_b=b,
-            title=f"{model} · ep{epoch} · λ={lam:g} · {strat}\ninfluence agreement: {a} vs {b}",
+            title=f"{P.model_label(model)} · ep{epoch} · λ={lam:g} · {strat}\ninfluence agreement: {a} vs {b}",
         )
         show(fig)
         st.dataframe(series.round(3).rename("Spearman ρ"))
@@ -976,7 +1056,8 @@ elif family == "Factor eigenvalues":
         model = track(
             "cfg_fe_model",
             st.sidebar.selectbox(
-                "Model", sorted({x["model"] for x in r}), key="cfg_fe_model"
+                "Model", sorted({x["model"] for x in r}),
+                format_func=P.model_label, key="cfg_fe_model"
             ),
         )
         r = [x for x in r if x["model"] == model]
@@ -1044,18 +1125,18 @@ elif family == "Factor eigenvalues":
         st.error(f"{type(e).__name__}: {e}")
 
 
-# ── Config code: copy to save, paste to jump to a config ──────────────
+# ── Plot phrase: copy to save, paste to jump to a config ──────────────
 st.sidebar.divider()
-with st.sidebar.expander("🔗 Config code", expanded=True):
-    st.caption("Copy to save this exact config; paste one below to jump to it.")
+with st.sidebar.expander("🔗 Plot phrase", expanded=True):
+    st.caption("Copy these words to save this exact plot; paste a phrase below to jump to it.")
     try:
         st.code(C.encode(CFG, db_default=_default_db()), language=None)
     except ValueError as e:
         st.error(f"Cannot encode this config: {e}")
-    load = st.text_input("Load a code", key="_load_code").strip()
+    load = st.text_input("Load a phrase", key="_load_code").strip()
     if st.button("Go", key="_go_code") and load:
         try:
             st.session_state["_pending_cfg"] = C.decode(load)
             st.rerun()
         except ValueError as e:
-            st.error(f"Invalid config code: {e}")
+            st.error(f"Invalid plot phrase: {e}")

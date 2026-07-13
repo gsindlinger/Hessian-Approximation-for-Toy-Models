@@ -31,8 +31,14 @@ LABELS = {
     "kfac": "K-FAC", "ekfac": "EK-FAC", "gnh": "GNH", "fim": "FIM",
     "block_fim": "Block FIM", "block_hessian": "Block Hessian", "shampoo": "Shampoo",
     "eshampoo": "E-Shampoo", "identity": "Identity", "eidentity": "E-Identity",
-    "exact": "Exact", "mac": "MAC", "emac": "E-MAC",
+    "exact": "Exact", "mac": "FOOF", "emac": "EFOOF",
 }
+
+# Model display names live in the data layer (so result_label can share them);
+# re-exported here as the presentation-layer entry point.
+MODEL_LABELS = D.MODEL_LABELS
+model_label = D.model_label
+
 CATEGORY_DISPLAY = {"matrix": "Matrix", "hvp": "HVP", "ihvp": "IHVP", "round_trip": "Round-trip"}
 
 
@@ -51,6 +57,21 @@ def category_label(cat: tuple[str, str]) -> str:
 
 def _method_color(m: str) -> tuple:
     return COLORS.get(m, "#444444")
+
+
+def _legend_outside(ax, *, handles=None, title=None, ncol=1, fontsize=8,
+                    loc="outside right upper"):
+    """Place a legend outside the axes, to the right. Uses `fig.legend` with an
+    "outside" location so constrained_layout reserves space for it (no clipping,
+    no overlap with the data). Returns the Legend artist."""
+    fig = ax.get_figure()
+    kw = dict(loc=loc, fontsize=fontsize, frameon=False)
+    if title is not None:
+        kw["title"] = title
+    if handles is not None:
+        return fig.legend(handles=handles, ncol=ncol, **kw)
+    h, lbl = ax.get_legend_handles_labels()
+    return fig.legend(h, lbl, ncol=ncol, **kw)
 
 
 def _damping_color(d: float, *, vmin: float, vmax: float, cmap_name: str = "viridis") -> tuple:
@@ -179,7 +200,7 @@ def plot_lds_methodfix(df_sub, method, *, ax=None, show_legend=True, show_band=T
     ax.set_ylabel("LDS mean")
     ax.set_title(LABELS.get(method, method), fontsize=11, fontweight="bold")
     if show_legend:
-        ax.legend(loc="best", fontsize=8, ncol=2 if len(dvals) > 4 else 1, frameon=False)
+        _legend_outside(ax, ncol=2 if len(dvals) > 8 else 1)
     return fig
 
 
@@ -204,7 +225,7 @@ def plot_lds_dampingfix(df_sub, damping, *, strategy=None, ax=None, show_legend=
     ax.set_ylabel("LDS mean")
     ax.set_title(f"λ = {damping:g}", fontsize=11, fontweight="bold")
     if show_legend and methods_here:
-        ax.legend(loc="best", fontsize=8, ncol=2 if len(methods_here) > 6 else 1, frameon=False)
+        _legend_outside(ax, ncol=1)
     return fig
 
 
@@ -229,7 +250,7 @@ def plot_lds_epochfix(df_sub, epoch, *, strategy=None, ax=None, show_legend=True
     ax.set_ylabel("LDS mean")
     ax.set_title(f"epoch = {epoch}", fontsize=11, fontweight="bold")
     if show_legend and methods_here:
-        ax.legend(loc="best", fontsize=8, ncol=2 if len(methods_here) > 6 else 1, frameon=False)
+        _legend_outside(ax, ncol=1)
     return fig
 
 
@@ -316,7 +337,7 @@ def plot_lds_heatmap(df, *, model_id, method="exact", annotate=True):
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04).set_label("LDS (mean)")
     ax.set_xlabel("epoch")
     ax.set_ylabel("damping value")
-    ax.set_title(f"{model_id} — LDS (method={LABELS.get(method, method)})",
+    ax.set_title(f"{model_label(model_id)} — LDS (method={LABELS.get(method, method)})",
                  fontsize=11, fontweight="bold")
     return fig, pivot
 
@@ -412,10 +433,8 @@ def plot_lds_pareto(df_sub, *, methods=None, show_band=True, log_x=True,
     if show_legend and families:
         fam_h = [Line2D([0], [0], color=_method_color(fam), lw=1.6, marker="o",
                         ms=5, label=_family_label(sub, fam)) for fam in families]
-        leg1 = ax.legend(handles=fam_h, loc="best", fontsize=8,
-                         ncol=2 if len(families) > 6 else 1, frameon=False,
-                         title="method family")
-        ax.add_artist(leg1)
+        _legend_outside(ax, handles=fam_h, title="method family",
+                        ncol=1, loc="outside right upper")
         extra = []
         if len(samplings) > 1:
             extra += [Line2D([0], [0], color="0.3", lw=1.6, ls=_sampling_linestyle(s),
@@ -427,8 +446,8 @@ def plot_lds_pareto(df_sub, *, methods=None, show_band=True, log_x=True,
                        label="eigenvalue-corrected (2×)"),
             ]
         if extra:
-            ax.legend(handles=extra, loc="lower right", fontsize=8,
-                      frameon=False, title="sampling / variant")
+            _legend_outside(ax, handles=extra, title="sampling / variant",
+                            ncol=1, loc="outside right lower")
     return fig
 
 
@@ -476,7 +495,7 @@ def plot_metrics_for(result_id, reference="exact", approxs=None, categories=None
         sub = df[(df["computation_type"] == cat) & (df["metric"] == metric)]
         lookup = dict(zip(sub["approximator"], sub["value"]))
         plot_vals = [v if (v := lookup.get(a)) is not None and v > 0 else np.nan for a in approxs]
-        ax.bar(x, plot_vals, color=[COLORS.get(a, f"C{i}") for i, a in enumerate(approxs)], alpha=0.85)
+        ax.bar(x, plot_vals, color=[_method_color(a) for a in approxs], alpha=0.85)
         ax.set_xticks(x)
         ax.set_xticklabels([LABELS.get(a, a) for a in approxs], rotation=35, ha="right")
         if any(np.isfinite(v) for v in plot_vals):
@@ -487,7 +506,7 @@ def plot_metrics_for(result_id, reference="exact", approxs=None, categories=None
         ax.spines["right"].set_visible(False)
 
     fig.suptitle(
-        f"{model_id}  ({meta['num_parameters']} params)  Epoch {epoch}  "
+        f"{model_label(model_id)}  ({meta['num_parameters']} params)  Epoch {epoch}  "
         f"(vs {LABELS.get(reference, reference)})  run {run_id}",
         fontsize=12, fontweight="bold",
     )
@@ -569,6 +588,11 @@ def plot_metric_correlation(table, x_axis, y_axis, *, point_methods=None,
         cy = y
 
     present = D.order_methods(list(dict.fromkeys(m.tolist())))
+    # When the sweep is pinned to a single λ (via the app's "Focus λ" selector)
+    # the colour dimension is wasted, so drop the colourbar and surface the λ in
+    # the title instead; points then get a solid per-method colour.
+    uniq_dmp = np.unique(dmp) if dmp is not None else None
+    fixed_lambda = float(uniq_dmp[0]) if uniq_dmp is not None and uniq_dmp.size == 1 else None
 
     if dmp is None:
         # single-result: colour = method
@@ -584,37 +608,49 @@ def plot_metric_correlation(table, x_axis, y_axis, *, point_methods=None,
                    for mm in present]
         legend_title = None
     else:
-        # across-sweep: shape = method, colour = damping λ
+        # across-sweep: shape = method. Colour = damping λ across the sweep, or a
+        # solid per-method colour when a single λ is pinned (colourbar dropped).
         markers = _method_markers(m.tolist())
-        pos = dmp[dmp > 0]
-        norm = LogNorm(vmin=float(pos.min()), vmax=float(pos.max())) if pos.size else None
-        cmap = colormaps["viridis"]
-        for mm in present:
-            sel = m == mm
-            ax.scatter(x[sel], y[sel], marker=markers[mm], s=42, c=dmp[sel],
-                       cmap=cmap, norm=norm, edgecolor="black", linewidth=0.25,
-                       alpha=0.9, zorder=3)
-        sm = ScalarMappable(norm=norm, cmap=cmap)
-        fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04).set_label("damping λ")
-        handles = [Line2D([0], [0], marker=markers[mm], ls="", markersize=7,
-                          markerfacecolor="0.4", markeredgecolor="black",
-                          label=LABELS.get(mm, mm)) for mm in present]
+        if fixed_lambda is not None:
+            for mm in present:
+                sel = m == mm
+                ax.scatter(x[sel], y[sel], marker=markers[mm], s=42,
+                           color=COLORS.get(mm, "#444444"), edgecolor="black",
+                           linewidth=0.25, alpha=0.9, zorder=3)
+            handles = [Line2D([0], [0], marker=markers[mm], ls="", markersize=7,
+                              markerfacecolor=COLORS.get(mm, "#444444"),
+                              markeredgecolor="black", label=LABELS.get(mm, mm))
+                       for mm in present]
+        else:
+            pos = dmp[dmp > 0]
+            norm = LogNorm(vmin=float(pos.min()), vmax=float(pos.max())) if pos.size else None
+            cmap = colormaps["viridis"]
+            for mm in present:
+                sel = m == mm
+                ax.scatter(x[sel], y[sel], marker=markers[mm], s=42, c=dmp[sel],
+                           cmap=cmap, norm=norm, edgecolor="black", linewidth=0.25,
+                           alpha=0.9, zorder=3)
+            sm = ScalarMappable(norm=norm, cmap=cmap)
+            fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04).set_label("damping λ")
+            handles = [Line2D([0], [0], marker=markers[mm], ls="", markersize=7,
+                              markerfacecolor="0.4", markeredgecolor="black",
+                              label=LABELS.get(mm, mm)) for mm in present]
         legend_title = "method"
 
     pear, spear = _corr(cx, cy)
     if handles:
-        ax.legend(handles=handles, title=legend_title, fontsize=7,
-                  ncol=2 if len(handles) > 7 else 1, frameon=False, loc="best")
+        _legend_outside(ax, handles=handles, title=legend_title, fontsize=7,
+                        ncol=1, loc="outside right upper")
 
     ax.set_xlabel(axis_label(x_axis))
     ax.set_ylabel(axis_label(y_axis))
     ax.grid(alpha=0.3, which="both")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.set_title(
-        f"Pearson r = {pear:.3f}   ·   Spearman ρ = {spear:.3f}   (n = {len(x)})",
-        fontsize=11, fontweight="bold",
-    )
+    stat = f"Spearman ρ = {spear:.3f}   (n = {len(x)})"
+    if fixed_lambda is not None:
+        stat = f"λ = {fixed_lambda:g}   ·   " + stat
+    ax.set_title(stat, fontsize=11, fontweight="bold")
     return fig, {"pearson": pear, "spearman": spear, "n": int(len(x)),
                  "methods": present}
 
@@ -723,7 +759,7 @@ def plot_influence_corr_across_axis(df, *, model_id, sweep, fix, method="exact",
         summary = (f"{n_query} query" + ("y" if n_query == 1 else "ies")
                    + (" (1D cache)" if n_query == 1 else f", aggregated by {aggregate}"))
         ax.set_title(
-            f"{model_id} — influence Spearman across {sweep}\n"
+            f"{model_label(model_id)} — influence Spearman across {sweep}\n"
             f"method={LABELS.get(method, method)}, fixed {fix_col}={fix} ({summary})",
             fontsize=11, fontweight="bold",
         )
@@ -765,7 +801,7 @@ def plot_influence_corr_grid(df, *, model_id, sweep, fix_values, method="exact",
     if last_im is not None:
         fig.colorbar(last_im, ax=axes, fraction=0.025, pad=0.02).set_label("Spearman ρ")
     fig.suptitle(
-        f"{model_id} — influence Spearman across {sweep} "
+        f"{model_label(model_id)} — influence Spearman across {sweep} "
         f"(method={LABELS.get(method, method)}, agg={aggregate})",
         fontsize=12, fontweight="bold",
     )

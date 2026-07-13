@@ -1,0 +1,97 @@
+{
+  "model": [
+    "mlp_08580ee2573a",
+    "resnet_mlp_0a69ab6297da",
+    "resnet_mlp_adc3030f5daa",
+    "resnet_mlp_fbc1db7ec868",
+    "resnet_mlp_swiglu_d4186381c706"
+  ],
+  "dataset": [
+    "digits",
+    "fashion_mnist"
+  ],
+  "sampling": [
+    "all_classes",
+    "empirical_fisher",
+    "mcmc"
+  ],
+  "strategy": [
+    "auto_mean",
+    "pseudo_inverse",
+    "uniform"
+  ],
+  "epoch": [
+    4,
+    8,
+    10,
+    12,
+    16,
+    20,
+    100,
+    200,
+    300,
+    400,
+    500,
+    600,
+    700,
+    800,
+    900,
+    1000
+  ],
+  "damping": [
+    1e-09,
+    1e-06,
+    1e-05,
+    0.0001,
+    0.001,
+    0.01,
+    0.1,
+    1.0
+  ],
+  "subset_size": [
+    6,
+    60,
+    600,
+    3823,
+    6000,
+    60000
+  ],
+  "layer": [
+    "down_0",
+    "down_1",
+    "down_2",
+    "down_3",
+    "down_4",
+    "down_5",
+    "down_6",
+    "down_7",
+    "embedding",
+    "full matrix",
+    "linear_0",
+    "linear_1",
+    "linear_2",
+    "linear_3",
+    "linear_4",
+    "linear_5",
+    "linear_6",
+    "linear_7",
+    "output",
+    "swiglu_0/W_down",
+    "swiglu_0/W_gate",
+    "swiglu_0/W_up",
+    "swiglu_1/W_down",
+    "swiglu_1/W_gate",
+    "swiglu_1/W_up",
+    "swiglu_2/W_down",
+    "swiglu_2/W_gate",
+    "swiglu_2/W_up",
+    "up_0",
+    "up_1",
+    "up_2",
+    "up_3",
+    "up_4",
+    "up_5",
+    "up_6",
+    "up_7"
+  ]
+}

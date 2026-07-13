@@ -48,6 +48,22 @@ def order_methods(methods: list[str]) -> list[str]:
     return sorted(methods, key=lambda m: (rank.get(m, len(rank)), m))
 
 
+# Human-readable model names (keyed on the stored model_id hash). Displayed
+# everywhere a model is shown; unknown ids fall through to the raw hash.
+MODEL_LABELS = {
+    "mlp_08580ee2573a": "Small MLP8",
+    "resnet_mlp_0a69ab6297da": "Small ResNet MLP3",
+    "resnet_mlp_adc3030f5daa": "Small ResNet MLP8",
+    "resnet_mlp_fbc1db7ec868": "ResNet MLP3",
+    "resnet_mlp_swiglu_d4186381c706": "ResNet SwiGLU3",
+}
+
+
+def model_label(model_id: str) -> str:
+    """Display name for a model_id (falls back to the raw hash)."""
+    return MODEL_LABELS.get(model_id, model_id)
+
+
 # ── DB access ─────────────────────────────────────────────────────────
 def open_db(path: Path = DB_PATH) -> sqlite3.Connection:
     path = Path(path)
@@ -113,7 +129,7 @@ def result_label(row) -> str:
     pts = row.get("pseudo_target_strategy")
     pts_s = f" · {pts}" if pts else ""
     return (
-        f"#{int(row['result_id'])} · {row['model_id']} · {row['dataset_name']} · "
+        f"#{int(row['result_id'])} · {model_label(row['model_id'])} · {row['dataset_name']} · "
         f"ep{int(row['epoch'])} · λ={row['damping_value']:g} · "
         f"{row['damping_strategy']}{pif_s}{pts_s} · {row['run_id']}"
     )
@@ -441,6 +457,29 @@ def _aggregate(values: np.ndarray, how: str) -> float:
     raise ValueError(f"Unknown aggregate {how!r} (use mean or median)")
 
 
+def _drop_degenerate_rowcols(mat: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows/columns that carry no rank signal.
+
+    A constant influence vector (e.g. an all-zero pseudo-inverse row) centres to
+    the zero vector, so its per-query Spearman with *every* other entry is
+    exactly 0 (or NaN). In the heatmap that shows up as a blank 0.0 stripe down a
+    whole row and column — remove those entries entirely so only informative
+    ones remain. The diagonal (self-correlation, 1.0) is ignored when deciding."""
+    arr = mat.to_numpy()
+    n = len(arr)
+    if n == 0:
+        return mat
+    dead = np.isnan(arr) | (arr == 0.0)
+    np.fill_diagonal(dead, False)  # the diagonal is always 1.0 — don't count it
+    keep = dead.sum(axis=1) != (n - 1)  # keep unless the whole off-diagonal is dead
+    if keep.all():
+        return mat
+    labels = mat.index[keep]
+    out = mat.loc[labels, labels]
+    out.attrs.update(mat.attrs)
+    return out
+
+
 def compute_influence_spearman_matrix(
     result_id: int,
     paths: dict[str, str],
@@ -486,7 +525,7 @@ def compute_influence_spearman_matrix(
         n_train=canonical_shape[1] if canonical_shape else 0,
         aggregate=aggregate, result_id=result_id,
     )
-    return out
+    return _drop_degenerate_rowcols(out)
 
 
 def reorder_spearman(rho: pd.DataFrame, methods: list[str]) -> pd.DataFrame:
@@ -570,7 +609,7 @@ def spearman_matrix_across_axis(
             mat[i, j] = mat[j, i] = _aggregate(rhos, aggregate)
 
     n_query = canonical_shape[0] if canonical_shape else 0
-    return pd.DataFrame(mat, index=xs, columns=xs), n_query
+    return _drop_degenerate_rowcols(pd.DataFrame(mat, index=xs, columns=xs)), n_query
 
 
 def _prepared_influence(df: pd.DataFrame, *, model, epoch, damping, strategy,
