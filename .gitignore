@@ -149,5 +149,3 @@ data/checkpoints/*
 
 experiments/outputs/*
 wandb/*
-# Streamlit app config-hash registry (local)
-plots/.app_configs.json
