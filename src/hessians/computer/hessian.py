@@ -19,15 +19,9 @@ class HessianComputer(HessianEstimator):
     """
     Exact Hessian computation via JAX automatic differentiation.
 
-    Two modes:
-    - `.build()` materializes the full `(n_params, n_params)` Hessian and
-      slices it into per-layer `DenseBlock`s via `LayerMatrix.from_dense`.
-      `estimate_hessian` / `estimate_hvp` / `estimate_ihvp` then use the
-      cached matrix.
-    - Skip `.build()` → `estimate_hvp` falls through to `_lazy_hvp`, which
-      does JVP-through-the-model via `_compute_hvp` and never materializes
-      the dense matrix.  `estimate_hessian` / `estimate_ihvp` still require
-      `.build()`.
+    `.build()` materializes the full `(n_params, n_params)` Hessian and
+    slices it into per-layer `DenseBlock`s via `LayerMatrix.from_dense`;
+    all `estimate_*` methods use the cached matrix (build is required).
     """
 
     @staticmethod
@@ -110,86 +104,6 @@ class HessianComputer(HessianEstimator):
 
         H_full = 0.5 * (H_full + H_full.T)  # Ensure symmetry
         return H_full + damping * jnp.eye(H_full.shape[0])
-
-    # ------------------------------------------------------------------
-    # Lazy HVP — dispatched from `estimate_hvp` when `.build()` was skipped.
-    # ------------------------------------------------------------------
-
-    def _lazy_hvp(
-        self,
-        vectors: Float[Array, "batch_size n_params"],
-        damping: Float,
-    ) -> Float[Array, "batch_size n_params"]:
-        """JVP-through-the-model HVP — no matrix materialized.  Expects 2D input."""
-        return self._compute_hvp(self.compute_context, vectors, damping)
-
-    @staticmethod
-    @jax.jit
-    def _compute_hvp(
-        compute_context: ModelContext,
-        vectors: Float[Array, "batch_size n_params"],
-        damping: Float,
-    ) -> Float[Array, "batch_size n_params"]:
-        """
-        Memory-efficient Hessian-vector product computation.
-        Uses scan over samples and vmap over vectors, matching GNH strategy.
-        """
-        p_flat = compute_context.params_flat
-        X = compute_context.inputs
-        Y = compute_context.targets
-
-        assert Y is not None, (
-            "Targets must be provided in ModelContext for HVP computation."
-        )
-
-        def model_out(p, x):
-            params = compute_context.unravel_fn(p)
-            return compute_context.model_apply_fn(params, x[None, ...]).squeeze(0)
-
-        def loss_single(p, x, y):
-            """Loss for a single sample"""
-            z = model_out(p, x)
-            return compute_context.loss_fn(z, y)
-
-        # Per-vector HVP function (scans over samples)
-        @jax.jit
-        def hvp_single(v):
-            """Compute H @ v by accumulating over samples"""
-
-            def body_fn(accum, xy):
-                x_i, y_i = xy
-
-                # Compute per-sample Hessian-vector product
-                # hvp = ∇²L_i @ v for sample i
-                def grad_fn(p):
-                    return jax.grad(lambda p_: loss_single(p_, x_i, y_i))(p)
-
-                # Use JVP to compute Hessian-vector product efficiently
-                _, hvp_i = jax.jvp(grad_fn, (p_flat,), (v,))
-
-                return accum + hvp_i, None
-
-            # Accumulate HVP contributions across all samples
-            summed, _ = jax.lax.scan(body_fn, jnp.zeros_like(v), (X, Y))
-
-            # Average and add damping
-            hvp = summed / X.shape[0]
-            return hvp + damping * v
-
-        # ------------------------------------------------------------
-        # Chunking vectors to avoid OOM
-        # ------------------------------------------------------------
-        CHUNK_SIZE = 32
-        n_vectors = vectors.shape[0]
-
-        if n_vectors <= CHUNK_SIZE:
-            return jax.vmap(hvp_single)(vectors)
-        else:
-            outs = []
-            for i in range(0, n_vectors, CHUNK_SIZE):
-                chunk = vectors[i : i + CHUNK_SIZE]
-                outs.append(jax.vmap(hvp_single)(chunk))
-            return jnp.concatenate(outs, axis=0)
 
     # ------------------------------------------------------------------
     # Persistence helpers (unchanged)

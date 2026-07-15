@@ -143,33 +143,17 @@ class HessianEstimator(ABC):
     ) -> Float[Array, "*batch_size n_params"]:
         """Compute the Hessian-vector product `(H + dI) @ v` for each row of `vectors`.
 
-        If `.build()` has been called, uses the cached `LayerMatrix`.  Otherwise
-        dispatches to `_lazy_hvp` — subclasses with a true JVP-through-the-model
-        path (`HessianComputer`, `GNHComputer`) override it to skip the
-        `(n_params, n_params)` materialization entirely.  Estimators without a
-        lazy path raise `NotImplementedError` and require `.build()` first.
+        Requires `.build()` — the product is `M.damped(d) @ v` on the
+        materialized `LayerMatrix`.
         """
+        M = self._require_built("estimating the Hessian-vector product")
         d = 0.0 if damping is None else damping
-        if self.is_built and self.layer_matrix is not None:
-            M = self.layer_matrix
-            lvec = LayerVector.from_flat(
-                jnp.asarray(vectors),
-                shapes=M.layer_shapes,
-                param_groups=M.param_groups,
-            )
-            return (M.damped(d) @ lvec).to_flat()
-        return self._lazy_hvp(jnp.asarray(vectors), d)
-
-    def _lazy_hvp(
-        self,
-        vectors: Float[Array, "*batch_size n_params"],
-        damping: Float,
-    ) -> Float[Array, "*batch_size n_params"]:
-        """Lazy HVP hook — override in estimators with a JVP-through-the-model path."""
-        raise NotImplementedError(
-            f"{type(self).__name__} has no lazy HVP path — call `.build()` "
-            f"before `estimate_hvp`."
+        lvec = LayerVector.from_flat(
+            jnp.asarray(vectors),
+            shapes=M.layer_shapes,
+            param_groups=M.param_groups,
         )
+        return (M.damped(d) @ lvec).to_flat()
 
     def estimate_ihvp(
         self,
