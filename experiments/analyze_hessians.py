@@ -40,7 +40,6 @@ from src.config import (
 )
 from src.hessians.collector import CollectorActivationsGradients
 from src.hessians.computer.computer import HessianEstimator, KroneckerEstimator
-from src.hessians.computer.ekfac import EKFACComputer
 from src.hessians.computer.registry import HessianComputerRegistry
 from src.hessians.utils.data import DataActivationsGradients, ModelContext
 from src.hessians.utils.pseudo_targets import sample_vectors
@@ -337,35 +336,38 @@ def resolve_damping(
     if strat == DampingStrategy.PSEUDO_INVERSE:
         return {a.value: None for a in approximators}, comp.damping_value
     if strat == DampingStrategy.UNIFORM:
-        # `damping_value: null` → fall back to EKFAC's cross-layer mean as
-        # the global scalar. Otherwise use the specified value as the
-        # absolute λ for every approximator and every layer.
+        # UNIFORM: use the specified λ verbatim as the absolute damping for
+        # every approximator and every layer — no derived/EKFAC fallback.
+        # Use damping_strategy=auto_mean for mean-eigenvalue-derived damping.
         if comp.damping_value is None:
-            ekfac = ctx.get(HessianApproximationMethod.EKFAC)
-            assert isinstance(ekfac, EKFACComputer)
-            ekfac_per_layer = ekfac.get_damping(
-                damping_strategy=DampingStrategy.AUTO_MEAN, factor=1.0
+            raise ValueError(
+                "damping_strategy=uniform requires an explicit damping_value; "
+                "use damping_strategy=auto_mean for derived (mean-eigenvalue) "
+                "damping."
             )
-            value = float(jnp.mean(jnp.stack(list(ekfac_per_layer.values()))))
-        else:
-            value = comp.damping_value
+        value = comp.damping_value
         return {a.value: value for a in approximators}, None
     if strat == DampingStrategy.AUTO_MEAN:
-        ekfac = ctx.get(HessianApproximationMethod.EKFAC)
-        assert isinstance(ekfac, EKFACComputer)
-        ekfac_per_layer = ekfac.get_damping(
-            damping_strategy=strat, factor=comp.damping_value
-        )
-        ekfac_scalar = float(jnp.mean(jnp.stack(list(ekfac_per_layer.values()))))
         out: Dict[str, "Optional[float | Dict[str, float]]"] = {}
         for approx in approximators:
             est = ctx.get(approx)
             if isinstance(est, KroneckerEstimator):
+                # Kronecker estimators keep per-layer damping derived from
+                # their OWN eigenvalue-corrected factors:
+                #     λ_layer = factor · mean(Λ_layer).
                 out[approx.value] = est.get_damping(
                     damping_strategy=strat, factor=comp.damping_value
                 )
             else:
-                out[approx.value] = ekfac_scalar
+                # Non-Kronecker estimators (GNH, EXACT Hessian, FIM, block_*):
+                # damp by `factor · mean(eigenvalues of this estimator's OWN
+                # full matrix)`. For symmetric M, mean(all EVs) == trace(M)/n,
+                # so we read the trace off the materialized matrix — no
+                # eigendecomposition. Literal trace/n is used as-is, including
+                # for the indefinite EXACT/block_hessian (may be ≤ 0).
+                M = est.estimate_hessian()  # undamped full [n_params, n_params]
+                mean_ev = float(jnp.trace(M) / M.shape[0])
+                out[approx.value] = comp.damping_value * mean_ev
         return out, None
 
     return {a.value: None for a in approximators}, None

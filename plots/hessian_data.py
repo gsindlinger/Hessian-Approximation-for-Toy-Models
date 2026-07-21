@@ -126,12 +126,10 @@ def result_label(row) -> str:
     """Human-readable one-liner for a result_id."""
     pif = row.get("pseudo_inverse_factor")
     pif_s = "" if pif is None or (isinstance(pif, float) and pd.isna(pif)) else f" pif={pif:g}"
-    pts = row.get("pseudo_target_strategy")
-    pts_s = f" · {pts}" if pts else ""
     return (
         f"#{int(row['result_id'])} · {model_label(row['model_id'])} · {row['dataset_name']} · "
         f"ep{int(row['epoch'])} · λ={row['damping_value']:g} · "
-        f"{row['damping_strategy']}{pif_s}{pts_s} · {row['run_id']}"
+        f"{row['damping_strategy']}{pif_s}"
     )
 
 

@@ -465,7 +465,7 @@ def plot_metrics_for(result_id, reference="exact", approxs=None, categories=None
     with D.open_db(db_path) as con:
         df = D.load_metrics_df(con, result_id, reference=reference)
         meta = D.result_meta(con, result_id)
-    run_id, model_id, epoch = meta["run_id"], meta["model_id"], meta["epoch"]
+    model_id, epoch = meta["model_id"], meta["epoch"]
 
     if df.empty:
         raise ValueError(f"No metrics for reference={reference} on this result")
@@ -507,7 +507,7 @@ def plot_metrics_for(result_id, reference="exact", approxs=None, categories=None
 
     fig.suptitle(
         f"{model_label(model_id)}  ({meta['num_parameters']} params)  Epoch {epoch}  "
-        f"(vs {LABELS.get(reference, reference)})  run {run_id}",
+        f"(vs {LABELS.get(reference, reference)})",
         fontsize=12, fontweight="bold",
     )
     return fig
