@@ -16,6 +16,7 @@ from src.hessians.utils.data import ModelContext, layer_shapes_from_model_contex
 @dataclass
 class HessianComputer(HessianEstimator):
     compute_context: ModelContext
+    derivative_batch_size: Optional[int] = None
     """
     Exact Hessian computation via JAX automatic differentiation.
 
@@ -59,7 +60,15 @@ class HessianComputer(HessianEstimator):
 
     def _build(self) -> LayerMatrix:
         """Materialize the full Hessian and slice it into per-layer DenseBlocks."""
-        dense = self._compute_hessian(self.compute_context, 0.0)
+        if self.derivative_batch_size is not None or hasattr(
+            self.compute_context.model, "parameter_block_shapes"
+        ):
+            dense = self._compute_hessian_chunked(
+                self.compute_context, 0.0,
+                derivative_batch_size=self.derivative_batch_size or 128,
+            )
+        else:
+            dense = self._compute_hessian(self.compute_context, 0.0)
         return LayerMatrix.from_dense(
             dense,
             param_groups=self.get_layer_names(),
@@ -69,6 +78,58 @@ class HessianComputer(HessianEstimator):
     # ------------------------------------------------------------------
     # Materialization helper (used by `_build`)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_hessian_chunked(
+        compute_context: ModelContext,
+        damping: Float,
+        derivative_batch_size: int = 128,
+    ) -> Float[Array, "n_params n_params"]:
+        """Exact all-parameter Hessian with bounded derivative workspace.
+
+        Stream examples and differentiate only a chunk of parameter directions
+        at once. This still materializes EVERY entry, including cross-module
+        terms; it is not an HVP-only approximation or a parameter subspace.
+        The final matrix is O(P^2), but autodiff does not carry P simultaneous
+        transformer tangent graphs or an N-by-P-by-P array.
+        """
+        if derivative_batch_size < 1:
+            raise ValueError("derivative_batch_size must be positive.")
+        ctx = compute_context
+        if ctx.targets is None or ctx.inputs.shape[0] == 0:
+            raise ValueError("Exact Hessian requires a non-empty labelled dataset.")
+        p_flat = ctx.params_flat
+        n_params = p_flat.size
+
+        def loss_single(p, x, y):
+            predictions = ctx.model_apply_fn(ctx.unravel_fn(p), x[None, ...])
+            return ctx.loss_fn(predictions, y[None, ...])
+
+        @jax.jit
+        def row_chunk(parameters, inputs, targets, indices):
+            directions = jax.nn.one_hot(indices, n_params, dtype=parameters.dtype)
+
+            def add_sample(accumulator, xy):
+                x, y = xy
+                grad_fn = jax.grad(lambda p: loss_single(p, x, y))
+                _, linearized_grad = jax.linearize(grad_fn, parameters)
+                contribution = jax.vmap(linearized_grad)(directions)
+                return accumulator + contribution, None
+
+            total, _ = jax.lax.scan(
+                add_sample,
+                jnp.zeros((indices.size, n_params), dtype=parameters.dtype),
+                (inputs, targets),
+            )
+            return total / inputs.shape[0]
+
+        rows = []
+        for start in range(0, n_params, derivative_batch_size):
+            indices = jnp.arange(start, min(start + derivative_batch_size, n_params))
+            rows.append(row_chunk(p_flat, ctx.inputs, ctx.targets, indices))
+        dense = jnp.concatenate(rows, axis=0)
+        dense = (dense + dense.T) * 0.5
+        return dense + damping * jnp.eye(n_params, dtype=p_flat.dtype)
 
     @staticmethod
     @jax.jit

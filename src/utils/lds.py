@@ -17,10 +17,16 @@ script.
 from __future__ import annotations
 
 import json
+import hashlib
+import importlib.metadata
 import logging
 import os
+import fcntl
+import tempfile
+import time
 from dataclasses import asdict
 from math import ceil
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import jax
@@ -106,6 +112,7 @@ def _build_vmapped_elso_fn(
     loss_fn,
     epochs: int,
     batch_size: int,
+    shuffle: bool = True,
 ):
     """Return a JIT+vmap-compiled function:
 
@@ -113,6 +120,9 @@ def _build_vmapped_elso_fn(
 
     Trains R models in parallel (one per key) on the **same** complement
     dataset for ``epochs`` epochs and evaluates each on the query set.
+    Each supplied key is the native initialization/dataloader key, without
+    an extra split. Epoch permutations compose exactly as JAXDataLoader's
+    in-place data shuffles do.
     """
 
     def _eval_queries(p, query_x, query_y):
@@ -122,7 +132,6 @@ def _build_vmapped_elso_fn(
         return jax.vmap(single)(query_x, query_y)
 
     def train_and_eval_one(key, comp_x, comp_y, query_x, query_y):
-        init_key, shuffle_key = jax.random.split(key, 2)
         n = comp_x.shape[0]
         # Use ceil so every example is seen each epoch. The trailing slots in
         # the final batch are filled with index 0 and zeroed out via `mask` so
@@ -131,19 +140,19 @@ def _build_vmapped_elso_fn(
         n_padded = n_batches * batch_size
         pad = n_padded - n
 
-        params = model.init(init_key, comp_x[:1])
+        params = model.init(key, comp_x[:1])
         opt_state = optimizer.init(params)
 
-        all_epoch_keys = jax.random.split(shuffle_key, epochs)
-
-        def epoch_step(carry, epoch_key):
-            params, opt_state = carry
-            perm = jax.random.permutation(epoch_key, n)
+        def epoch_step(carry, _):
+            params, opt_state, shuffle_key, indices = carry
+            if shuffle:
+                shuffle_key, epoch_key = jax.random.split(shuffle_key)
+                indices = indices[jax.random.permutation(epoch_key, n)]
             perm_padded = jnp.concatenate(
-                [perm, jnp.zeros(pad, dtype=perm.dtype)]
+                [indices, jnp.zeros(pad, dtype=indices.dtype)]
             )
             valid = jnp.concatenate(
-                [jnp.ones(n, dtype=comp_x.dtype), jnp.zeros(pad, dtype=comp_x.dtype)]
+                [jnp.ones(n, dtype=jnp.float32), jnp.zeros(pad, dtype=jnp.float32)]
             )
 
             x_s = comp_x[perm_padded].reshape(n_batches, batch_size, -1)
@@ -177,9 +186,11 @@ def _build_vmapped_elso_fn(
             (params, opt_state), _ = jax.lax.scan(
                 batch_step, (params, opt_state), (x_s, y_s, m_s)
             )
-            return (params, opt_state), None
+            return (params, opt_state, shuffle_key, indices), None
 
-        (params, _), _ = jax.lax.scan(epoch_step, (params, opt_state), all_epoch_keys)
+        (params, _, _, _), _ = jax.lax.scan(
+            epoch_step, (params, opt_state, key, jnp.arange(n)), None, length=epochs
+        )
         return _eval_queries(params, query_x, query_y)
 
     return jax.jit(jax.vmap(train_and_eval_one, in_axes=(0, None, None, None, None)))
@@ -197,6 +208,10 @@ def _build_elso_cache_key(
     """Cache key capturing everything that influences ELSO rep_mean."""
     tr = model_config.training
     return {
+        "retraining_implementation": "native_seed_shuffle_partialbatch_v2",
+        "schedule_implementation": "original_training_horizon_v1",
+        "schedule_horizon_epochs": model_config.training.epochs,
+        "normalization_policy": "fixed_baseline_training_statistics",
         "subsets": {
             "num_subsets": num_subsets,
             "subset_fraction": subset_fraction,
@@ -215,8 +230,193 @@ def _build_elso_cache_key(
                 else None
             ),
             "batch_size": tr.batch_size,
+            "momentum": tr.momentum,
+            "beta1": tr.beta1,
+            "beta2": tr.beta2,
+            "retraining_shuffle": tr.shuffle,
         },
     }
+
+
+def _array_identity(value) -> Dict:
+    array = np.ascontiguousarray(np.asarray(value))
+    return {"shape": list(array.shape), "dtype": array.dtype.str,
+            "sha256": hashlib.sha256(array.tobytes()).hexdigest()}
+
+
+def _identity_json(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _elso_runtime_identity() -> Dict:
+    """Conservative identity for numerical code, libraries and device precision."""
+    source_root = Path(__file__).resolve().parents[1]
+    sources = [source_root / "config.py", Path(__file__),
+               source_root / "utils/train.py", source_root / "utils/loss.py",
+               source_root / "utils/optimizers.py", source_root / "utils/data/jax_dataloader.py"]
+    sources.extend(sorted((source_root / "utils/models").glob("*.py")))
+    versions = {}
+    for name in ("jax", "jaxlib", "flax", "optax", "numpy"):
+        versions[name] = importlib.metadata.version(name)
+    return {
+        "implementation": "native_seed_shuffle_original_horizon_v3",
+        "source_sha256": {str(path.relative_to(source_root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                          for path in sorted(set(sources))},
+        "versions": versions,
+        "jax_enable_x64": bool(jax.config.jax_enable_x64),
+        "jax_default_matmul_precision": str(jax.config.jax_default_matmul_precision),
+        "jax_default_prng_impl": str(jax.config.jax_default_prng_impl),
+        "jax_numpy_dtype_promotion": str(jax.config.jax_numpy_dtype_promotion),
+        "device_kinds": sorted({device.device_kind for device in jax.local_devices()}),
+        "backend": jax.default_backend(),
+        "xla_flags": os.environ.get("XLA_FLAGS", ""),
+    }
+
+
+def _elso_content_identity(model_config, full_train_inputs, full_train_targets,
+                           query_inputs, query_targets, subsets, reps_per_subset,
+                           base_seed, epochs, use_vmap) -> Dict:
+    recipe = asdict(model_config)
+    # Only these known storage fields are irrelevant to fresh initialization.
+    # In particular, architecture, activation, loss, all dimensions and the
+    # original training horizon remain in the identity.
+    recipe.pop("directory", None)
+    recipe.pop("skip_existing", None)
+    return {
+        "schema_version": 1, "model_recipe": recipe,
+        "target_epochs": epochs, "base_seed": base_seed,
+        "reps_per_subset": reps_per_subset, "use_vmap": use_vmap,
+        "normalization_policy": "fixed_baseline_training_statistics",
+        "arrays": {name: _array_identity(value) for name, value in (
+            ("train_inputs", full_train_inputs), ("train_targets", full_train_targets),
+            ("query_inputs", query_inputs), ("query_targets", query_targets),
+            ("ordered_subset_masks", np.asarray(subsets)))},
+        "runtime": _elso_runtime_identity(),
+    }
+
+
+class _CheckpointedELSO:
+    """Atomic completed-subset checkpoints guarded by a crash-releasing flock.
+
+    Legacy complete caches remain local-only: they lack content identity and
+    are never copied into shared storage. New files live in a separate namespace
+    and contain the validated identity digest as well as their subset index.
+    """
+
+    def __init__(self, local_directory, shared_root, identity, n_queries, n_subsets,
+                 allow_legacy=True):
+        self.identity = json.loads(_identity_json(identity))
+        self.digest = hashlib.sha256(_identity_json(self.identity).encode()).hexdigest()
+        self.n_queries, self.n_subsets = n_queries, n_subsets
+        self.local_directory = Path(local_directory) if local_directory is not None else None
+        root = Path(shared_root) if shared_root is not None else self.local_directory
+        self.directory = root / "checkpointed_v1" / self.digest
+        self.allow_legacy = allow_legacy
+        self.legacy = None
+        self.lock = None
+
+    def _load(self, path, shape, subset_index=None, allow_legacy=False):
+        if not path.exists():
+            return None
+        try:
+            with np.load(path, allow_pickle=False) as data:
+                values = data["rep_mean"]
+                if values.shape != shape or not np.isfinite(values).all():
+                    raise ValueError("invalid shape or non-finite values")
+                if "identity_sha256" in data:
+                    if str(data["identity_sha256"].item()) != self.digest:
+                        raise ValueError("content identity mismatch")
+                elif not allow_legacy:
+                    raise ValueError("missing content identity")
+                if subset_index is not None and int(data["subset_index"].item()) != subset_index:
+                    raise ValueError("subset index mismatch")
+                return values
+        except (OSError, KeyError, ValueError, EOFError) as exc:
+            logger.warning("[ELSO] Ignoring invalid cache %s (%s).", path, exc)
+            return None
+
+    def __enter__(self):
+        if self.allow_legacy and self.local_directory is not None:
+            self.legacy = self._load(self.local_directory / "rep_mean.npz",
+                                     (self.n_queries, self.n_subsets), allow_legacy=True)
+            if self.legacy is not None:
+                logger.info("[ELSO] Reusing legacy complete local cache %s; not promoted to shared cache.",
+                            self.local_directory)
+                return self
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.lock = (self.directory / "writer.lock").open("a")
+        try:
+            waited = 0
+            while True:
+                try:
+                    fcntl.flock(self.lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if waited % 30 == 0:
+                        logger.info("[ELSO] Waiting for shared cache writer: %s", self.directory)
+                    time.sleep(1)
+                    waited += 1
+            manifest_path = self.directory / "identity.json"
+            if manifest_path.exists():
+                if json.loads(manifest_path.read_text()) != self.identity:
+                    raise ValueError(f"ELSO cache identity mismatch: {manifest_path}")
+            else:
+                self._atomic_write(manifest_path, lambda handle: handle.write(_identity_json(self.identity).encode()))
+            return self
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.lock is not None:
+            fcntl.flock(self.lock.fileno(), fcntl.LOCK_UN)
+            self.lock.close()
+            self.lock = None
+
+    @staticmethod
+    def _atomic_write(path, write):
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                write(handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def load(self):
+        complete = self.legacy
+        if complete is None:
+            complete = self._load(self.directory / "rep_mean.npz", (self.n_queries, self.n_subsets))
+        if complete is not None:
+            logger.info("[ELSO] Complete rep-mean cache hit (%d subsets).", self.n_subsets)
+            return complete.copy(), np.ones(self.n_subsets, dtype=bool)
+        values = np.zeros((self.n_queries, self.n_subsets))
+        completed = np.zeros(self.n_subsets, dtype=bool)
+        for index in range(self.n_subsets):
+            column = self._load(self.directory / f"subset_{index:05d}.npz", (self.n_queries,), index)
+            if column is not None:
+                values[:, index], completed[index] = column, True
+        if completed.any():
+            logger.info("[ELSO] Resuming %d / %d completed subsets from %s.",
+                        completed.sum(), self.n_subsets, self.directory)
+        return values, completed
+
+    def save_subset(self, index, column):
+        if column.shape != (self.n_queries,) or not np.isfinite(column).all():
+            raise ValueError("Cannot checkpoint invalid ELSO subset means")
+        self._atomic_write(self.directory / f"subset_{index:05d}.npz",
+                           lambda handle: np.savez(handle, rep_mean=column,
+                                                   identity_sha256=self.digest, subset_index=index))
+
+    def save_complete(self, values):
+        if values.shape != (self.n_queries, self.n_subsets) or not np.isfinite(values).all():
+            raise ValueError("Cannot checkpoint invalid complete ELSO means")
+        self._atomic_write(self.directory / "rep_mean.npz",
+                           lambda handle: np.savez(handle, rep_mean=values, identity_sha256=self.digest))
+        logger.info("[ELSO] Saved complete validated cache to %s.", self.directory)
 
 
 def compute_elso_ground_truth(
@@ -232,12 +432,46 @@ def compute_elso_ground_truth(
     epochs: int,
     use_vmap: bool = True,
     cache_directory: Optional[str] = None,
+    shared_cache_directory: Optional[str] = None,
+) -> np.ndarray:
+    """ELSO with resumable subsets and optional content-validated shared caching.
+
+    Shared caching is explicit here. The native attribution entrypoint opts in
+    via HABO_ELSO_SHARED_CACHE_ROOT, only when its cache_elso flag is enabled.
+    Caches contain retrained losses, never the baseline-specific subtraction.
+    """
+    arguments = dict(model_config=model_config, full_train_inputs=full_train_inputs,
+                     full_train_targets=full_train_targets, query_inputs=query_inputs,
+                     query_targets=query_targets, subsets=subsets, reps_per_subset=reps_per_subset,
+                     baseline_losses=baseline_losses, base_seed=base_seed, epochs=epochs,
+                     use_vmap=use_vmap)
+    if cache_directory is None and shared_cache_directory is None:
+        return _compute_elso_ground_truth(**arguments)
+    identity = _elso_content_identity(
+        model_config, full_train_inputs, full_train_targets, query_inputs, query_targets,
+        subsets, reps_per_subset, base_seed, epochs, use_vmap,
+    )
+    schedule = getattr(model_config.training.lr_schedule, "value", model_config.training.lr_schedule)
+    allow_legacy = schedule != "cosine" or epochs == model_config.training.epochs
+    with _CheckpointedELSO(cache_directory, shared_cache_directory, identity,
+                           len(query_inputs), len(subsets), allow_legacy=allow_legacy) as cache:
+        return _compute_elso_ground_truth(**arguments, cache=cache)
+
+
+def _compute_elso_ground_truth(
+    model_config, full_train_inputs, full_train_targets, query_inputs, query_targets,
+    subsets, reps_per_subset, baseline_losses, base_seed, epochs, use_vmap=True, cache=None,
 ) -> np.ndarray:
     """Compute Δm_j(z_q) = E_ξ[loss(z_q, θ(D\\S_j))] - loss(z_q, θ(D)).
 
     Complements are trained for ``epochs`` epochs so the complement model
     matches the training duration of the baseline checkpoint loaded by the
     caller. Returns an array of shape (n_queries, K).
+
+    Inputs must already carry the baseline's preprocessing; its train-fitted
+    normalization is held fixed across complements. Both execution paths use
+    identical seeds, configured shuffling, optimizer settings, and partial
+    batches. They may differ by floating-point summation roundoff.
     """
     n_queries = len(query_inputs)
     K = len(subsets)
@@ -246,6 +480,10 @@ def compute_elso_ground_truth(
 
     if K == 0:
         raise ValueError("compute_elso_ground_truth requires at least one subset (K>0).")
+    if reps_per_subset <= 0 or epochs <= 0:
+        raise ValueError("ELSO requires positive reps_per_subset and epochs")
+    if n_queries == 0:
+        raise ValueError("ELSO requires at least one query")
 
     for subset_idx, subset_mask in enumerate(subsets):
         if not isinstance(subset_mask, np.ndarray):
@@ -276,55 +514,38 @@ def compute_elso_ground_truth(
                 f"(|S_j|={subset_size}, N={n_train}); "
                 "subset_fraction must be < 1.0 so each retraining set is non-empty."
             )
-    cache_path = (
-        os.path.join(cache_directory, "rep_mean.npz")
-        if cache_directory is not None
-        else None
-    )
-    if cache_path is not None and os.path.exists(cache_path):
-        try:
-            with np.load(cache_path) as data:
-                cached_rep_mean = data["rep_mean"]
-            if cached_rep_mean.shape == (n_queries, K):
-                logger.debug(
-                    "[ELSO] Cache hit: loaded rep_mean from %s (shape=%s).",
-                    cache_path,
-                    cached_rep_mean.shape,
-                )
-                return cached_rep_mean - np.asarray(baseline_losses)[:, None]
-            logger.warning(
-                "[ELSO] Cache at %s has shape mismatch — recomputing.", cache_path
-            )
-        except (OSError, KeyError, ValueError) as e:
-            logger.warning(
-                "[ELSO] Failed to load cache %s (%s) — recomputing.", cache_path, e
-            )
+    baseline_losses = np.asarray(baseline_losses)
+    if baseline_losses.shape != (n_queries,) or not np.isfinite(baseline_losses).all():
+        raise ValueError("ELSO baseline losses must be finite with one value per query")
+    rep_mean, completed = (cache.load() if cache is not None else
+                           (np.zeros((n_queries, K)), np.zeros(K, dtype=bool)))
+    if completed.all():
+        return rep_mean - baseline_losses[:, None]
 
     loss_fn = get_loss(model_config.loss)
     # Both paths see every example each epoch (vmap pads + masks the partial
     # batch; the dataloader yields a partial last batch). Step counts match.
-    total_steps = epochs * ceil(complement_size / batch_size)
-    opt = create_optimizer(
-        optimizer_enum=model_config.training.optimizer,
-        lr=model_config.training.learning_rate,
-        weight_decay=model_config.training.weight_decay,
-        lr_schedule=model_config.training.lr_schedule,
-        total_steps=total_steps,
-    )
-
-    rep_mean = np.zeros((n_queries, K))
+    def make_optimizer(n_examples):
+        return create_optimizer(
+            optimizer_enum=model_config.training.optimizer,
+            lr=model_config.training.learning_rate,
+            weight_decay=model_config.training.weight_decay,
+            lr_schedule=model_config.training.lr_schedule,
+            # Intermediate checkpoints are a PREFIX of the original cosine
+            # trajectory, not a shorter schedule compressed to target epochs.
+            total_steps=model_config.training.epochs * ceil(n_examples / batch_size),
+            momentum=model_config.training.momentum,
+            beta1=model_config.training.beta1,
+            beta2=model_config.training.beta2,
+        )
 
     if use_vmap:
         from src.utils.models.registry import ModelRegistry
 
         model = ModelRegistry.get_model(model_config=model_config)
-        vmapped_fn = _build_vmapped_elso_fn(
-            model=model,
-            optimizer=opt,
-            loss_fn=loss_fn,
-            epochs=epochs,
-            batch_size=batch_size,
-        )
+        # Grouped attribution masks can have unequal complements; each
+        # distinct size needs its own cosine-decay step count and shape.
+        vmapped_functions = {}
         logger.debug(
             "[ELSO] vmap R=%d reps over K=%d subsets (compiling on first subset).",
             reps_per_subset,
@@ -332,6 +553,8 @@ def compute_elso_ground_truth(
         )
 
         for j, mask in enumerate(subsets):
+            if completed[j]:
+                continue
             comp_x = jnp.asarray(full_train_inputs[~mask])
             comp_y = jnp.asarray(full_train_targets[~mask])
             if len(comp_x) == 0:
@@ -339,16 +562,28 @@ def compute_elso_ground_truth(
                     f"Subset {j}: complement is empty (|S_j|={int(mask.sum())}, "
                     f"N={len(full_train_inputs)}); cannot compute ELSO ground truth."
                 )
-            keys = jax.random.split(
-                PRNGKey(base_seed + j * reps_per_subset), reps_per_subset
-            )
+            if len(comp_x) not in vmapped_functions:
+                vmapped_functions[len(comp_x)] = _build_vmapped_elso_fn(
+                    model=model, optimizer=make_optimizer(len(comp_x)), loss_fn=loss_fn,
+                    epochs=epochs, batch_size=batch_size, shuffle=model_config.training.shuffle,
+                )
+            vmapped_fn = vmapped_functions[len(comp_x)]
+            keys = jnp.stack([PRNGKey(base_seed + j * reps_per_subset + r)
+                              for r in range(reps_per_subset)])
             rep_losses = vmapped_fn(keys, comp_x, comp_y, query_inputs, query_targets)
-            rep_mean[:, j] = np.array(jnp.mean(rep_losses, axis=0))
+            rep_losses = np.asarray(rep_losses, dtype=float)
+            if not np.isfinite(rep_losses).all():
+                raise FloatingPointError(f"Non-finite vmapped ELSO query loss for subset {j}; cache not saved")
+            rep_mean[:, j] = rep_losses.mean(axis=0)
+            if cache is not None:
+                cache.save_subset(j, rep_mean[:, j])
             if (j + 1) % max(1, K // 10) == 0 or j == 0:
                 logger.info("[ELSO] Subset %d / %d done.", j + 1, K)
 
     else:
         for j, mask in enumerate(subsets):
+            if completed[j]:
+                continue
             comp_inputs = full_train_inputs[~mask]
             comp_targets = full_train_targets[~mask]
             if len(comp_inputs) == 0:
@@ -363,20 +598,14 @@ def compute_elso_ground_truth(
                     comp_inputs,
                     comp_targets,
                     batch_size=batch_size,
-                    shuffle=True,
+                    shuffle=model_config.training.shuffle,
                     rng_key=jax.random.PRNGKey(seed),
                 )
                 subset_model, subset_params, _ = train_model(
                     model_config=model_config,
                     dataloader=dataloader,
                     loss_fn=loss_fn,
-                    optimizer=create_optimizer(
-                        optimizer_enum=model_config.training.optimizer,
-                        lr=model_config.training.learning_rate,
-                        weight_decay=model_config.training.weight_decay,
-                        lr_schedule=model_config.training.lr_schedule,
-                        total_steps=ceil(len(comp_inputs) / batch_size) * epochs,
-                    ),
+                    optimizer=make_optimizer(len(comp_inputs)),
                     epochs=epochs,
                     seed=seed,
                     save_checkpoints=False,
@@ -390,17 +619,16 @@ def compute_elso_ground_truth(
                         loss_fn=loss_fn,
                     )
                 )
+                if not np.isfinite(ckpt_rep_losses[r]).all():
+                    raise FloatingPointError(f"Non-finite ELSO query loss for subset {j}, rep {r}; cache not saved")
             rep_mean[:, j] = ckpt_rep_losses.mean(axis=0)
+            if cache is not None:
+                cache.save_subset(j, rep_mean[:, j])
             if (j + 1) % max(1, K // 10) == 0 or j == 0:
                 logger.info("[ELSO] Subset %d / %d done.", j + 1, K)
 
-    if cache_path is not None:
-        try:
-            os.makedirs(cache_directory, exist_ok=True)  # type: ignore[arg-type]
-            np.savez(cache_path, rep_mean=rep_mean)
-            logger.info("[ELSO] Saved rep_mean cache to %s.", cache_path)
-        except OSError as e:
-            logger.warning("[ELSO] Failed to save cache %s (%s).", cache_path, e)
+    if cache is not None:
+        cache.save_complete(rep_mean)
 
     return rep_mean - np.asarray(baseline_losses)[:, None]
 
@@ -582,8 +810,10 @@ def _compute_lds_for_attribution(
 ) -> Dict:
     """Score a single attribution .npy via ELSO retraining.
 
-    The ELSO cache is keyed on ``(model_directory, recipe)`` only, so distinct
-    attribution files for the same checkpoint reuse the expensive retraining.
+    Per-model legacy caches remain readable when their schedule is valid.
+    New caches validate complete data/recipe content and checkpoint subsets.
+    HABO_ELSO_SHARED_CACHE_ROOT optionally shares these new caches across
+    baseline model seeds; each model's own baseline loss is subtracted later.
     """
     params, model, model_config, _ = load_model_checkpoint(
         model_directory, epoch=epoch
@@ -631,22 +861,22 @@ def _compute_lds_for_attribution(
         )
     )
 
-    cache_directory = (
-        elso_cache_dir(
-            model_directory,
-            _build_elso_cache_key(
-                model_config=model_config,
-                num_subsets=num_subsets,
-                subset_fraction=subset_fraction,
-                reps_per_subset=reps_per_model,
-                seed=lds_seed,
-                n_queries=n_query,
-                epochs=target_epochs,
-            ),
+    cache_directory = None
+    if cache_elso:
+        cache_key = _build_elso_cache_key(
+            model_config=model_config, num_subsets=num_subsets,
+            subset_fraction=subset_fraction, reps_per_subset=reps_per_model,
+            seed=lds_seed, n_queries=n_query, epochs=target_epochs,
         )
-        if cache_elso
-        else None
-    )
+        cache_directory = elso_cache_dir(model_directory, cache_key)
+        schedule = getattr(model_config.training.lr_schedule, "value", model_config.training.lr_schedule)
+        if schedule != "cosine" or target_epochs == model_config.training.epochs:
+            legacy_key = dict(cache_key)
+            legacy_key.pop("schedule_implementation")
+            legacy_key.pop("schedule_horizon_epochs")
+            legacy_directory = elso_cache_dir(model_directory, legacy_key)
+            if os.path.isfile(os.path.join(legacy_directory, "rep_mean.npz")):
+                cache_directory = legacy_directory
 
     delta_m = compute_elso_ground_truth(
         model_config=model_config,
@@ -660,6 +890,8 @@ def _compute_lds_for_attribution(
         base_seed=lds_seed,
         epochs=target_epochs,
         cache_directory=cache_directory,
+        shared_cache_directory=(os.environ.get("HABO_ELSO_SHARED_CACHE_ROOT") or None)
+        if cache_elso else None,
     )
 
     predicted = compute_group_attributions(attributions, subsets)

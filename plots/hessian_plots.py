@@ -666,8 +666,6 @@ def plot_influence_spearman(rho, *, methods=None, annotate=True, title=None):
     methods = list(rho.index)
     mat = rho.to_numpy()
     n = len(methods)
-    n_query = int(rho.attrs.get("n_query", 0))
-    aggregate = rho.attrs.get("aggregate", "mean")
     result_id = rho.attrs.get("result_id")
 
     fig, ax = plt.subplots(figsize=(max(6, 0.7 * n + 3), max(5, 0.7 * n + 2)),
@@ -685,9 +683,7 @@ def plot_influence_spearman(rho, *, methods=None, annotate=True, title=None):
                     ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=8,
                             color="white" if abs(v) > 0.55 else "black")
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04).set_label("Spearman ρ")
-    summary = (f"{n_query} query" + ("y" if n_query == 1 else "ies")
-               + (" (1D cache)" if n_query == 1 else f", aggregated by {aggregate}"))
-    ax.set_title(title or f"Influence Spearman pairwise — result #{result_id} ({summary})",
+    ax.set_title(title or f"Influence Spearman pairwise — result #{result_id}",
                  fontsize=11, fontweight="bold")
     return fig, rho
 
@@ -742,7 +738,7 @@ def plot_influence_corr_across_axis(df, *, model_id, sweep, fix, method="exact",
     """Single-panel pairwise Spearman heatmap across the swept axis."""
     sweep_col = "damping_value" if sweep == "damping" else "epoch"
     fix_col = "epoch" if sweep == "damping" else "damping_value"
-    mat, n_query = D.spearman_matrix_across_axis(
+    mat, _ = D.spearman_matrix_across_axis(
         df, model_id=model_id, sweep=sweep, fix=fix, method=method, aggregate=aggregate,
         damping_strategy=damping_strategy, pseudo_target_strategy=pseudo_target_strategy,
     )
@@ -756,11 +752,9 @@ def plot_influence_corr_across_axis(df, *, model_id, sweep, fix, method="exact",
     ax.set_xlabel(sweep_col.replace("_", " "))
     ax.set_ylabel(sweep_col.replace("_", " "))
     if with_title:
-        summary = (f"{n_query} query" + ("y" if n_query == 1 else "ies")
-                   + (" (1D cache)" if n_query == 1 else f", aggregated by {aggregate}"))
         ax.set_title(
             f"{model_label(model_id)} — influence Spearman across {sweep}\n"
-            f"method={LABELS.get(method, method)}, fixed {fix_col}={fix} ({summary})",
+            f"method={LABELS.get(method, method)}, fixed {fix_col}={fix}",
             fontsize=11, fontweight="bold",
         )
     if with_colorbar:

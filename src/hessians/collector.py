@@ -125,6 +125,11 @@ class CollectorActivationsGradients:
                     f"Proceeding to collect data."
                 )
 
+        # A collector can be reused with another dataset or checkpoint. Never
+        # append to a previous collection's completed memmaps.
+        self._act_memmap = {}
+        self._grad_memmap = {}
+        self._offsets = {}
         collection_dataset, metadata = self._generate_pseudo_targets(dataset, rng_key)
 
         # Memmaps are the primary storage: if no save directory was given
@@ -161,6 +166,13 @@ class CollectorActivationsGradients:
     ) -> None:
         a_np = np.asarray(a)
         g_np = np.asarray(g)
+        if a_np.ndim not in (2, 3) or g_np.ndim != a_np.ndim:
+            raise ValueError(
+                f"Layer {name}: expected (B,I)/(B,O) or (B,T,I)/(B,T,O); "
+                f"got {a_np.shape}/{g_np.shape}."
+            )
+        if a_np.shape[:-1] != g_np.shape[:-1]:
+            raise ValueError(f"Layer {name}: activation/cotangent sample or token axes differ.")
         if name not in self._act_memmap:
             assert self._memmap_dir is not None
             I = a_np.shape[-1]
@@ -168,18 +180,20 @@ class CollectorActivationsGradients:
             safe_name = name.replace("/", "_")
             self._act_memmap[name] = np.lib.format.open_memmap(
                 self._memmap_dir / f"activations_{safe_name}.npy",
-                mode="w+", dtype=a_np.dtype, shape=(self._total_n, I),
+                mode="w+", dtype=a_np.dtype, shape=(self._total_n, *a_np.shape[1:]),
             )
             self._grad_memmap[name] = np.lib.format.open_memmap(
                 self._memmap_dir / f"gradients_{safe_name}.npy",
-                mode="w+", dtype=g_np.dtype, shape=(self._total_n, O),
+                mode="w+", dtype=g_np.dtype, shape=(self._total_n, *g_np.shape[1:]),
             )
             self._offsets[name] = 0
 
         B = a_np.shape[0]
         off = self._offsets[name]
+        if off + B > self._total_n:
+            raise ValueError(f"Layer {name} emitted multiple hooks per example; combine shared sites first.")
         self._act_memmap[name][off:off + B] = a_np
-        self._grad_memmap[name][off:off + B] = g_np.reshape(B, -1)
+        self._grad_memmap[name][off:off + B] = g_np
         self._offsets[name] = off + B
 
     # ------------------------------------------------------------------
@@ -250,7 +264,7 @@ class CollectorActivationsGradients:
             )
             probabilities = jax.nn.softmax(logits, axis=-1)  # (N, K)
 
-            expanded_inputs = jnp.tile(inputs, (k, 1))  # (K*N, features)
+            expanded_inputs = jnp.tile(inputs, (k,) + (1,) * (inputs.ndim - 1))
             expanded_targets = jnp.repeat(jnp.arange(k), n_samples)  # (K*N,)
 
             metadata = {
@@ -321,9 +335,15 @@ class CollectorActivationsGradients:
         gradients_final: Dict[str, Array] = {}
         for layer_name, act_mm in self._act_memmap.items():
             grad_mm = self._grad_memmap[layer_name]
-            O_dim = grad_mm.shape[-1]
+            if self._offsets[layer_name] != k * n_samples:
+                raise ValueError(f"Incomplete cache for layer {layer_name}.")
             activations_final[layer_name] = act_mm[:n_samples]
-            gradients_final[layer_name] = grad_mm.reshape(k, n_samples, O_dim).transpose(1, 2, 0)
+            gradients_final[layer_name] = np.moveaxis(
+                grad_mm.reshape(k, n_samples, *grad_mm.shape[1:]), 0, -1
+            )
+
+        if set(activations_final) != set(self.model.get_layer_names()):
+            raise ValueError("Collected groups do not cover exactly the model's declared groups.")
 
         # Unified probs: (N, k).  ALL_CLASSES uses softmax; EF/MCMC use ones.
         # FLAGGED: MCMC normalization convention deferred.
@@ -362,6 +382,19 @@ class CollectorActivationsGradients:
         directory.mkdir(parents=True, exist_ok=True)
         np.save(directory / "probs.npy", np.asarray(data.probs))
         manifest = {
+            "cache_format_version": 2,
+            "parameter_grouping": (
+                "individual parameter leaves in ravel_pytree order"
+                if hasattr(self.model, "parameter_block_shapes")
+                else "legacy affine layer groups"
+            ),
+            "shared_parameter_convention": {
+                "gradient": "sum_tokens(a_t outer g_t), before squares or outer products",
+                "kfac": "expand: A=mean_examples(sum_tokens aa^T); G=mean_examples_draws_tokens gg^T",
+                "mac": "A=mean_examples(sum_tokens aa^T); G=identity",
+                "shampoo": "left/right moments of summed per-example parameter gradients",
+                "vector_parameters": "individual (1,D) blocks; true per-parameter cotangents",
+            },
             "layer_names": list(data.layer_names),
             "n_samples": int(metadata["n_samples"]),
             "k": int(metadata["k"]),
@@ -412,9 +445,10 @@ class CollectorActivationsGradients:
             safe_name = name.replace("/", "_")
             act_mm = np.load(directory / f"activations_{safe_name}.npy", mmap_mode="r")
             grad_mm = np.load(directory / f"gradients_{safe_name}.npy", mmap_mode="r")
-            O_dim = grad_mm.shape[-1]
             activations[name] = act_mm[:n_samples]
-            gradients[name] = grad_mm.reshape(k, n_samples, O_dim).transpose(1, 2, 0)
+            gradients[name] = np.moveaxis(
+                grad_mm.reshape(k, n_samples, *grad_mm.shape[1:]), 0, -1
+            )
 
         probs = jnp.array(np.load(directory / "probs.npy"))
         return DataActivationsGradients(

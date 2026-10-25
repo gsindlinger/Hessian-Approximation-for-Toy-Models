@@ -56,6 +56,21 @@ MODEL_LABELS = {
     "resnet_mlp_adc3030f5daa": "Small ResNet MLP8",
     "resnet_mlp_fbc1db7ec868": "ResNet MLP3",
     "resnet_mlp_swiglu_d4186381c706": "ResNet SwiGLU3",
+    # Selected toy-pair runs. These are presentation aliases only: model IDs,
+    # saved config codes, database keys and numerical caches stay unchanged.
+    # Energy/transformer IDs below are the stable selections, not old screens.
+    "mlp_a3e9cd67136b": "MLP Concrete · seed 42",
+    "mlp_2fe582adefa2": "MLP Concrete · seed 43",
+    "mlp_4bab8fa15498": "MLP Concrete · seed 44",
+    "mlp_195c1bd9c95f": "MLP Energy · seed 42",
+    "mlp_7ea4e853bf54": "MLP Energy · seed 43",
+    "mlp_089067f475df": "MLP Energy · seed 44",
+    "mlp_e7f326581e66": "MLP MNIST · seed 42",
+    "mlp_a436e58ba7ad": "MLP MNIST · seed 43",
+    "mlp_77dae5213a9a": "MLP MNIST · seed 44",
+    "transformer_a6c30af49009": "Transformer ModAdd · seed 42",
+    "transformer_a578f82dbe72": "Transformer ModAdd · seed 43",
+    "transformer_3480d0d6daae": "Transformer ModAdd · seed 44",
 }
 
 

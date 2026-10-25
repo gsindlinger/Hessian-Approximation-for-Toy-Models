@@ -65,7 +65,9 @@ class FullMatrixMetric(str, Enum):
 
         def cosine_similarity(A, B):
             # tr(A @ B^T) / (||A||_F * ||B||_F)
-            inner = jnp.trace(A @ B.T)
+            # Exactly the same Frobenius inner product, without an O(P^3)
+            # matrix product just to compute a scalar trace.
+            inner = jnp.sum(A * B)
             norm_a = jnp.linalg.norm(A, ord="fro")
             norm_b = jnp.linalg.norm(B, ord="fro")
             cosine = inner / (norm_a * norm_b + 1e-10)
@@ -176,16 +178,32 @@ class FullMatrixMetric(str, Enum):
 
 
 def compare_matrices(
-    matrix_1, matrix_2, metrics: List[FullMatrixMetric] | None = None
+    matrix_1, matrix_2, metrics: List[FullMatrixMetric] | None = None,
+    *, reference_spectral_norm=None,
 ) -> Dict[str, float]:
+    """Reuse exact spectral norms; no iterative/low-rank approximation.
+
+    A caller comparing many matrices to one reference may supply its already
+    computed operator norm. The full SVD-based norm definition is unchanged.
+    """
     if metrics is None:
         metrics = FullMatrixMetric.all_metrics()
 
     results = {}
+    spectral_metrics = {FullMatrixMetric.SPECTRAL, FullMatrixMetric.RELATIVE_SPECTRAL}
+    difference_spectral_norm = None
+    if spectral_metrics.intersection(metrics):
+        difference_spectral_norm = jnp.linalg.norm(matrix_1 - matrix_2, ord=2)
+    if FullMatrixMetric.RELATIVE_SPECTRAL in metrics and reference_spectral_norm is None:
+        reference_spectral_norm = jnp.linalg.norm(matrix_1, ord=2)
 
     for metric in metrics:
-        fn = metric.compute_fn()
-        value = fn(matrix_1, matrix_2)
+        if metric == FullMatrixMetric.SPECTRAL:
+            value = difference_spectral_norm
+        elif metric == FullMatrixMetric.RELATIVE_SPECTRAL:
+            value = difference_spectral_norm / (reference_spectral_norm + 1e-10)
+        else:
+            value = metric.compute_fn()(matrix_1, matrix_2)
         results[metric.value] = float(value)
 
     return results

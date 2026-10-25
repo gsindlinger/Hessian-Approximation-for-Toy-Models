@@ -183,9 +183,11 @@ def layer_shapes_from_model_context(
     ctx: ModelContext,
 ) -> Dict[str, Tuple[int, int]]:
     """
-    Walk the Flax param tree and return `{layer_name: (I_aug, O)}` matching
-    the KFAC layer convention (kernel + optional bias as a single
-    bias-augmented block).
+    Walk the Flax param tree and return `{group_name: (I, O)}` in flat order.
+
+    Legacy models use affine-module groups. General models may instead name
+    individual parameter leaves, representing vectors as (1,D) and tensors
+    as (prod(shape[:-1]), shape[-1]); this includes every trainable parameter.
 
     Walks leaves in the order `tree_flatten_with_path` yields them — which
     matches `ravel_pytree`'s flat layout — and enforces:
@@ -212,7 +214,9 @@ def layer_shapes_from_model_context(
     per_layer_leaves: Dict[str, List] = {n: [] for n in layer_names}
     offset = 0
     for path, leaf in leaves_with_paths:
-        layer = "/".join(k.key for k in path[:-1])
+        leaf_name = "/".join(str(k.key) for k in path)
+        module_name = "/".join(str(k.key) for k in path[:-1])
+        layer = leaf_name if leaf_name in layer_set else module_name
         if layer in layer_set:
             per_layer_runs[layer].append((offset, offset + leaf.size))
             per_layer_leaves[layer].append(leaf)
@@ -247,6 +251,15 @@ def layer_shapes_from_model_context(
     shapes: Dict[str, Tuple[int, int]] = {}
     for name in layer_names:
         layer_leaves = per_layer_leaves[name]
+        if len(layer_leaves) == 1:
+            leaf = layer_leaves[0]
+            if leaf.ndim == 0:
+                shapes[name] = (1, 1)
+            elif leaf.ndim == 1:
+                shapes[name] = (1, int(leaf.size))
+            else:
+                shapes[name] = (int(np.prod(leaf.shape[:-1])), int(leaf.shape[-1]))
+            continue
         kernel_candidates = [l for l in layer_leaves if l.ndim == 2]
         if not kernel_candidates:
             raise ValueError(
@@ -273,8 +286,10 @@ class DataActivationsGradients(ApproximationData):
     Single collector run: per-layer activations and per-sample/per-k output gradients.
 
     Attributes:
-        activations: Per-layer input activations, shape (N, I_l).
-        gradients: Per-layer output gradients, shape (N, O_l, k). k is the
+        activations: Per-layer input activations, shape (N, I_l), or
+            (N, T_l, I_l) for parameters shared over T_l token positions.
+        gradients: Per-layer output gradients, shape (N, O_l, k), or
+            (N, T_l, O_l, k) for shared parameters. k is the
             number of pseudo-target draws (k=1 for empirical_fisher,
             k=num_classes for all_classes, k=repetitions for mcmc).
         probs: Per-sample, per-k weights, shape (N, k). Conventions:
@@ -296,3 +311,16 @@ class DataActivationsGradients(ApproximationData):
         return "activations_gradients"
 
 
+def parameter_gradients_from_factors(a: Array, g: Array) -> Array:
+    """Reconstruct (N,I,O,k) gradients, retaining all shared-token terms.
+
+    dL/dW = sum_t a_t outer g_t. Sum BEFORE an outer product or square;
+    treating tokens as independent examples discards cross-token curvature.
+    """
+    if a.ndim == 2 and g.ndim == 3:
+        return jnp.einsum("ni,nok->niok", a, g)
+    if a.ndim == 3 and g.ndim == 4:
+        if a.shape[:2] != g.shape[:2]:
+            raise ValueError("Shared activation/cotangent sample and token axes disagree.")
+        return jnp.einsum("nti,ntok->niok", a, g)
+    raise ValueError(f"Unsupported activation/cotangent shapes: {a.shape}, {g.shape}")

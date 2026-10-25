@@ -48,7 +48,9 @@ class GNHComputer(HessianEstimator):
         """Materialize the full GNH and slice it into per-layer DenseBlocks."""
         ctx = self.compute_context
         loss_name = get_loss_name(ctx.loss_fn)
-        if loss_name == "mse":
+        if hasattr(ctx.model, "parameter_block_shapes"):
+            dense = self._compute_gnh_output_jacobian(ctx, 0.0)
+        elif loss_name == "mse":
             dense = self._compute_gnh_mse(ctx, 0.0)
         elif loss_name == "cross_entropy":
             dense = self._compute_gnh_cross_entropy(ctx, 0.0)
@@ -63,6 +65,39 @@ class GNHComputer(HessianEstimator):
     # ------------------------------------------------------------------
     # Materialization helpers (used by _build)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    @jax.jit
+    def _compute_gnh_output_jacobian(
+        compute_context: ModelContext, damping: Float
+    ) -> Float[Array, "n_params n_params"]:
+        """All-parameter GNH, streaming C-by-P output Jacobians by example.
+
+        Reverse-mode output Jacobians avoid vmapping P forward tangents over
+        the whole transformer. All output classes and all parameters remain.
+        """
+        ctx = compute_context
+        p = ctx.params_flat
+
+        def model_output(parameters, x):
+            return ctx.model_apply_fn(ctx.unravel_fn(parameters), x[None, ...])[0]
+
+        def add_sample(accumulator, xy):
+            x, y = xy
+            z = model_output(p, x)
+            jacobian = jax.jacrev(model_output)(p, x)
+            output_hessian = jax.hessian(
+                lambda logits: ctx.loss_fn(logits[None, ...], y[None, ...])
+            )(z)
+            return accumulator + jacobian.T @ output_hessian @ jacobian, None
+
+        dense, _ = jax.lax.scan(
+            add_sample, jnp.zeros((p.size, p.size), dtype=p.dtype),
+            (ctx.inputs, ctx.targets),
+        )
+        dense = dense / ctx.inputs.shape[0]
+        dense = (dense + dense.T) * 0.5
+        return dense + damping * jnp.eye(p.size, dtype=p.dtype)
 
     @staticmethod
     @jax.jit
@@ -225,4 +260,3 @@ class GNHComputer(HessianEstimator):
         # Average over dataset + damping
         G_full = G_full / X.shape[0]
         return G_full + damping * jnp.eye(n_params)
-

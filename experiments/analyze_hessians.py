@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import yaml
@@ -53,7 +54,7 @@ from src.utils.influence import (
     compute_influence_matrix_streaming,
 )
 from src.utils.loss import get_loss
-from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
+from src.utils.metrics.full_matrix_metrics import FullMatrixMetric, compare_matrices as compare_matrix_values
 from src.utils.metrics.vector_metrics import VectorMetric
 from src.utils.train import load_model_checkpoint
 
@@ -137,6 +138,43 @@ def load_train_test_for_loss(
         Path(dataset_info["split_dir"]),
     )
     return normalize_for_loss(train, test, loss)
+
+
+def _apply_analysis_precision(params, train: Dataset, test: Dataset, parameter_dtype: Optional[str]):
+    """Promote the whole tree BEFORE ravel_pytree creates its unravel closure.
+
+    Merely casting params_flat is insufficient: its original unravel closure
+    casts each leaf back to the checkpoint dtype. Tokens, class labels and
+    original row IDs must remain integer. Checkpoints are never modified.
+    """
+    if parameter_dtype is None:
+        return params, train, test
+    if parameter_dtype not in ("float32", "float64"):
+        raise ValueError("parameter_dtype must be null, float32, or float64")
+    if parameter_dtype == "float64" and not jax.config.x64_enabled:
+        raise RuntimeError("float64 analysis requires JAX_ENABLE_X64=true")
+    dtype = jnp.dtype(parameter_dtype)
+
+    def cast_floating(value):
+        array = jnp.asarray(value)
+        return array.astype(dtype) if jnp.issubdtype(array.dtype, jnp.floating) else value
+
+    def cast_dataset(dataset):
+        return Dataset(
+            inputs=cast_floating(dataset.inputs),
+            targets=cast_floating(dataset.targets),
+            row_indices=dataset.row_indices,
+        )
+
+    return jax.tree.map(cast_floating, params), cast_dataset(train), cast_dataset(test)
+
+
+def _precision_cache_dir(directory: str, parameter_dtype: Optional[str]) -> str:
+    """Keep opt-in precision caches (including factors) separate from legacy."""
+    if parameter_dtype is None:
+        return str(directory)
+    path = Path(directory)
+    return str(path.with_name(f"{path.name}_dtype{parameter_dtype}"))
 
 
 def model_epoch_pairs(
@@ -389,15 +427,22 @@ def compare_matrices(
     )
     out: Dict[str, Dict[str, float]] = {m.value: {} for m in metrics}
     others = [a for a in approximators if a != reference]
+    reference_spectral_norm = (
+        jnp.linalg.norm(ref_H, ord=2)
+        if others and FullMatrixMetric.RELATIVE_SPECTRAL in metrics else None
+    )
     pbar = tqdm(others, desc=f"matrix vs {reference.value}")
     for approx in pbar:
         pbar.set_postfix_str(approx.value[:5].ljust(5))
         comp = ctx.get(approx)
-        for metric in metrics:
-            score = comp.compare_full_hessian_estimates(
-                comparison_matrix=ref_H, metric=metric
-            )
-            out[metric.value][approx.value] = float(score)
+        # One dense materialization per approximation; absolute and relative
+        # spectral metrics share one exact SVD of the difference.
+        scores = compare_matrix_values(
+            ref_H, comp.estimate_hessian(), metrics,
+            reference_spectral_norm=reference_spectral_norm,
+        )
+        for metric, score in scores.items():
+            out[metric][approx.value] = score
     return out
 
 
@@ -425,6 +470,45 @@ def compare_hvps(
                 metric.compute(ref_hvp, approx_hvp, grads_2)
             )
     return out
+
+
+@dataclass
+class UndampedComparisonCache:
+    """Invariants for ONE fixed checkpoint, datasets, probes and metric set.
+
+    Matrix comparison calls estimate_hessian() without damping; HVP comparison
+    calls estimate_hvp(probes) without damping. Neither reads a threshold or
+    damping table. Their scalar outputs are identical across the sweep.
+    IHVP and influence are intentionally NOT cached here.
+    """
+
+    ctx: HessianCtx
+    approximators: List[HessianApproximationMethod]
+    matrix_metrics: List[FullMatrixMetric]
+    vector_metrics: List[VectorMetric]
+    grads_1: Any
+    grads_2: Any
+    _matrices: Dict = field(default_factory=dict)
+    _hvps: Dict = field(default_factory=dict)
+
+    def matrices(self, reference):
+        if reference not in self._matrices:
+            self._matrices[reference] = compare_matrices(
+                self.ctx, reference, self.approximators, self.matrix_metrics,
+            )
+        else:
+            logger.info("  reusing undamped matrix comparisons vs %s", reference.value)
+        return self._matrices[reference]
+
+    def hvps(self, reference):
+        if reference not in self._hvps:
+            self._hvps[reference] = compare_hvps(
+                self.ctx, reference, self.approximators, self.vector_metrics,
+                self.grads_1, self.grads_2,
+            )
+        else:
+            logger.info("  reusing undamped HVP comparisons vs %s", reference.value)
+        return self._hvps[reference]
 
 
 def compare_ihvps(
@@ -700,6 +784,11 @@ def main(
                 dataset_info, model_config.loss
             )
         train_ds, test_ds = cached_splits[model_config.loss]
+        params, train_ds, test_ds = _apply_analysis_precision(
+            params, train_ds, test_ds, comp_cfg.parameter_dtype
+        )
+        if comp_cfg.parameter_dtype is not None:
+            logger.info("  analysis floating-point dtype: %s (whole parameter tree)", comp_cfg.parameter_dtype)
         logger.info("  N_train=%d, N_test=%d", len(train_ds), len(test_ds))
 
         # Resolve `collector_subset_size: null` to actual train size *now*, so
@@ -757,6 +846,8 @@ def main(
                 corr=True,
             )
         )
+        collector_dir = _precision_cache_dir(collector_dir, comp_cfg.parameter_dtype)
+        collector_dir_corr = _precision_cache_dir(collector_dir_corr, comp_cfg.parameter_dtype)
         cache_inputs_base = {
             "dataset_name": dataset_name,
             "split_id": dataset_info["split_id"],
@@ -766,6 +857,9 @@ def main(
             "strategy": strategy_str,
             "repetitions": int(reps),
         }
+        if comp_cfg.parameter_dtype is not None:
+            cache_inputs_base["parameter_dtype"] = comp_cfg.parameter_dtype
+            cache_inputs_base["precision_scope"] = "all_floating_parameter_leaves_and_continuous_data"
 
         collector_data, collector_data_corr = collect_activations_gradients(
             model=model,
@@ -856,6 +950,13 @@ def main(
                 ", ".join("auto" if v is None else f"{v:g}" for v in damping_values),
             )
 
+        undamped_comparisons = UndampedComparisonCache(
+            ctx=ctx,
+            approximators=list(comp_cfg.approximators),
+            matrix_metrics=list(analysis_cfg.matrix_config.metrics),
+            vector_metrics=list(analysis_cfg.vector_config.metrics),
+            grads_1=grads_1, grads_2=grads_2,
+        )
         for lam in damping_values:
             comp_cfg_lam = replace(comp_cfg, damping_value=lam)
             analysis_cfg_lam = replace(analysis_cfg, computation_config=comp_cfg_lam)
@@ -907,25 +1008,13 @@ def main(
             for reference in comp_cfg.comparison_references:
                 logger.info("    reference: %s", reference.value)
                 if ComputationType.MATRIX in comp_cfg.computation_types:
-                    res = compare_matrices(
-                        ctx,
-                        reference,
-                        comp_cfg.approximators,
-                        analysis_cfg.matrix_config.metrics,
-                    )
+                    res = undamped_comparisons.matrices(reference)
                     for metric, scores in res.items():
                         matrix_comparisons.setdefault(metric, {})[reference.value] = (
                             scores
                         )
                 if ComputationType.HVP in comp_cfg.computation_types:
-                    res = compare_hvps(
-                        ctx,
-                        reference,
-                        comp_cfg.approximators,
-                        analysis_cfg.vector_config.metrics,
-                        grads_1,
-                        grads_2,
-                    )
+                    res = undamped_comparisons.hvps(reference)
                     for metric, scores in res.items():
                         hvp_comparisons.setdefault(metric, {})[reference.value] = scores
                 if ComputationType.IHVP in comp_cfg.computation_types:
@@ -975,6 +1064,7 @@ def main(
                     "model_hash": result_model_hash,
                     "model_config": asdict(model_config),
                     "num_parameters": model.num_params,
+                    "analysis_parameter_dtype": comp_cfg.parameter_dtype,
                     "metadata": metadata or {},
                     "damping_value": lam,
                     "damping_strategy": comp_cfg.damping_strategy.value,
@@ -1032,6 +1122,7 @@ def main(
                     "model_directory": model_dir,
                     "metadata": metadata or {},
                     "damping_table": damping_table,
+                    "analysis_parameter_dtype": comp_cfg.parameter_dtype,
                 },
             )
             results_db.append_metrics(

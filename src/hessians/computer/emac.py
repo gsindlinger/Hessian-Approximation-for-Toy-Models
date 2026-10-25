@@ -48,8 +48,11 @@ class EMacComputer(KroneckerEstimator):
         for layer in activations_dict.keys():
             a = activations_dict[layer]  # (N, I)
             g = gradients_dict[layer]  # (N, O, k)
-            O = g.shape[1]
-            act_sums[layer] = jnp.einsum("ni,nj->ij", a, a)
+            O = g.shape[-2]
+            act_sums[layer] = (
+                jnp.einsum("nti,ntj->ij", a, a)
+                if a.ndim == 3 else jnp.einsum("ni,nj->ij", a, a)
+            )
             grad_sums[layer] = jnp.zeros((O, O), dtype=a.dtype)
         return {"act": act_sums, "grad": grad_sums}
 

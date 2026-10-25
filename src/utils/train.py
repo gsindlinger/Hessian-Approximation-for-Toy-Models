@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import pickle
 from functools import partial
@@ -11,7 +12,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 import optax
-import wandb
+try:
+    import wandb
+except ImportError:  # Local training and metrics do not require W&B.
+    wandb = None
 from flax import serialization
 from flax.training import train_state
 from tqdm import tqdm
@@ -55,6 +59,15 @@ def train_step(state: train_state.TrainState, batch_data, batch_targets, loss_fn
     return state, loss_value, grad_norm
 
 
+@partial(jax.jit, static_argnums=(3,))
+def _checked_train_step(state, batch_data, batch_targets, loss_fn):
+    state, loss_value, grad_norm = train_step(state, batch_data, batch_targets, loss_fn)
+    finite_params = jnp.all(jnp.stack([
+        jnp.all(jnp.isfinite(leaf)) for leaf in jax.tree_util.tree_leaves(state.params)
+    ]))
+    return state, loss_value, grad_norm, finite_params
+
+
 def train_model(
     model_config: ModelConfig,
     dataloader: JAXDataLoader,
@@ -66,6 +79,7 @@ def train_model(
     save_checkpoints: bool = True,
     train_dataset: Optional[Dataset] = None,
     val_dataset: Optional[Dataset] = None,
+    checkpoint_metadata: Optional[Dict] = None,
 ) -> Tuple[ApproximationModel, Dict, List]:
     """Train the model.
 
@@ -74,7 +88,9 @@ def train_model(
 
     When ``train_dataset`` / ``val_dataset`` are provided, computes per-epoch
     {train,val}_loss (and {train,val}_acc for cross-entropy) on the full set
-    and logs to W&B if a wandb run is active.
+    and logs to W&B if a wandb run is active. Metrics also persist locally as
+    ``training_metrics.jsonl`` whenever checkpoints are enabled. Epoch 0
+    means the actual initialization before any optimizer update.
     """
 
     model = ModelRegistry.get_model(model_config=model_config, seed=seed)
@@ -87,13 +103,43 @@ def train_model(
 
     loss_history = []
     is_classification = model_config.loss == LossType.CROSS_ENTROPY
+    if len(dataloader) == 0:
+        raise ValueError("Cannot train on an empty dataloader")
+    if epochs <= 0:
+        raise ValueError("epochs must be positive")
+    metadata = dict(checkpoint_metadata or {})
+    metadata.update({"model_seed": int(seed), "training_status": "running"})
+    metrics_path = None
+    if save_checkpoints:
+        if model_config.directory is None:
+            raise ValueError("Model directory is required when saving checkpoints")
+        directory = Path(model_config.directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        metrics_path = directory / "training_metrics.jsonl"
+        # The caller controls skip/overwrite policy; each new fit owns one
+        # history file rather than mixing a previous fit's metrics into it.
+        with open(metrics_path, "w"):
+            pass
+        if save_epochs is not None and 0 in save_epochs:
+            save_model_checkpoint(model_config, state.params, metadata=metadata, epoch=0)
+
+    def record_metrics(metrics):
+        if metrics_path is not None:
+            # Failure records retain the step and diagnostic, representing
+            # non-finite values as JSON null instead of nonstandard NaN.
+            serializable = {
+                key: value if not isinstance(value, float) or math.isfinite(value) else None
+                for key, value in metrics.items()
+            }
+            with open(metrics_path, "a") as handle:
+                handle.write(json.dumps(serializable, allow_nan=False) + "\n")
 
     for epoch in tqdm(range(1, epochs + 1)):
         running_loss = 0.0
         total_samples = 0
 
         for batch_data, batch_targets in dataloader:
-            state, loss_value, grad_norm = train_step(
+            state, loss_value, grad_norm, finite_params = _checked_train_step(
                 state, batch_data, batch_targets, loss_fn
             )
             if epoch < 200 and epoch % 10 == 0 and grad_norm < 1e-6:
@@ -101,12 +147,20 @@ def train_model(
                     f"Gradient norm is very small ({grad_norm}). Possible vanishing gradients."
                 )
             running_loss += float(loss_value) * batch_data.shape[0]
+            if (not math.isfinite(float(loss_value)) or not math.isfinite(float(grad_norm))
+                    or not bool(finite_params)):
+                record_metrics({"epoch": epoch, "optimizer_step": int(state.step),
+                                "train/running_loss": float(loss_value), "train/grad_norm": float(grad_norm),
+                                "status": "failed", "reason": "nonfinite_loss_gradient_or_parameters"})
+                raise FloatingPointError(f"Non-finite training loss, gradient, or parameters at epoch {epoch}")
             total_samples += batch_data.shape[0]
 
         epoch_loss = running_loss / total_samples
         loss_history.append(epoch_loss)
 
         epoch_metrics: Dict[str, float] = {
+            "epoch": epoch,
+            "optimizer_step": int(state.step),
             "train/running_loss": epoch_loss,
             "train/grad_norm": float(grad_norm),
         }
@@ -133,7 +187,12 @@ def train_model(
                     model, state.params, val_dataset.inputs, val_dataset.targets, loss_fn
                 )
 
-        if wandb.run is not None:
+        if not all(math.isfinite(float(value)) for value in epoch_metrics.values()):
+            record_metrics({**epoch_metrics, "status": "failed", "reason": "nonfinite_evaluation"})
+            raise FloatingPointError(f"Non-finite training/validation metric at epoch {epoch}: {epoch_metrics}")
+        record_metrics(epoch_metrics)
+
+        if wandb is not None and wandb.run is not None:
             wandb.log(epoch_metrics, step=epoch)
 
         if epoch % 50 == 0 or epoch == epochs:
@@ -148,6 +207,8 @@ def train_model(
             save_model_checkpoint(
                 model_config=model_config,
                 params=state.params,
+                metadata={**metadata, "last_saved_epoch": epoch,
+                          "training_status": "complete" if epoch == epochs else "running"},
                 epoch=epoch,
             )
 
@@ -183,10 +244,17 @@ def evaluate_loss(
     inputs: jnp.ndarray,
     targets: jnp.ndarray,
     loss_fn: Callable,
+    batch_size: int = 1024,
 ):
-    """Evaluate model."""
-    loss_value = _evaluate(model.apply, params, inputs, targets, loss_fn)
-    return float(loss_value)
+    """Evaluate the example-mean loss using bounded inference batches."""
+    if len(inputs) == 0 or batch_size <= 0:
+        raise ValueError("Evaluation requires nonempty data and a positive batch size")
+    total_loss = 0.0
+    for start in range(0, len(inputs), batch_size):
+        stop = min(start + batch_size, len(inputs))
+        loss_value = _evaluate(model.apply, params, inputs[start:stop], targets[start:stop], loss_fn)
+        total_loss += float(loss_value) * (stop - start)
+    return total_loss / len(inputs)
 
 
 @partial(jax.jit, static_argnames=("loss_fn", "apply_fn"))
@@ -220,11 +288,19 @@ def evaluate_loss_and_classification_accuracy(
     inputs: jnp.ndarray,
     targets: jnp.ndarray,
     loss_fn: Callable,
+    batch_size: int = 1024,
 ):
-    loss, acc = _evaluate_loss_and_classification_accuracy(
-        model.apply, params, inputs, targets, loss_fn
-    )
-    return float(loss), float(acc)
+    if len(inputs) == 0 or batch_size <= 0:
+        raise ValueError("Evaluation requires nonempty data and a positive batch size")
+    total_loss, total_acc = 0.0, 0.0
+    for start in range(0, len(inputs), batch_size):
+        stop = min(start + batch_size, len(inputs))
+        loss, acc = _evaluate_loss_and_classification_accuracy(
+            model.apply, params, inputs[start:stop], targets[start:stop], loss_fn
+        )
+        total_loss += float(loss) * (stop - start)
+        total_acc += float(acc) * (stop - start)
+    return total_loss / len(inputs), total_acc / len(inputs)
 
 
 @partial(jax.jit, static_argnames=["apply_fn", "loss_fn"])
@@ -250,7 +326,7 @@ def initialize_model(model: ApproximationModel, input_shape: int, key=None):
         key = jax.random.PRNGKey(model.seed)
 
     # Create dummy input for initialization
-    dummy_input = jnp.ones((1, input_shape), dtype=jnp.float32)
+    dummy_input = jnp.ones((1, input_shape), dtype=getattr(model, "input_dtype", jnp.float32))
     params = model.init(key, dummy_input)
 
     # log device of params
@@ -318,14 +394,22 @@ def save_model_checkpoint(
             os.makedirs(epoch_directory)
         save_params(epoch_directory, params)
 
-    if epoch is None or epoch == model_config.training.epochs - 1:
+    if epoch is None or epoch == model_config.training.epochs:
         save_params(base_directory, params)
-        # first save the model and metadata as json as single json file
-        model_json = model_config.serialize()
-        if metadata is not None:
-            model_json.update({METADATA_STR: metadata})
-        with open(f"{base_directory}/model.json", "w") as f:
-            json.dump(model_json, f, indent=4)
+    # Every explicit epoch is self-describing, including epoch 0. Preserve
+    # provenance fields already written by the caller on later saves.
+    model_json = model_config.serialize()
+    model_json_path = Path(base_directory) / "model.json"
+    previous_metadata = {}
+    if model_json_path.exists():
+        with open(model_json_path) as handle:
+            previous_metadata = json.load(handle).get(METADATA_STR) or {}
+    if metadata is not None:
+        previous_metadata.update(metadata)
+    if previous_metadata:
+        model_json[METADATA_STR] = previous_metadata
+    with open(model_json_path, "w") as handle:
+        json.dump(model_json, handle, indent=4)
 
 
 def check_saved_model(directory: str, epochs: Optional[List[int]] = None) -> bool:
@@ -378,12 +462,15 @@ def load_model_checkpoint(
     If epoch is specified, loads parameters from epoch-specific subdirectory.
     If epoch is None, loads parameters from the base directory.
 
-    Note, that this method requires the model to be fully trained and saved previously.
-    Intermediate epochs can only be loaded when the full model was saved at the end of training.
+    An explicit epoch can be loaded before training finishes, as long as its
+    checkpoint and the base model.json exist. Loading the final model still
+    requires a base checkpoint.
     """
 
-    if not check_saved_model(directory):
+    if epoch is None and not check_saved_model(directory):
         raise FileNotFoundError(f"No saved model found in directory: {directory}")
+    if not (Path(directory) / "model.json").exists():
+        raise FileNotFoundError(f"Missing model.json in directory: {directory}")
 
     # Load model definition and compare with provided model
     with open(f"{directory}/model.json", "r") as f:
@@ -407,7 +494,7 @@ def load_model_checkpoint(
         with open(checkpoint_path_msgpack, "rb") as f:
             bytes_input = f.read()
         params = serialization.from_bytes(
-            model.init(jax.random.PRNGKey(0), jnp.ones((1, model.input_dim))),
+            initialize_model(model, model.input_dim, key=jax.random.PRNGKey(0)),
             bytes_input,
         )
     elif os.path.exists(checkpoint_path_pkl):

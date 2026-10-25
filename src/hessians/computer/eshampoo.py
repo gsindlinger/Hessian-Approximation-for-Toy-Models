@@ -8,6 +8,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import KroneckerEstimator
+from src.hessians.utils.data import parameter_gradients_from_factors
 
 
 @dataclass
@@ -48,6 +49,11 @@ class EShampooComputer(KroneckerEstimator):
         for layer in activations_dict.keys():
             a = activations_dict[layer]  # (N, I)
             g = gradients_dict[layer]  # (N, O, k)
+            if a.ndim == 3:
+                weight_grads = parameter_gradients_from_factors(a, g)
+                act_sums[layer] = jnp.einsum("niok,njok,nk->ij", weight_grads, weight_grads, probs)
+                grad_sums[layer] = jnp.einsum("niok,nipk,nk->op", weight_grads, weight_grads, probs)
+                continue
             g_norms_sq = jnp.einsum("nok,nok->nk", g, g)  # (N, k)
             a_norms_sq = jnp.einsum("ni,ni->n", a, a)  # (N,)
 
@@ -73,6 +79,9 @@ class EShampooComputer(KroneckerEstimator):
         L = {layer: act_sums[layer] / total_prob for layer in act_sums}
         R = {layer: grad_sums[layer] / total_prob for layer in grad_sums}
         return {
-            "activation_cov": {layer: L[layer] / jnp.trace(L[layer]) for layer in L},
+            "activation_cov": {
+                layer: L[layer] / jnp.where(jnp.trace(L[layer]) > 0, jnp.trace(L[layer]), 1)
+                for layer in L
+            },
             "gradient_cov": R,
         }

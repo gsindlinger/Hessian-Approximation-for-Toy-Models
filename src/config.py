@@ -31,6 +31,7 @@ class ModelArchitecture(str, Enum):
     LINEAR = "linear"
     RESNETMLP = "resnet_mlp"
     RESNETMLPSWIGLU = "resnet_mlp_swiglu"
+    TRANSFORMER = "transformer"
 
 
 class ActivationFunction(str, Enum):
@@ -39,6 +40,7 @@ class ActivationFunction(str, Enum):
     RELU = "relu"
     TANH = "tanh"
     SWIGLU = "swiglu"
+    GELU = "gelu"
 
 
 class OptimizerType(str, Enum):
@@ -114,6 +116,8 @@ class DatasetEnum(str, Enum):
     ENERGY = "energy"
     CONCRETE = "concrete"
     CANCER = "cancer"
+    MODULAR_ADDITION = "modular_addition"
+    MODULAR_QUADRATIC = "modular_quadratic"
 
 
 class VectorSamplingMethod(str, Enum):
@@ -158,10 +162,19 @@ class DatasetConfig:
     test_size: float = 0.1
     store_on_disk: bool = True
     split_seed: int = 42
+    # Validation is carved from the training pool before optional subsampling.
+    train_size: Optional[int] = None
+    validation_size: float = 0.0
+    subset_seed: int = 42
+    validation_seed: int = 43
 
     def __post_init__(self):
         if not 0.0 < self.test_size < 1.0:
             raise ValueError(f"test_size must be in (0, 1), got {self.test_size}")
+        if not 0.0 <= self.validation_size < 1.0:
+            raise ValueError("validation_size must be in [0, 1)")
+        if self.train_size is not None and self.train_size <= 0:
+            raise ValueError("train_size must be positive when specified")
 
 
 @dataclass
@@ -174,12 +187,20 @@ class TrainingConfig:
     epochs: int = 500
     batch_size: int = 128
     lr_schedule: LRSchedule = LRSchedule.NONE
+    momentum: float = 0.9
+    shuffle: bool = False
+    beta1: float = 0.9
+    beta2: float = 0.999
 
     def __post_init__(self):
         if self.epochs <= 0:
             raise ValueError("epochs must be positive")
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive")
+        if not 0.0 <= self.momentum < 1.0:
+            raise ValueError("momentum must be in [0, 1)")
+        if not 0.0 <= self.beta1 < 1.0 or not 0.0 <= self.beta2 < 1.0:
+            raise ValueError("Adam beta values must be in [0, 1)")
 
 
 @dataclass
@@ -193,6 +214,13 @@ class ModelConfig:
     input_dim: int = field(default=0)
     hidden_dim: List[int] | List[Tuple[int, int]] | List[Tuple[int, int, int]] | None = field(default=None)
     output_dim: int = field(default=0)
+
+    # Width-reduced KernelSM decoder. Ignored by non-transformer models.
+    transformer_dim: int = 16
+    transformer_num_layers: int = 2
+    transformer_num_heads: int = 4
+    transformer_vocab_size: int = 99
+    transformer_max_length: int = 5
 
     # Activation function
     activation: Optional[ActivationFunction] = None
@@ -294,8 +322,13 @@ class HessianComputationConfig:
     # input). None = full train. Subsample is a deterministic permutation
     # seeded by the run seed.
     collector_subset_size: Optional[int] = None
+    # Optional analysis-only promotion of every floating parameter leaf and
+    # continuous data array. None preserves checkpoint dtypes and old caches.
+    parameter_dtype: Optional[str] = None
 
     def __post_init__(self):
+        if self.parameter_dtype not in (None, "float32", "float64"):
+            raise ValueError("parameter_dtype must be null, float32, or float64")
         if (
             self.pseudo_target_generation_strategy
             == PseudoTargetGenerationStrategy.ALL_CLASSES

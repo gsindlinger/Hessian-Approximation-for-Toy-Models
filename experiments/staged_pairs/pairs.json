@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "dataset_root": "experiments/datasets",
+  "split_seed": 20260909,
+  "subset_seed": 20260910,
+  "seeds": [0, 1, 2],
+  "image_train_size": 6000,
+  "image_query_size": 1000,
+  "regression_train_fraction": 0.8,
+  "pairs": [
+    {
+      "id": "mnist_mlp8", "dataset": "mnist",
+      "model": {"architecture": "mlp", "hidden_dim": [16, 16, 16, 16, 16, 16, 16, 16], "activation": "tanh", "loss": "cross_entropy"},
+      "training": {"epochs": 50, "batch_size": 64, "learning_rate": 0.1, "optimizer": "sgd", "lr_schedule": "cosine", "weight_decay": 0.0},
+      "save_epochs": [1, 5, 10, 25, 50]
+    },
+    {
+      "id": "mnist_resnet3", "dataset": "mnist",
+      "model": {"architecture": "resnet_mlp", "hidden_dim": [[16, 16], [16, 16], [16, 16]], "activation": "relu", "loss": "cross_entropy"},
+      "training": {"epochs": 50, "batch_size": 64, "learning_rate": 0.02, "optimizer": "sgd", "lr_schedule": "cosine", "weight_decay": 0.0},
+      "save_epochs": [1, 5, 10, 25, 50]
+    },
+    {
+      "id": "fashion_mnist_mlp8", "dataset": "fashion_mnist",
+      "model": {"architecture": "mlp", "hidden_dim": [16, 16, 16, 16, 16, 16, 16, 16], "activation": "tanh", "loss": "cross_entropy"},
+      "training": {"epochs": 50, "batch_size": 64, "learning_rate": 0.1, "optimizer": "sgd", "lr_schedule": "cosine", "weight_decay": 0.0},
+      "save_epochs": [1, 5, 10, 25, 50]
+    },
+    {
+      "id": "fashion_mnist_resnet3", "dataset": "fashion_mnist",
+      "model": {"architecture": "resnet_mlp", "hidden_dim": [[16, 16], [16, 16], [16, 16]], "activation": "relu", "loss": "cross_entropy"},
+      "training": {"epochs": 50, "batch_size": 64, "learning_rate": 0.02, "optimizer": "sgd", "lr_schedule": "cosine", "weight_decay": 0.0},
+      "save_epochs": [1, 5, 10, 25, 50]
+    },
+    {
+      "id": "energy_mlp2", "dataset": "energy",
+      "model": {"architecture": "mlp", "hidden_dim": [32, 32], "activation": "tanh", "loss": "mse"},
+      "training": {"epochs": 500, "batch_size": 64, "learning_rate": 0.01, "optimizer": "sgd", "lr_schedule": "cosine", "weight_decay": 0.0},
+      "save_epochs": [1, 10, 50, 100, 250, 500]
+    },
+    {
+      "id": "energy_resnet3", "dataset": "energy",
+      "model": {"architecture": "resnet_mlp", "hidden_dim": [[16, 16], [16, 16], [16, 16]], "activation": "relu", "loss": "mse"},
+      "training": {"epochs": 500, "batch_size": 64, "learning_rate": 0.01, "optimizer": "sgd", "lr_schedule": "cosine", "weight_decay": 0.0},
+      "save_epochs": [1, 10, 50, 100, 250, 500]
+    },
+    {
+      "id": "concrete_mlp2", "dataset": "concrete",
+      "model": {"architecture": "mlp", "hidden_dim": [32, 32], "activation": "tanh", "loss": "mse"},
+      "training": {"epochs": 500, "batch_size": 64, "learning_rate": 0.01, "optimizer": "sgd", "lr_schedule": "cosine", "weight_decay": 0.0},
+      "save_epochs": [1, 10, 50, 100, 250, 500]
+    },
+    {
+      "id": "concrete_resnet3", "dataset": "concrete",
+      "model": {"architecture": "resnet_mlp", "hidden_dim": [[16, 16], [16, 16], [16, 16]], "activation": "relu", "loss": "mse"},
+      "training": {"epochs": 500, "batch_size": 64, "learning_rate": 0.01, "optimizer": "sgd", "lr_schedule": "cosine", "weight_decay": 0.0},
+      "save_epochs": [1, 10, 50, 100, 250, 500]
+    }
+  ]
+}

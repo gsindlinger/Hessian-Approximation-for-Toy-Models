@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterator, Optional, Self, Tuple, Type, TypeVar
+from typing import Any, ClassVar, Iterator, Optional, Self, Tuple, Type, TypeVar
 
 import jax
 import numpy as np
@@ -39,6 +40,8 @@ class Dataset:
 
     inputs: Array = field(default_factory=lambda: jnp.array([]))
     targets: Array = field(default_factory=lambda: jnp.array([]))
+    # Original raw row identities, persisted for attribution and split audits.
+    row_indices: Optional[Array] = None
 
     def get_dataloader(
         self, batch_size: int | None = None, shuffle: bool = False, seed: int = 42
@@ -61,6 +64,7 @@ class Dataset:
         return Dataset(
             inputs=self.inputs,
             targets=new_targets,
+            row_indices=self.row_indices,
         )
 
     def __len__(self) -> int:
@@ -94,11 +98,10 @@ class Dataset:
     def save_split(self, directory: Path) -> None:
         """Persist this dataset's inputs/targets to a directory as data.npz."""
         directory.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            directory / SPLIT_DATA_FILENAME,
-            inputs=np.asarray(self.inputs),
-            targets=np.asarray(self.targets),
-        )
+        arrays = {"inputs": np.asarray(self.inputs), "targets": np.asarray(self.targets)}
+        if self.row_indices is not None:
+            arrays["row_indices"] = np.asarray(self.row_indices)
+        np.savez_compressed(directory / SPLIT_DATA_FILENAME, **arrays)
 
     @staticmethod
     def load_split(directory: Path, dataset_cls: Type[Dataset]) -> Dataset:
@@ -107,6 +110,7 @@ class Dataset:
             return dataset_cls(
                 inputs=jnp.asarray(data["inputs"]),
                 targets=jnp.asarray(data["targets"]),
+                row_indices=jnp.asarray(data["row_indices"]) if "row_indices" in data else None,
             )
 
     @staticmethod
@@ -198,11 +202,13 @@ class ClassificationDataset(Dataset):
             self,
             inputs=self.inputs[train_indices],
             targets=self.targets[train_indices],
+            row_indices=self.row_indices[train_indices] if self.row_indices is not None else None,
         )
         test_dataset = replace(
             self,
             inputs=self.inputs[test_indices],
             targets=self.targets[test_indices],
+            row_indices=self.row_indices[test_indices] if self.row_indices is not None else None,
         )
 
         return train_dataset, test_dataset
@@ -264,11 +270,13 @@ class RegressionDataset(Dataset):
             self,
             inputs=self.inputs[train_indices],
             targets=self.targets[train_indices],
+            row_indices=self.row_indices[train_indices] if self.row_indices is not None else None,
         )
         test_dataset = replace(
             self,
             inputs=self.inputs[test_indices],
             targets=self.targets[test_indices],
+            row_indices=self.row_indices[test_indices] if self.row_indices is not None else None,
         )
 
         return train_dataset, test_dataset
@@ -759,8 +767,10 @@ class OpenMLDataset(DownloadableDataset, ClassificationDataset):
 
 
 def _slice_split(ds: Dataset, n_train: int) -> tuple[Dataset, Dataset]:
-    train = replace(ds, inputs=ds.inputs[:n_train], targets=ds.targets[:n_train])
-    test = replace(ds, inputs=ds.inputs[n_train:], targets=ds.targets[n_train:])
+    train = replace(ds, inputs=ds.inputs[:n_train], targets=ds.targets[:n_train],
+                    row_indices=ds.row_indices[:n_train] if ds.row_indices is not None else None)
+    test = replace(ds, inputs=ds.inputs[n_train:], targets=ds.targets[n_train:],
+                   row_indices=ds.row_indices[n_train:] if ds.row_indices is not None else None)
     return train, test
 
 
@@ -824,6 +834,86 @@ class CIFAR10Dataset(OpenMLDataset):
         return _slice_split(self, n_train=50_000)
 
 
+@dataclass
+class ModularArithmeticDataset(DownloadableDataset, ClassificationDataset):
+    """Complete p=97 arithmetic task, with integer tokens and no downloads.
+
+    Tokens are ``[a, op, b, =]``; the target is the result modulo 97. Both
+    special tokens remain in the 99-way output vocabulary, matching the
+    KernelSM author decoder. All parameters, including embeddings, are used
+    by the native model rather than a fixed feature representation.
+    """
+
+    modulus: ClassVar[int] = 97
+    operation: ClassVar[str] = "addition"
+
+    @classmethod
+    def download(cls) -> RawDataset:
+        a, b = np.meshgrid(np.arange(cls.modulus), np.arange(cls.modulus), indexing="ij")
+        a, b = a.ravel(), b.ravel()
+        if cls.operation == "addition":
+            targets = (a + b) % cls.modulus
+        elif cls.operation == "quadratic":
+            targets = (a * a + a * b + b * b) % cls.modulus
+        else:
+            raise ValueError(f"Unknown modular operation: {cls.operation}")
+        inputs = np.stack([a, np.full_like(a, cls.modulus + 1), b,
+                           np.full_like(a, cls.modulus)], axis=1)
+        return RawDataset(X=inputs.astype(np.int32), Y=targets.astype(np.int32),
+                          metadata={"modulus": cls.modulus, "operation": cls.operation,
+                                    "tokens": ["a", "op", "b", "equals"], "vocabulary_size": 99})
+
+    @staticmethod
+    def save(directory: Path, raw: RawDataset) -> None:
+        pd.DataFrame(raw.X).to_csv(directory / "X.csv", index=False)
+        pd.DataFrame(raw.Y).to_csv(directory / "Y.csv", index=False)
+        with open(directory / "metadata.json", "w") as handle:
+            json.dump(raw.metadata, handle, indent=2)
+
+    @staticmethod
+    def load_from_disk(directory: Path) -> RawDataset:
+        with open(directory / "metadata.json") as handle:
+            metadata = json.load(handle)
+        return RawDataset(X=pd.read_csv(directory / "X.csv").to_numpy(),
+                          Y=pd.read_csv(directory / "Y.csv").to_numpy().ravel(),
+                          metadata=metadata)
+
+    @classmethod
+    def create_dataset_from_raw(cls, raw: RawDataset) -> Self:
+        if raw.metadata is None or raw.metadata.get("operation") != cls.operation:
+            raise ValueError("Modular dataset cache operation does not match the requested task")
+        if raw.metadata.get("modulus") != cls.modulus:
+            raise ValueError("Modular dataset cache modulus must be 97")
+        return cls(inputs=jnp.asarray(raw.X, dtype=jnp.int32),
+                   targets=jnp.asarray(raw.Y, dtype=jnp.int32))
+
+    def input_dim(self) -> int:
+        return 4
+
+    def output_dim(self) -> int:
+        return self.modulus + 2
+
+    def train_test_split(self, test_size: float = 0.1, seed: int = 42):
+        # Uniform example split, not label-stratified: this matches the
+        # published task's split semantics, with a separately recorded seed.
+        indices = np.random.default_rng(seed).permutation(len(self))
+        boundary = int(len(self) * (1 - test_size))
+        return _select_rows(self, indices[:boundary]), _select_rows(self, indices[boundary:])
+
+
+class ModularAdditionDataset(ModularArithmeticDataset):
+    operation = "addition"
+
+
+class ModularQuadraticDataset(ModularArithmeticDataset):
+    operation = "quadratic"
+
+
+def _select_rows(dataset: Dataset, indices: np.ndarray) -> Dataset:
+    return replace(dataset, inputs=dataset.inputs[indices], targets=dataset.targets[indices],
+                   row_indices=dataset.row_indices[indices] if dataset.row_indices is not None else None)
+
+
 class DatasetRegistry:
     """Registry for datasets."""
 
@@ -836,6 +926,8 @@ class DatasetRegistry:
         DatasetEnum.CONCRETE: ConcreteDataset,
         DatasetEnum.CANCER: CancerDataset,
         DatasetEnum.DIGITS: DigitsDataset,
+        DatasetEnum.MODULAR_ADDITION: ModularAdditionDataset,
+        DatasetEnum.MODULAR_QUADRATIC: ModularQuadraticDataset,
     }
 
     @staticmethod
@@ -863,6 +955,8 @@ class ResolvedSplit:
     split_dir: Path
     train_dir: Path
     test_dir: Path
+    validation: Optional[Dataset] = None
+    validation_dir: Optional[Path] = None
 
     def manifest_path(self) -> Path:
         return self.split_dir / SPLIT_MANIFEST_FILENAME
@@ -885,6 +979,10 @@ def resolve_split(dataset_cfg: DatasetConfig) -> ResolvedSplit:
     seed-based random splits, where S is `dataset_cfg.split_seed`.
     """
     dataset_cls = DatasetRegistry.get_dataset_class(dataset_cfg.name)
+    if (getattr(dataset_cfg, "train_size", None) is not None
+            or getattr(dataset_cfg, "validation_size", 0.0) > 0
+            or issubclass(dataset_cls, ModularArithmeticDataset)):
+        return _resolve_configured_split(dataset_cfg, dataset_cls)
     has_default = dataset_cls.has_default_split()
     split_seed = dataset_cfg.split_seed
     split_id = (
@@ -978,17 +1076,105 @@ def load_split_from_disk(
     return train, test
 
 
+def _resolve_configured_split(dataset_cfg: DatasetConfig,
+                              dataset_cls: Type[DownloadableDataset]) -> ResolvedSplit:
+    """Versioned train/validation/test splits; legacy two-way caches untouched.
+
+    Reserve the final test set first. Draw validation only from the remaining
+    pool, then optionally subsample the *training* set. Consequently, a
+    canonical MNIST ``train_size=6000`` means 6000 actual training examples,
+    not 6000 examples subsequently divided into training and validation.
+    """
+    recipe = {
+        "schema_version": 2, "dataset": dataset_cfg.name.value,
+        "test_size": dataset_cfg.test_size, "split_seed": dataset_cfg.split_seed,
+        "canonical_test": dataset_cls.has_default_split(),
+        "train_size": dataset_cfg.train_size, "subset_seed": dataset_cfg.subset_seed,
+        "validation_size": dataset_cfg.validation_size,
+        "validation_seed": dataset_cfg.validation_seed,
+    }
+    split_id = "v2_" + hashlib.sha256(json.dumps(recipe, sort_keys=True).encode()).hexdigest()[:16]
+    split_dir = Path(dataset_cfg.path) / "splits" / split_id
+    train_dir, test_dir = split_dir / "train", split_dir / "test"
+    validation_dir = split_dir / "validation" if dataset_cfg.validation_size else None
+    manifest_path = split_dir / SPLIT_MANIFEST_FILENAME
+    required = [train_dir / SPLIT_DATA_FILENAME, test_dir / SPLIT_DATA_FILENAME]
+    if validation_dir is not None:
+        required.append(validation_dir / SPLIT_DATA_FILENAME)
+    if manifest_path.exists() and all(path.exists() for path in required):
+        with open(manifest_path) as handle:
+            manifest = json.load(handle)
+        if manifest.get("recipe") != recipe:
+            raise ValueError(f"Split recipe mismatch at {manifest_path}")
+        train = Dataset.load_split(train_dir, dataset_cls)
+        test = Dataset.load_split(test_dir, dataset_cls)
+        validation = Dataset.load_split(validation_dir, dataset_cls) if validation_dir else None
+        return ResolvedSplit(train, test, split_id, split_dir, train_dir, test_dir,
+                             validation, validation_dir)
+    if split_dir.exists():
+        raise ValueError(f"Incomplete split cache at {split_dir}; refusing to overwrite")
+
+    full = DownloadableDataset.load(dataset_cfg.name, directory=dataset_cfg.path,
+                                    store_on_disk=dataset_cfg.store_on_disk)
+    full = replace(full, row_indices=jnp.arange(len(full), dtype=jnp.int32))
+    if dataset_cls.has_default_split():
+        train, test = full.default_split()
+    else:
+        train, test = full.train_test_split(dataset_cfg.test_size, dataset_cfg.split_seed)
+    validation = None
+    if dataset_cfg.validation_size:
+        count = max(1, int(len(train) * dataset_cfg.validation_size))
+        if count >= len(train):
+            raise ValueError("Validation selection leaves no training examples")
+        indices = np.random.default_rng(dataset_cfg.validation_seed).permutation(len(train))
+        validation = _select_rows(train, indices[:count])
+        train = _select_rows(train, indices[count:])
+    if dataset_cfg.train_size is not None:
+        if dataset_cfg.train_size > len(train):
+            raise ValueError(f"train_size={dataset_cfg.train_size} exceeds available training pool {len(train)}")
+        indices = np.random.default_rng(dataset_cfg.subset_seed).permutation(len(train))
+        train = _select_rows(train, indices[:dataset_cfg.train_size])
+    if len(train) == 0 or len(test) == 0:
+        raise ValueError("Both training and test splits must contain examples")
+    train.save_split(train_dir)
+    test.save_split(test_dir)
+    if validation is not None:
+        validation.save_split(validation_dir)
+    manifest = {"recipe": recipe, "dataset": dataset_cfg.name.value, "split_id": split_id,
+                "strategy": "canonical_test_then_validation_then_train_subsample" if dataset_cls.has_default_split()
+                            else "random_test_then_validation_then_train_subsample",
+                "n_train": len(train), "n_test": len(test),
+                "n_validation": len(validation) if validation is not None else 0,
+                "row_indices": "Original raw dataset row numbers are stored in each data.npz",
+                "normalization": "raw_splits; any MSE standardization fitted on final training split only"}
+    with open(manifest_path, "w") as handle:
+        json.dump(manifest, handle, indent=2)
+    return ResolvedSplit(train, test, split_id, split_dir, train_dir, test_dir,
+                         validation, validation_dir)
+
+
+def normalize_for_loss_with_validation(
+    train: Dataset, test: Dataset, loss: LossType, validation: Optional[Dataset] = None,
+) -> tuple[Dataset, Dataset, Optional[Dataset]]:
+    """Normalize all regression partitions with statistics from training only."""
+    if loss != LossType.MSE:
+        return train, test, validation
+    input_scaler, target_scaler = StandardScaler(), StandardScaler()
+    input_scaler.fit(np.asarray(train.inputs))
+    target_scaler.fit(np.asarray(train.targets))
+
+    def transform(dataset: Dataset) -> Dataset:
+        return replace(dataset,
+                       inputs=jnp.asarray(input_scaler.transform(np.asarray(dataset.inputs)), dtype=dataset.inputs.dtype),
+                       targets=jnp.asarray(target_scaler.transform(np.asarray(dataset.targets)), dtype=dataset.targets.dtype))
+
+    return transform(train), transform(test), transform(validation) if validation is not None else None
+
+
 def normalize_for_loss(
     train: Dataset, test: Dataset, loss: LossType
 ) -> tuple[Dataset, Dataset]:
     """For MSE losses, fit StandardScaler on train and apply to both. No-op for
     classification losses."""
-    if loss != LossType.MSE:
-        return train, test
-    train_inputs, test_inputs = Dataset.normalize_data(train.inputs, test.inputs)
-    train_targets, test_targets = Dataset.normalize_data(train.targets, test.targets)
-    cls = type(train)
-    return (
-        cls(inputs=train_inputs, targets=train_targets),
-        cls(inputs=test_inputs, targets=test_targets),
-    )
+    train, test, _ = normalize_for_loss_with_validation(train, test, loss)
+    return train, test

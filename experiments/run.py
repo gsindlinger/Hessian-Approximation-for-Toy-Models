@@ -1,6 +1,8 @@
 """Unified entry point for training, Hessian analysis, and LDS scoring.
 
-Auto-detects available GPUs and assigns jobs round-robin across them.
+Auto-detects available GPUs and assigns sequential per-GPU queues round-robin.
+Each GPU has one worker, so an idle GPU cannot accidentally launch a second
+job assigned to a different, still-busy GPU.
 
 Usage:
     # Train models
@@ -26,6 +28,8 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -58,22 +62,33 @@ def detect_gpus() -> list[int]:
 
 def run_train(gpu: int, config_path: Path) -> subprocess.CompletedProcess:
     config_path = config_path.resolve()
-    stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-gpu{gpu}"
+    stamp = _log_stamp(gpu)
     log_dir = f"experiments/logs/training/{config_path.stem}/{stamp}"
 
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu)}
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu), "PYTHONUNBUFFERED": "1"}
     cmd = [
         sys.executable, "-m", "experiments.train_models",
         f"--config-name={config_path.stem}",
         f"--config-path={config_path.parent}",
         f"hydra.run.dir={log_dir}",
     ]
-    logger.info(f"GPU {gpu} | training {config_path.name}")
-    return subprocess.run(cmd, cwd=PROJECT_ROOT, env=env)
+    log_file = _make_log_path(config_path, "train", gpu)
+    logger.info(f"GPU {gpu} | training {config_path.name} → {log_file}")
+    with open(log_file, "x") as handle:
+        result = subprocess.run(cmd, cwd=PROJECT_ROOT, env=env,
+                                stdout=handle, stderr=subprocess.STDOUT, text=True)
+    if result.returncode != 0:
+        logger.error(f"GPU {gpu} | train FAILED (exit {result.returncode}), see {log_file}")
+    return result
+
+
+def _log_stamp(gpu: int) -> str:
+    # Repeated configs can finish within one second; never reuse their logs.
+    return f"{time.strftime('%Y%m%d-%H%M%S')}-gpu{gpu}-{os.getpid()}-{time.time_ns()}"
 
 
 def _make_log_path(config: Path, stage: str, gpu: int) -> Path:
-    stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-gpu{gpu}"
+    stamp = _log_stamp(gpu)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     return LOG_DIR / f"{config.stem}_{stage}_{stamp}.log"
 
@@ -85,11 +100,13 @@ def run_analyze(
     lds_config: Path | None = None,
     extra_flags: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
+    config = config.resolve()
     env = {
         **os.environ,
         "CUDA_VISIBLE_DEVICES": str(gpu),
         "TF_CPP_MIN_LOG_LEVEL": "3",
         "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.95",
+        "PYTHONUNBUFFERED": "1",
     }
     cmd = [
         sys.executable, "-m", "experiments.analyze_hessians",
@@ -99,7 +116,7 @@ def run_analyze(
     ]
     log_file = _make_log_path(config, "analyze", gpu)
     logger.info(f"GPU {gpu} | analyzing {config.name} → {log_file}")
-    with open(log_file, "w") as lf:
+    with open(log_file, "x") as lf:
         result = subprocess.run(
             cmd, cwd=PROJECT_ROOT, env=env,
             stdout=lf, stderr=subprocess.STDOUT, text=True,
@@ -113,24 +130,109 @@ def run_analyze(
         stdout_text = log_file.read_text()
         for line in stdout_text.splitlines():
             if "wrote results →" in line:
-                results_json = line.split("→")[-1].strip()
-                if Path(results_json).is_file():
+                results_path = Path(line.split("→")[-1].strip())
+                if not results_path.is_absolute():
+                    results_path = PROJECT_ROOT / results_path
+                if results_path.is_file():
                     lds_log = _make_log_path(config, "lds", gpu)
                     logger.info(f"GPU {gpu} | running LDS → {lds_log}")
                     lds_cfg = str(lds_config or "experiments/configs/lds.yaml")
                     lds_cmd = [
                         sys.executable, "-m", "experiments.lds_analysis",
                         "--config", lds_cfg,
-                        "--results-json", results_json,
+                        "--results-json", str(results_path),
                     ]
-                    with open(lds_log, "w") as lf:
+                    with open(lds_log, "x") as lf:
                         return subprocess.run(
                             lds_cmd, cwd=PROJECT_ROOT, env=env,
                             stdout=lf, stderr=subprocess.STDOUT, text=True,
                         )
-        logger.warning(f"GPU {gpu} | could not find results.json, skipping LDS")
+        logger.error(f"GPU {gpu} | requested LDS but could not find results.json in {log_file}")
+        return subprocess.CompletedProcess(cmd, returncode=1)
 
     return result
+
+
+@dataclass(frozen=True)
+class JobResult:
+    gpu: int
+    config: Path
+    returncode: int
+    error: str | None = None
+
+
+def _run_gpu_queue(
+    gpu: int, configs: list[Path], command: str, run_lds: bool,
+    lds_config: Path | None, extra_flags: list[str],
+) -> list[JobResult]:
+    """One worker owns one GPU and completes each subprocess before the next."""
+    outcomes = []
+    for config in configs:
+        label = f"GPU {gpu} | {config}"
+        try:
+            if command == "train":
+                completed = run_train(gpu, config)
+            else:
+                completed = run_analyze(gpu, config, run_lds, lds_config, extra_flags)
+            outcome = JobResult(gpu, config, completed.returncode)
+        except Exception as exc:
+            # A bad configuration or failed child launch must not abandon
+            # later jobs in this GPU's queue or any other GPU's queue.
+            outcome = JobResult(gpu, config, 1, f"{type(exc).__name__}: {exc}")
+        outcomes.append(outcome)
+        if outcome.returncode == 0:
+            logger.info("DONE  %s", label)
+        else:
+            logger.error("FAIL  %s (exit %d%s)", label, outcome.returncode,
+                         f", {outcome.error}" if outcome.error else "")
+    return outcomes
+
+
+def run_jobs(
+    command: str, configs: list[Path], gpu_list: list[int], *,
+    run_lds: bool = False, lds_config: Path | None = None,
+    extra_flags: list[str] | None = None,
+) -> list[JobResult]:
+    """Validate all jobs, then run independent, strictly serial GPU queues.
+
+    No numerical libraries are imported here. Threads supervise child
+    processes only; CUDA initialization happens in each assigned subprocess.
+    Exclusivity is within this runner invocation, not a system-wide GPU lock.
+    """
+    if command not in ("train", "analyze", "full"):
+        raise ValueError(f"Unknown runner command: {command}")
+    if not gpu_list or len(set(gpu_list)) != len(gpu_list) or any(gpu < 0 for gpu in gpu_list):
+        raise ValueError("GPU ids must be a nonempty list of unique nonnegative integers")
+    resolved = [Path(config).resolve() for config in configs]
+    if not resolved:
+        raise ValueError("At least one configuration is required")
+    for config in resolved:
+        if not config.is_file():
+            raise FileNotFoundError(f"Configuration file not found: {config}")
+    if lds_config is not None:
+        lds_config = lds_config.resolve()
+        if not lds_config.is_file():
+            raise FileNotFoundError(f"LDS configuration file not found: {lds_config}")
+
+    queues = {gpu: resolved[index::len(gpu_list)] for index, gpu in enumerate(gpu_list)}
+    queues = {gpu: queue for gpu, queue in queues.items() if queue}
+    logger.info("queued %d job(s) across GPUs: %s", len(resolved), list(queues))
+    outcomes = []
+    with ThreadPoolExecutor(max_workers=len(queues), thread_name_prefix="gpu-queue") as pool:
+        futures = {
+            pool.submit(_run_gpu_queue, gpu, queue, command, run_lds or command == "full",
+                        lds_config, list(extra_flags or [])): (gpu, queue)
+            for gpu, queue in queues.items()
+        }
+        for future in as_completed(futures):
+            gpu, queue = futures[future]
+            try:
+                outcomes.extend(future.result())
+            except Exception as exc:
+                # Defensive fallback for a failure in queue supervision itself.
+                logger.exception("GPU %d queue supervisor failed", gpu)
+                outcomes.extend(JobResult(gpu, config, 1, str(exc)) for config in queue)
+    return outcomes
 
 
 def main():
@@ -163,10 +265,10 @@ def main():
     p_full.add_argument("--override", action="append", default=[])
 
     args = parser.parse_args()
-    if args.gpus:
-        gpu_list = [int(g) for g in args.gpus.split(",")]
-    else:
-        gpu_list = detect_gpus()
+    try:
+        gpu_list = [int(g.strip()) for g in args.gpus.split(",")] if args.gpus else detect_gpus()
+    except ValueError:
+        parser.error("--gpus must contain comma-separated integer GPU ids")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [run] %(message)s",
@@ -187,48 +289,21 @@ def main():
         for ov in args.override:
             extra_flags.extend(["--override", ov])
 
-    # -- dispatch --
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-
-    futures = {}
-    with ProcessPoolExecutor(max_workers=len(gpu_list)) as pool:
-        for i, cfg in enumerate(args.configs):
-            gpu = gpu_list[i % len(gpu_list)]
-            path = Path(cfg)
-
-            if not path.is_file():
-                sys.exit(f"error: file not found: {cfg}")
-
-            if args.command == "train":
-                fut = pool.submit(run_train, gpu, path)
-            else:
-                run_lds = args.command == "full" or getattr(args, "lds", False)
-                lds_cfg = Path(args.lds_config) if args.lds_config else None
-                fut = pool.submit(run_analyze, gpu, path, run_lds, lds_cfg, extra_flags)
-
-            futures[fut] = f"GPU {gpu} | {cfg}"
-            if i < len(args.configs) - 1:
-                time.sleep(10)
-
-    logger.info(f"launched {len(futures)} job(s) across GPUs: {gpu_list}")
-
-    failed = 0
-    for fut in as_completed(futures):
-        label = futures[fut]
-        try:
-            result = fut.result()
-            if result.returncode == 0:
-                logger.info(f"DONE  {label}")
-            else:
-                logger.error(f"FAIL  {label} (exit {result.returncode})")
-                failed += 1
-        except Exception as e:
-            logger.error(f"FAIL  {label} ({e})")
-            failed += 1
+    # -- dispatch: one sequential queue per GPU, never one shared job queue --
+    try:
+        outcomes = run_jobs(
+            args.command, [Path(config) for config in args.configs], gpu_list,
+            run_lds=args.command == "full" or getattr(args, "lds", False),
+            lds_config=Path(args.lds_config) if getattr(args, "lds_config", None) else None,
+            extra_flags=extra_flags,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        parser.error(str(exc))
+    failed = sum(outcome.returncode != 0 for outcome in outcomes)
 
     if failed:
         sys.exit(f"{failed} job(s) failed")
-    logger.info(f"all {len(futures)} job(s) completed successfully")
+    logger.info(f"all {len(outcomes)} job(s) completed successfully")
 
 
 if __name__ == "__main__":

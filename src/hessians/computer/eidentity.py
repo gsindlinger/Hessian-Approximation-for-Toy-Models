@@ -32,8 +32,8 @@ class EIdentityComputer(KroneckerEstimator):
         for layer in activations_dict.keys():
             a = activations_dict[layer]  # (N, I)
             g = gradients_dict[layer]  # (N, O, k)
-            O = g.shape[1]
-            I = a.shape[1]
+            O = g.shape[-2]
+            I = a.shape[-1]
             act_sums[layer] = jnp.zeros((I, I), dtype=a.dtype)
             grad_sums[layer] = jnp.zeros((O, O), dtype=a.dtype)
         return {"act": act_sums, "grad": grad_sums}

@@ -60,6 +60,7 @@ Notes:
 
 import json
 import logging
+import math
 import os
 import time
 from collections import defaultdict
@@ -83,6 +84,7 @@ from src.utils.data.data import (
     Dataset,
     ResolvedSplit,
     normalize_for_loss,
+    normalize_for_loss_with_validation,
     resolve_split,
 )
 from src.utils.loss import get_loss
@@ -105,15 +107,22 @@ cs.store(name="training_experiment", node=TrainingExperimentConfig)
 
 
 def generate_model_directory(
-    model_config: ModelConfig, base_dir: str, model_seed: int, split_seed: int
+    model_config: ModelConfig, base_dir: str, model_seed: int, split_seed: int,
+    dataset_recipe: Optional[Dict] = None,
 ) -> str:
     """Generate a unique directory path for a model based on its configuration.
 
     Includes both `model_seed` (init/training) and `split_seed` (train/test split)
     in the hash so changing either yields a distinct cache directory.
     """
+    recipe = asdict(model_config)
+    recipe.pop("directory", None)
+    recipe.pop("skip_existing", None)
     config_hash = hash_data(
         {
+            "recipe_version": 2,
+            "model_recipe": recipe,
+            "dataset_recipe": dataset_recipe,
             "architecture": model_config.architecture.value,
             "hidden_dim": model_config.hidden_dim,
             "loss": model_config.loss.value,
@@ -192,7 +201,8 @@ def train_single_model(
             model, params, _ = train_model(
                 model_config=model_config,
                 dataloader=train_dataset.get_dataloader(
-                    batch_size=model_config.training.batch_size, seed=model_seed
+                    batch_size=model_config.training.batch_size, seed=model_seed,
+                    shuffle=model_config.training.shuffle,
                 ),
                 loss_fn=get_loss(model_config.loss),
                 optimizer=optimizer(
@@ -201,12 +211,21 @@ def train_single_model(
                     weight_decay=model_config.training.weight_decay,
                     lr_schedule=model_config.training.lr_schedule,
                     total_steps=total_steps,
+                    momentum=model_config.training.momentum,
+                    beta1=model_config.training.beta1,
+                    beta2=model_config.training.beta2,
                 ),
                 epochs=model_config.training.epochs,
                 seed=model_seed,
                 save_epochs=save_epochs,
                 train_dataset=train_dataset,
                 val_dataset=val_dataset,
+                checkpoint_metadata={
+                    "dataset": dataset_info,
+                    "model_seed": int(model_seed),
+                    "split_seed": int(split_seed),
+                    "saved_epochs": [int(e) for e in save_epochs],
+                },
             )
         finally:
             if wandb_run is not None:
@@ -263,6 +282,8 @@ def train_single_model(
         }
         if dataset_info is not None:
             metadata["dataset"] = dataset_info
+    if not math.isfinite(float(val_loss)):
+        raise FloatingPointError(f"Non-finite validation loss for {model_dir}")
     metadata.update({"num_parameters": model.num_params})
 
     save_model_checkpoint(
@@ -297,7 +318,14 @@ def get_model_group_key(model_config: ModelConfig) -> str:
     Models with the same architecture and hidden_dim structure but different
     hyperparameters (lr, wd) will have the same key.
     """
-    return f"{model_config.architecture.value}_{str(model_config.hidden_dim)}"
+    dims = (
+        model_config.transformer_dim,
+        model_config.transformer_num_layers,
+        model_config.transformer_num_heads,
+        model_config.transformer_vocab_size,
+        model_config.transformer_max_length,
+    ) if model_config.architecture.value == "transformer" else model_config.hidden_dim
+    return f"{model_config.architecture.value}_{dims}_{model_config.activation}"
 
 
 def select_best_models(
@@ -373,6 +401,7 @@ def main(cfg: DictConfig):
                 models_base_dir,
                 model_seed=config.model_seed,
                 split_seed=config.dataset.split_seed,
+                dataset_recipe=asdict(config.dataset),
             )
 
     # Resolve (or build + cache) the train/test split on disk.
@@ -384,7 +413,12 @@ def main(cfg: DictConfig):
 
     # Per-loss normalization (fit on train, apply to test).
     loss = config.models[0].loss if config.models else LossType.CROSS_ENTROPY
-    train_ds, val_ds = normalize_for_loss(split.train, split.test, loss)
+    train_ds, test_ds, selection_ds = normalize_for_loss_with_validation(
+        split.train, split.test, loss, validation=split.validation,
+    )
+    val_ds = selection_ds if selection_ds is not None else test_ds
+    if selection_ds is None:
+        logger.warning("No separate validation partition: legacy test-as-validation behavior")
 
     dataset_info = {
         "name": config.dataset.name.value,
@@ -394,6 +428,9 @@ def main(cfg: DictConfig):
         "split_dir": str(split.split_dir),
         "train_dir": str(split.train_dir),
         "test_dir": str(split.test_dir),
+        "validation_dir": str(split.validation_dir) if split.validation_dir else None,
+        "selection_partition": "validation" if selection_ds is not None else "test",
+        "recipe": asdict(config.dataset),
     }
 
     # Train all models
@@ -402,6 +439,7 @@ def main(cfg: DictConfig):
     logger.info(f"{'#' * 70}")
 
     training_results = []
+    failed_results = []
     for i, model_config in enumerate(config.models, 1):
         logger.info(f"{'=' * 70}")
         logger.info(
@@ -413,18 +451,27 @@ def main(cfg: DictConfig):
         )
         logger.info(f"{'=' * 70}")
 
-        result = train_single_model(
-            model_config=model_config,
-            train_dataset=train_ds,
-            val_dataset=val_ds,
-            model_seed=config.model_seed,
-            split_seed=config.dataset.split_seed,
-            save_epochs=config.save_epochs,
-            dataset_info=dataset_info,
-            wandb_config=config.wandb,
-            experiment_name=config.experiment_name,
-        )
+        try:
+            result = train_single_model(
+                model_config=model_config,
+                train_dataset=train_ds,
+                val_dataset=val_ds,
+                model_seed=config.model_seed,
+                split_seed=config.dataset.split_seed,
+                save_epochs=config.save_epochs,
+                dataset_info=dataset_info,
+                wandb_config=config.wandb,
+                experiment_name=config.experiment_name,
+            )
+        except FloatingPointError as exc:
+            logger.error("Configuration failed numerical checks: %s", exc)
+            failed_results.append({"model_directory": model_config.directory, "error": str(exc)})
+            cleanup_memory("failed_training_configuration")
+            continue
         training_results.append(result)
+
+    if not training_results:
+        raise RuntimeError(f"No configuration passed numerical checks: {failed_results}")
 
     # Summary of all results
     logger.info(f"{'#' * 70}")
@@ -470,6 +517,7 @@ def main(cfg: DictConfig):
                 "experiment_name": config.experiment_name,
                 "timestamp": timestamp,
                 "total_models": len(training_results),
+                "failed_configurations": failed_results,
                 "results": [
                     {
                         "model_name": r["model_config"].get_model_display_name(),

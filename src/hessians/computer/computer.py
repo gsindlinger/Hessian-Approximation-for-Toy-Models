@@ -14,6 +14,7 @@ from src.hessians.layer_matrix import KroneckerFactors, LayerMatrix, LayerVector
 from src.hessians.utils.data import (
     DataActivationsGradients,
     ModelContext,
+    parameter_gradients_from_factors,
 )
 from src.utils.metrics.full_matrix_metrics import FullMatrixMetric
 
@@ -29,7 +30,7 @@ def _iter_slices(N: int, batch_size: Optional[int]):
         yield slice(start, min(start + batch_size, N))
 
 
-def _accumulate_chunks(N: int, batch_size: Optional[int], chunk_fn):
+def _accumulate_chunks(N: int, batch_size: Optional[int], chunk_fn) -> int:
     """Sum per-chunk pytrees returned by `chunk_fn(slice)`.
 
     Works uniformly on arrays, dicts, and nested dicts via `jax.tree.map`.
@@ -38,6 +39,7 @@ def _accumulate_chunks(N: int, batch_size: Optional[int], chunk_fn):
     for sl in _iter_slices(N, batch_size):
         contrib = chunk_fn(sl)
         total = contrib if total is None else jax.tree.map(jnp.add, total, contrib)
+    assert total is not None
     return total
 
 
@@ -99,8 +101,7 @@ class HessianEstimator(ABC):
     def _require_built(self, op: str) -> LayerMatrix:
         if not self.is_built or self.layer_matrix is None:
             raise RuntimeError(
-                f"HessianEstimator not built. Please call `.build()` "
-                f"before {op}."
+                f"HessianEstimator not built. Please call `.build()` before {op}."
             )
         return self.layer_matrix
 
@@ -178,9 +179,7 @@ class HessianEstimator(ABC):
             shapes=M.layer_shapes,
             param_groups=M.param_groups,
         )
-        return (
-            M.inverse(damping=d, pseudo_inverse_factor=p) @ lvec
-        ).to_flat()
+        return (M.inverse(damping=d, pseudo_inverse_factor=p) @ lvec).to_flat()
 
 
 @dataclass
@@ -430,7 +429,15 @@ class KroneckerEstimator(HessianEstimator):
         Since ((Q_A^T a)_i * (Q_G^T g)_o)^2 = a_tilde[i]^2 * g_tilde[o]^2,
         we square first and contract with an einsum.
         """
-        a_tilde_sq = (a @ Q_A) ** 2  # (N, I) — Q_A is orthogonal so a @ Q_A = (Q_A^T a)^T
+        if a.ndim == 3:
+            # Rotate the complete per-example shared-parameter gradient,
+            # then square.  Squaring tokenwise loses cross-token terms.
+            weight_grads = parameter_gradients_from_factors(a, g)
+            rotated = jnp.einsum("ij,niok,op->njpk", Q_A, weight_grads, Q_G)
+            return jnp.einsum("niok,nk->io", rotated ** 2, probs)
+        a_tilde_sq = (
+            a @ Q_A
+        ) ** 2  # (N, I) — Q_A is orthogonal so a @ Q_A = (Q_A^T a)^T
         g_tilde_sq = jnp.einsum("op,npk->nok", Q_G.T, g) ** 2  # (N, O, k)
         return jnp.einsum("ni,nok,nk->io", a_tilde_sq, g_tilde_sq, probs)
 
@@ -464,9 +471,7 @@ class KroneckerEstimator(HessianEstimator):
             )
 
         summed = _accumulate_chunks(N, batch_size, _chunk)
-        return cls._finalize_covariances(
-            summed["act"], summed["grad"], N, total_prob
-        )
+        return cls._finalize_covariances(summed["act"], summed["grad"], N, total_prob)
 
     @staticmethod
     @abstractmethod

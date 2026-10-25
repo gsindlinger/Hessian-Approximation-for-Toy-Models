@@ -149,3 +149,10 @@ data/checkpoints/*
 
 experiments/outputs/*
 wandb/*
+*.pdf
+
+experiments/toy_pairs/*
+
+experiments/staged_pairs/*
+# nested paper repo (separate git remote)
+habo/

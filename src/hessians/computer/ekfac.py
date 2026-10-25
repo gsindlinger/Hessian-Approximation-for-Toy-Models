@@ -43,6 +43,14 @@ class EKFACComputer(KroneckerEstimator):
         for layer in activations_dict.keys():
             a = activations_dict[layer]  # (N, I)
             g = gradients_dict[layer]  # (N, O, k)
+            if a.ndim == 3:
+                # KFAC-expand (Eschenhagen et al., 2023, Eq. 7), with a
+                # per-example mean loss. The reciprocal token factor may
+                # be assigned to either Kronecker factor without changing
+                # their product. We retain sum-token A for MAC consistency.
+                act_sums[layer] = jnp.einsum("nti,ntj->ij", a, a)
+                grad_sums[layer] = jnp.einsum("ntok,ntpk,nk->op", g, g, probs) / a.shape[1]
+                continue
             act_sums[layer] = jnp.einsum("ni,nj->ij", a, a)
             grad_sums[layer] = jnp.einsum("nok,npk,nk->op", g, g, probs)
         return {"act": act_sums, "grad": grad_sums}

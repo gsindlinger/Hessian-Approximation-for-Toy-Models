@@ -7,7 +7,7 @@ from jaxtyping import Array, Float
 
 from src.hessians.computer.computer import HessianEstimator, _accumulate_chunks
 from src.hessians.layer_matrix import DenseBlock, LayerMatrix
-from src.hessians.utils.data import DataActivationsGradients
+from src.hessians.utils.data import DataActivationsGradients, parameter_gradients_from_factors
 
 
 @dataclass
@@ -87,6 +87,6 @@ class FIMBlockComputer(HessianEstimator):
         for layer in activations_dict.keys():
             a = activations_dict[layer]
             g = gradients_dict[layer]
-            vecs = jnp.einsum("ni,nok->niok", a, g).reshape(a.shape[0], -1, g.shape[-1])
+            vecs = parameter_gradients_from_factors(a, g).reshape(a.shape[0], -1, g.shape[-1])
             out[layer] = jnp.einsum("npk,nqk,nk->pq", vecs, vecs, probs)
         return out
